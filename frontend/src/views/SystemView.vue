@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { request } from '../api/client'
-import type { LocalApiStatus, SystemStatus } from '../api/types'
+import type { BotRequestSafety, LocalApiStatus, SystemStatus } from '../api/types'
 import { bytes } from '../api/format'
 import { usePolling } from '../composables/usePolling'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
+import BotSafetyPanel from '../components/BotSafetyPanel.vue'
 const { data, error, loading, updatedAt, refresh } = usePolling(signal => request<SystemStatus>('/system/status', { signal }), 3000)
 function localApiChanged(status: LocalApiStatus) {
   if (data.value) data.value.local_api = status
+  void refresh()
+}
+function botSafetyChanged(status: BotRequestSafety) {
+  if (data.value) data.value.bot.request_safety = status
   void refresh()
 }
 const labels: Record<string, string> = { connected: '已连接', online: '已连接', connecting: '正在连接', running: '运行中', ready: '已就绪', unconfigured: '尚未配置', disconnected: '未连接', error: '连接异常', stopped: '已停止', disabled: '未启用', applied: '已应用', active: '已应用', applying: '正在应用', pending: '等待应用', pending_restart: '需要重启', restart_required: '需要重启', failed: '应用失败', unavailable: '不可用', direct: '直连模式' }
@@ -19,7 +24,7 @@ const good = (state: string) => ['connected', 'online', 'running', 'ready', 'app
     <el-skeleton v-if="!data && loading" :rows="8" animated />
     <template v-if="data">
       <div class="system-grid">
-        <section class="panel diagnostic-card"><p class="eyebrow">TELEGRAM BOT</p><div class="diagnostic-title"><h2>{{ data.bot.username ? `@${data.bot.username}` : 'Bot 连接' }}</h2><el-tag :type="good(data.bot.state) ? 'success' : 'warning'" round>{{ labels[data.bot.state] || data.bot.state }}</el-tag></div><p class="muted">{{ data.bot.message || '在设置中配置 Bot Token 和用户白名单。' }}</p></section>
+        <section class="panel diagnostic-card"><p class="eyebrow">TELEGRAM BOT</p><div class="diagnostic-title"><h2>{{ data.bot.username ? `@${data.bot.username}` : 'Bot 连接' }}</h2><el-tag :type="good(data.bot.state) ? 'success' : 'warning'" round>{{ labels[data.bot.state] || data.bot.state }}</el-tag></div><p v-if="!data.bot.request_safety || data.bot.request_safety.state === 'ready'" class="muted">{{ data.bot.message || '在设置中配置 Bot Token 和用户白名单。' }}</p><BotSafetyPanel :status="data.bot.request_safety" :stale="!!error" @changed="botSafetyChanged" /></section>
         <section class="panel diagnostic-card"><p class="eyebrow">DOWNLOAD QUEUE</p><h2>下载队列</h2><div class="queue-stats"><div><strong>{{ data.queue.active }}</strong><span>正在执行</span></div><div><strong>{{ data.queue.pending }}</strong><span>等待执行</span></div><div><strong>{{ data.queue.concurrency }}</strong><span>并发上限</span></div></div></section>
       </div>
       <section class="panel diagnostic-card"><LocalApiPanel :status="data.local_api" :bot="data.bot" :stale="!!error" detailed @changed="localApiChanged" /></section>

@@ -40,6 +40,7 @@ from app.schemas.responses import (
     CurrentUser,
     ErrorResponse,
     LocalApiStatus,
+    RequestSafetyStatus,
     SettingsResponse,
     SetupStatus,
     SystemStatus,
@@ -276,10 +277,13 @@ def create_app(config: Config | None = None) -> FastAPI:
             return None
         try:
             client = TelegramClient(candidate.bot_token, cfg, candidate)
+            client.safety = runtime.safety
             try:
                 identity = await client.identity()
             finally:
                 await client.close()
+        except AppError:
+            raise
         except Exception as exc:
             raise AppError("BOT_VALIDATION_FAILED", "无法验证 Bot，请检查 Token、所选 API 或代理连接", 422) from exc
         def check_identity() -> None:
@@ -342,10 +346,35 @@ def create_app(config: Config | None = None) -> FastAPI:
         except OSError:
             pass
         active, blocked, pending = runtime.counts()
-        return {"version": "0.1.0", "bot": runtime.bot_status, "local_api": runtime.local_api.status(), "storage": {"roots": roots, "cache": cache},
+        safety = runtime.safety.status(values.bot_token)
+        bot = dict(runtime.bot_status) | {"request_safety": safety}
+        if safety["state"] != "ready":
+            bot.update(state="error", message=safety["message"])
+        return {"version": "0.1.0", "bot": bot, "local_api": runtime.local_api.status(), "storage": {"roots": roots, "cache": cache},
                 "proxy": settings.proxy_status(revision, values),
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}
+
+    @application.post("/api/v1/system/bot/retry", dependencies=[Depends(auth)], response_model=RequestSafetyStatus)
+    async def retry_bot() -> dict[str, Any]:
+        async with runtime.connection_lock:
+            _, candidate, _ = await asyncio.to_thread(settings.read)
+            candidate = await asyncio.to_thread(runtime.local_api.recovery_candidate, candidate)
+            status = await asyncio.to_thread(runtime.safety.status, candidate.bot_token)
+            if not status["can_retry"]:
+                raise AppError("BOT_RETRY_UNAVAILABLE", status["message"] or "当前无需恢复 Bot 凭据", 409)
+            client = TelegramClient(candidate.bot_token, cfg, candidate)
+            client.safety = runtime.safety
+            try:
+                identity = await client.identity(probe=True)
+                await asyncio.to_thread(runtime.remember_identity, identity)
+            except AppError:
+                raise
+            except Exception as exc:
+                raise AppError("BOT_VALIDATION_FAILED", "Bot 验证未成功，请检查凭据和连接后重试", 422) from exc
+            finally:
+                await client.close()
+        return await asyncio.to_thread(runtime.safety.status, candidate.bot_token)
 
     @application.get("/{path:path}", include_in_schema=False)
     def static(path: str) -> Response:

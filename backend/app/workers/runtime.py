@@ -3,7 +3,12 @@ import json
 import time
 from typing import Any
 
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
 from sqlalchemy import func, select
 
 from app.bot.client import TelegramClient
@@ -14,6 +19,7 @@ from app.core.security import digest
 from app.db.models import BotIdentity, Job, MediaRequest, Notification, uid
 from app.db.session import Database
 from app.services.local_api import LocalApiService
+from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
@@ -24,6 +30,7 @@ class Runtime:
     def __init__(self, db: Database, config: Config, settings: SettingsService,
                  tasks: TaskService, storage: StorageManager) -> None:
         self.db, self.config, self.settings, self.tasks, self.storage = db, config, settings, tasks, storage
+        self.safety = RequestSafetyService(db)
         self.ingest = IngestService(db, settings, tasks)
         self.worker = DownloadWorker(db, storage, config, uid())
         self.client: TelegramClient | None = None
@@ -110,6 +117,10 @@ class Runtime:
                     return
                 generation = applied.get("generation") or ""
         token_hash = digest(settings.bot_token)
+        safety = await asyncio.to_thread(self.safety.status, settings.bot_token)
+        if safety["state"] != "ready":
+            self.bot_status.update(state="error", message=safety["message"])
+            return
         signature = self.settings.client_signature(settings)
         if not settings.bot_token:
             self.bot_status = {"state": "unconfigured", "username": "", "message": "请配置 Bot Token 和用户白名单"}
@@ -119,6 +130,7 @@ class Runtime:
                 self.settings.cloud_applied_signature = ""
             return
         if self.client and signature == self.client_signature and generation == self.client_generation:
+            self.bot_status.update(state="online", message="")
             return
         if any(not task.done() for task in self.running.values()):
             return
@@ -129,12 +141,14 @@ class Runtime:
         self.bot_status = {"state": "connecting", "username": "",
                            "message": "正在连接云端 Bot API" if settings.bot_api_mode == "cloud" else "正在连接本地 Bot API"}
         client = TelegramClient(settings.bot_token, self.config, settings)
+        client.safety = self.safety
         try:
             identity = await client.identity()
             await asyncio.to_thread(self.remember_identity, identity)
         except Exception:
             await client.close()
             raise
+        self.worker.credential_hash = token_hash
         self.bot_id, self.token_hash, self.client = identity["id"], token_hash, client
         self.client_signature = signature
         self.client_generation = generation
@@ -231,6 +245,7 @@ class Runtime:
                 client, bot_id = self.client, self.bot_id
                 can_dispatch = (client is not None and bot_id is not None and bool(settings.bot_token)
                                 and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
+                                and self.safety.status(settings.bot_token)["state"] == "ready"
                                 and not blocked and (settings.bot_api_mode == "cloud" or not self.network_write_error)
                                 and (not settings.proxy.enabled or proxy["state"] == "active"))
                 if self.config.managed_local_api and settings.bot_api_mode == "local":
@@ -272,14 +287,19 @@ class Runtime:
                 if not request or request.status != "awaiting_confirmation" or (request.expires_at or 0) <= time.time():
                     row.state = "obsolete"
                     return None
+            _, configured, _ = self.settings.read()
+            if self.safety.status(configured.bot_token)["state"] != "ready":
+                return None
             row.attempts += 1
             row.next_run_at = time.time() + 60
             return row.id, row.chat_id, row.payload, row.request_id
 
-    def notification_result(self, notification_id: str, message_id: int | None, permanent: bool, delay: float = 0) -> None:
+    def notification_result(self, notification_id: str, message_id: int | None, permanent: bool, delay: float = 0, deferred: bool = False) -> None:
         with self.db.transaction() as session:
             row = session.get(Notification, notification_id)
             assert row
+            if deferred:
+                row.attempts = max(0, row.attempts - 1)
             # Removal can commit while a Telegram send is already in flight.
             # Keep its acknowledgement for history, but never revive/retry it.
             request = session.get(MediaRequest, row.request_id) if row.request_id else None
@@ -332,8 +352,13 @@ class Runtime:
                     try:
                         message_id = await client.send(chat_id, payload["text"], callback)
                         await asyncio.to_thread(self.notification_result, row_id, message_id, False)
+                    except SafetyDeferred as exc:
+                        delay = max(1, (exc.retry_at or time.time() + 5) - time.time())
+                        await asyncio.to_thread(self.notification_result, row_id, None, False, delay, True)
                     except TelegramRetryAfter as exc:
-                        await asyncio.to_thread(self.notification_result, row_id, None, False, exc.retry_after)
+                        await asyncio.to_thread(self.notification_result, row_id, None, False, exc.retry_after, True)
+                    except TelegramUnauthorizedError:
+                        await asyncio.to_thread(self.notification_result, row_id, None, False, 5, True)
                     except (TelegramForbiddenError, TelegramBadRequest):
                         await asyncio.to_thread(self.notification_result, row_id, None, True)
                     except Exception:

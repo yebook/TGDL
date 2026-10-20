@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch as patch_method
 
 import uvicorn
 from fastapi import FastAPI
@@ -21,6 +22,32 @@ from app.core.security import password_hasher, private_file  # noqa: E402
 from app.db.models import Admin, Attempt, Job, MediaItem, MediaRequest  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.schemas.contracts import SettingsPatch  # noqa: E402
+
+
+def seed_request_safety(app: FastAPI, scenario: str) -> None:
+    """Fake only Telegram transport; exercise real guards, status and retry routes."""
+    if scenario not in {"auth", "throttled"}:
+        return
+    from app.bot.client import TelegramClient
+
+    token = "98765:offline-e2e-only-bot-token"
+    settings = app.state.settings
+    patch = SettingsPatch(revision=settings.read()[0], bot_token=token)
+    settings.save(patch, settings.candidate(patch))
+    safety = app.state.runtime.safety
+    if scenario == "throttled":
+        safety.observe(token, None, retry_after=600)
+    else:
+        safety.observe(token, None, unauthorized=True)
+
+    async def identity(client: TelegramClient, *, probe: bool = False) -> dict:
+        async def offline_identity() -> dict:
+            await asyncio.sleep(0.3)
+            return {"id": 98765, "username": "e2e_offline_bot"}
+
+        return await client.request(offline_identity, probe=probe)
+
+    patch_method.object(TelegramClient, "identity", identity).start()
 
 
 def seed(app: FastAPI) -> None:
@@ -99,6 +126,7 @@ def main() -> None:
         async def fixture_lifespan(application: FastAPI) -> AsyncIterator[None]:
             async with original_lifespan(application):
                 seed(application)
+                seed_request_safety(application, os.getenv("E2E_REQUEST_SAFETY", ""))
                 heartbeat = None
                 if config.managed_local_api:
                     service = application.state.runtime.local_api

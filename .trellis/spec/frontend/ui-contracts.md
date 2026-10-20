@@ -118,6 +118,14 @@ clear. Disable unavailable/concurrent controls; process restart is not container
 restart. Logout uncertainty needs a distinct explanatory acknowledgement, never
 an implicit ordinary retry. External mode honestly reports no process control.
 
+Bot request protection follows ../backend/request-safety-contracts.md. Show
+server cooldown, network backoff and credential pause as distinct Chinese
+states with retry deadlines. Use the saved-token explicit retry endpoint only
+on user action; do not auto-click or clear waits. Disable concurrent, stale or
+ineligible actions, use transient action feedback, and keep status polling from
+overwriting unsaved settings. Process running is separate from Bot connectivity
+and protection; never label the feature as guaranteed protection from bans.
+
 Wrong: present desired proxy settings as applied or discard unsaved settings on409. Correct: render supervisor acknowledgement, compare revisions before applying diagnostics, and retain user input on conflicts.
 
 Dependency build convention: keep pnpm's default release-age policy enabled in local and Docker installs. If a freshly published pinned dependency fails that policy, select an eligible stable version and regenerate the lock with policy enforced; do not add release-age exemptions. Verify manifest/importer/transitive family alignment, frozen install and the normal frontend checks. Any future workspace policy file must be copied before Docker's install step.

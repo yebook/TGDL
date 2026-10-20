@@ -81,6 +81,7 @@ def test_invalid_or_unauthorized_buttons_never_mutate_request(client: TestClient
 
 async def test_callback_transport_uses_visible_alert() -> None:
     telegram = object.__new__(TelegramClient)
+    telegram.safety = None
     telegram.bot = Mock()
     telegram.bot.answer_callback_query = AsyncMock()
     await telegram.answer("query", "确认已过期，请重新发送媒体")

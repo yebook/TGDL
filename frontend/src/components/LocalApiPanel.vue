@@ -3,9 +3,10 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { errorMessage, request } from '../api/client'
 import { cooldownText, localApiPhases, localApiStates, localApiTone, modeLabel } from '../api/localApi'
-import type { LocalApiStatus } from '../api/types'
+import type { BotRequestSafety, LocalApiStatus } from '../api/types'
+import { safetyLabels } from '../api/botSafety'
 
-const props = defineProps<{ status?: LocalApiStatus; bot?: { state: string; message: string }; detailed?: boolean; disabled?: boolean; stale?: boolean }>()
+const props = defineProps<{ status?: LocalApiStatus; bot?: { state: string; message: string; request_safety?: BotRequestSafety }; detailed?: boolean; disabled?: boolean; stale?: boolean }>()
 const emit = defineEmits<{ changed: [status: LocalApiStatus] }>()
 const busy = ref(false)
 let confirming = false
@@ -15,6 +16,8 @@ onMounted(() => { timer = setInterval(() => { now.value = Date.now() }, 1000) })
 onUnmounted(() => clearInterval(timer))
 const cooldown = computed(() => cooldownText(props.status?.cloud_available_at ?? null, now.value))
 const connection = computed(() => {
+  const safety = props.bot?.request_safety
+  if (safety && safety.state !== 'ready') return safetyLabels[safety.state]
   const state = props.bot?.state
   return state === 'connected' || state === 'online' ? 'Bot 已连接' : state === 'connecting' ? 'Bot 正在连接' : state === 'unconfigured' ? 'Bot 尚未配置' : 'Bot 未连接'
 })

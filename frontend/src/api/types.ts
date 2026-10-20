@@ -40,9 +40,13 @@ export interface LocalApiStatus {
   message: string; generation: string | null; last_heartbeat_at: string | null
   cloud_available_at: string | null; can_restart: boolean; can_retry: boolean
 }
+export interface BotRequestSafety {
+  state: 'ready' | 'throttled' | 'backoff' | 'auth_paused'
+  retry_at: string | null; message: string; can_retry: boolean
+}
 export interface SystemStatus {
   local_api: LocalApiStatus
-  bot: { state: string; username: string | null; message: string }
+  bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety }
   storage: { roots: StorageRoot[]; cache: { free_bytes: number | null; total_bytes: number | null } }
   proxy: Settings['proxy_status']; queue: { active: number; pending: number; concurrency: number }
   version: string; recovery: { blocked_jobs: number; message: string }

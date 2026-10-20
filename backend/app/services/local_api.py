@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,7 @@ from app.core.errors import AppError
 from app.core.security import Secrets, private_file
 from app.db.models import LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
+from app.services.request_safety import SafetyDeferred
 
 BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
 MESSAGES = {"idle": "", "draining": "等待当前下载和消息处理完成", "logging_out": "正在退出云端 Bot API",
@@ -64,7 +66,9 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
                      snapshot=crypto.encrypt(candidate.model_dump_json()), command_id=None,
                      credential_revision=settings.revision + 1, error_code="",
                      cloud_snapshot=crypto.encrypt(cloud_snapshot.model_dump_json()))
-        if token_changed and candidate.bot_token and state.get("applied_mode") == "local":
+        if token_changed and candidate.bot_token:
+            # A corrected/replaced credential must preflight and log out that
+            # target Bot, rather than repeatedly retry a rejected old token.
             state.update(logout_done=False, logout_required=True,
                          cloud_snapshot=crypto.encrypt(candidate.model_copy(update={"bot_api_mode": "cloud"}).model_dump_json()))
         row.values = state
@@ -212,6 +216,36 @@ class LocalApiService:
         if candidate.bot_api_mode == "cloud" and state.get("cloud_available_at", 0) > time.time():
             raise AppError("LOCAL_API_COOLDOWN", "Telegram 云端仍在冷却中", 409)
 
+    def recovery_candidate(self, saved: UserSettings) -> UserSettings:
+        """Permit only a saved-token identity probe, never an API transition.
+
+        Failed cloud preflight must remain recoverable without authorizing a
+        logout. Unknown outcomes and incomplete target startup remain blocked;
+        a proven running target permits identity recovery without mode commit.
+        """
+        try:
+            self.validate_allowed(saved)
+            return saved
+        except AppError:
+            state = self.read()
+            if not self.config.managed_local_api or state.get("phase") != "failed" or state.get("logout_uncertain"):
+                raise
+            if (state.get("applied_mode") == "cloud" and not state.get("logout_done")
+                    and state.get("cloud_available_at", 0) <= time.time()):
+                return saved.model_copy(update={"bot_api_mode": "cloud"})
+            # The target identity can be probed only after the known logout and
+            # the exact supervisor command have already completed. This does not
+            # commit applied_mode or retry any part of the transition.
+            applied = self.applied()
+            if (state.get("logout_done") and state.get("target_mode") == "local" and saved.bot_api_mode == "local"
+                    and state.get("command_id") and applied.get("command_id") == state["command_id"]
+                    and applied.get("state") == "running" and state.get("snapshot")):
+                target = UserSettings.model_validate_json(self.settings.secrets.decrypt(state["snapshot"]))
+                if all(getattr(saved, field) == getattr(target, field) for field in (
+                        "bot_token", "telegram_api_id", "telegram_api_hash")):
+                    return saved.model_copy(update={"bot_api_mode": "local"})
+            raise
+
     def control_cipher(self) -> Fernet:
         directory = self.config.local_api_control_dir
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -325,6 +359,7 @@ class LocalApiService:
                     cloud = (UserSettings.model_validate_json(self.settings.secrets.decrypt(state["cloud_snapshot"]))
                              if state.get("cloud_snapshot") else values.model_copy(update={"bot_api_mode": "cloud"}))
                     client = TelegramClient(cloud.bot_token, self.config, cloud)
+                    client.safety = runtime.safety
                     try:
                         # Known credential/proxy errors fail before the logout attempt.
                         await client.identity()
@@ -332,6 +367,13 @@ class LocalApiService:
                                                 cloud_available_at=time.time() + 630)
                         if not await client.logout():
                             raise RuntimeError("Logout not acknowledged")
+                    except (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError):
+                        # A local rejection is provably unsent; a Telegram 429/401 is
+                        # an explicit rejection, never an unknown logout outcome.
+                        auth_paused = (await asyncio.to_thread(runtime.safety.status, cloud.bot_token))["state"] == "auth_paused"
+                        await asyncio.to_thread(self.update, phase="failed" if auth_paused else "draining", logout_uncertain=False,
+                                                cloud_available_at=state.get("cloud_available_at", 0))
+                        return True
                     except Exception:
                         uncertain = (await asyncio.to_thread(self.read)).get("logout_uncertain", False)
                         await asyncio.to_thread(self.update, phase="logout_uncertain" if uncertain else "failed",
@@ -381,6 +423,7 @@ class LocalApiService:
                 if values.bot_token:
                     candidate = values.model_copy(update={"bot_api_mode": target})
                     client = TelegramClient(candidate.bot_token, self.config, candidate)
+                    client.safety = runtime.safety
                     try:
                         identity = await client.identity()
                         await asyncio.to_thread(runtime.remember_identity, identity)
@@ -389,6 +432,10 @@ class LocalApiService:
                 await asyncio.to_thread(self.update, applied_mode=target, phase="idle", operation_id=None,
                                         command_id=None, snapshot=None, cloud_snapshot=None, logout_done=target == "local", logout_required=False, error_code="")
                 return False
+        except (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError):
+            if (await asyncio.to_thread(runtime.safety.status, values.bot_token))["state"] == "auth_paused":
+                await asyncio.to_thread(self.update, phase="failed")
+            return True
         except Exception as exc:
             await asyncio.to_thread(self.update, phase="failed", error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED")
             return True

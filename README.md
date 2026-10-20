@@ -43,6 +43,8 @@ docker compose --env-file .env -f compose.yaml ps
 
 首次管理员初始化使用 `TGD_HOST_DATA` 目录中的一次性 `bootstrap.key`，无通用默认密码。配置、密钥和数据库应一起备份；媒体文件单独备份。应用镜像和隔离容器验收已有本地结果，真实 Telegram、大文件、代理链路及飞牛 OS 实机验收仍待完成。
 
+云端和本地模式均内置请求节流、限流等待、网络退避及认证失败暂停。WebUI 显示原因和恢复时间，系统状态提供“重试 Bot 连接”；重启应用不清除同一凭据的冷却。无需新增必填设置，详见 [请求保护与处理方式](docs/operations.md#telegram-请求等待与认证暂停)。这些措施减少不必要请求，不保证 Telegram 不限制 Bot 或关联账号。
+
 ## 开发与验证
 
 后端位于 `backend/`，前端位于 `frontend/`。使用 Python 3.12、uv 和 Node/pnpm。

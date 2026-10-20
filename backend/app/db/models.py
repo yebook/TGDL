@@ -29,6 +29,12 @@ class LocalApiRuntime(Base):
     values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class RequestSafety(Base):
+    __tablename__ = "request_safety"
+    credential: Mapped[str] = mapped_column(String(64), primary_key=True)
+    values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class Admin(Base):
     __tablename__ = "admins"
     id: Mapped[int] = mapped_column(primary_key=True, default=1)

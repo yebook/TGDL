@@ -97,10 +97,18 @@ class TaskDetail(TaskSummary):
     expires_at: str | None
 
 
+class RequestSafetyStatus(BaseModel):
+    state: Literal["ready", "throttled", "backoff", "auth_paused"]
+    retry_at: str | None
+    message: str
+    can_retry: bool
+
+
 class BotStatus(BaseModel):
     state: Literal["unconfigured", "connecting", "online", "error"]
     username: str
     message: str
+    request_safety: RequestSafetyStatus
 
 
 class RootStatus(BaseModel):

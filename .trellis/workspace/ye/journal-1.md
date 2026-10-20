@@ -687,3 +687,36 @@ Matched user-provided backend and browser failure logs; corrected same-title del
 ### Next Steps
 
 - Push repair and confirm GitHub Linux CI; Docker daemon currently stopped, no production or Telegram operations performed.
+
+
+## Session 23: Persistent Telegram request safety
+
+**Date**: 2026-10-20
+**Task**: Persistent Telegram request safety
+**Branch**: `main`
+
+### Summary
+
+Added shared cloud/local request pacing, persistent cooldown/auth pause/backoff, protected manual recovery and WebUI status; isolated mock acceptance, no real Telegram or user deployment.
+
+### Main Changes
+
+- Shared persisted guard for all Telegram clients and cloud file HTTP; preserve retry budgets, acquisition ownership and migration ambiguity.
+- WebUI reason/deadline/manual recovery; documentation and independent boundary fixes; CI adds two isolated browser scenarios.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Frontend lint/typecheck/build and all 47 unit tests passed; two real REST browser scenarios and desktop/mobile screenshot review passed.
+- [OK] Changed Markdown UTF-8/fences/portable paths and 44 relative links/anchors passed. Final backend suite recorded in docs/verification.md.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Real Telegram, greater-than-20MB, proxy and fnOS acceptance remain pending; Docker was not started or updated.

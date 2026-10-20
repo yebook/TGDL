@@ -26,10 +26,12 @@ from app.db.models import (
     MediaItem,
     MediaRequest,
     PublishJournal,
+    RequestSafety,
     Settings,
     StoredFile,
 )
 from app.db.session import Database
+from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.tasks import project
 from app.storage.files import (
     StorageManager,
@@ -58,9 +60,13 @@ class DownloadWorker:
     def __init__(self, db: Database, storage: StorageManager, config: Config, boot_id: str) -> None:
         self.db, self.storage, self.config, self.boot_id = db, storage, config, boot_id
         self.progress_times: dict[str, float] = {}
+        self.credential_hash = ""
 
     def claim(self, bot_id: int | None = None, mode: str | None = None) -> str | None:
         with self.db.transaction() as session:
+            safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
+            if safety and RequestSafetyService.blocked(safety.values, time.time()):
+                return None
             if self.config.managed_local_api:
                 local = session.get(LocalApiRuntime, 1)
                 if not local or local.values.get("phase") != "idle":
@@ -317,6 +323,10 @@ class DownloadWorker:
                 await asyncio.to_thread(self.failed, job_id, "INTERRUPTED", "本地保存已中断，等待重试", True)
             raise
         except Exception as exc:
+            if isinstance(exc, (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError)):
+                delay = (exc.retry_at or time.time() + 5) - time.time() if isinstance(exc, SafetyDeferred) else float(exc.retry_after) if isinstance(exc, TelegramRetryAfter) else 5
+                await asyncio.to_thread(self.failed, job_id, "BOT_REQUEST_PAUSED", "Telegram 请求已暂停，任务将在恢复后继续", True, False, max(1, delay))
+                return
             uncertain = not cloud and phase == "fetching" and not isinstance(exc, (AppError, TelegramRetryAfter, TelegramBadRequest, TelegramUnauthorizedError))
             code, message, retry, delay = self.classify(exc)
             await asyncio.to_thread(self.failed, job_id, code, message, retry, uncertain, delay)
@@ -415,6 +425,9 @@ class DownloadWorker:
                 job.error_message = "本地 Bot API 可能仍在获取文件；请重启该服务以安全恢复并发槽"
             elif job.cancel_requested or code == "CANCELLED":
                 job.state, job.phase, job.finished_at = "cancelled", "cancelled", time.time()
+            elif code == "BOT_REQUEST_PAUSED":
+                job.state, job.phase = "retry_wait", "retry_wait"
+                job.next_run_at = time.time() + max(1, delay)
             elif retry and job.auto_retries < job.max_auto_retries:
                 job.auto_retries += 1
                 job.state, job.phase = "retry_wait", "retry_wait"

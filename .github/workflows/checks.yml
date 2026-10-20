@@ -80,3 +80,13 @@ jobs:
         working-directory: frontend
       - run: pnpm test:e2e
         working-directory: frontend
+      - name: Bot authentication pause and manual recovery
+        run: pnpm exec playwright test --config playwright.safety.config.ts
+        working-directory: frontend
+        env:
+          E2E_REQUEST_SAFETY: auth
+      - name: Bot request cooldown cannot be bypassed
+        run: pnpm exec playwright test --config playwright.safety.config.ts
+        working-directory: frontend
+        env:
+          E2E_REQUEST_SAFETY: throttled
