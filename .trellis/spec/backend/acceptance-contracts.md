@@ -46,6 +46,11 @@ Also read the isolated Docker runner contract below before editing
   destructive browser cases their own query-scoped records; do not reuse fixtures
   whose states earlier cancel/retry cases mutate. Screenshot evidence waits for
   checked states, settled dialogs and final layout rather than transition frames.
+- Search/detail checks must use a query scoped to their intended fixture when
+  asserting exactly one row. For example, `E2E mixed group` isolates `e2e-mixed`,
+  while `mixed` also matches the independent `Delete fixture mixed group` record.
+  Keep exact result count and detail assertions; do not choose the first match
+  to hide shared fixture collisions.
 - Polling timing/failure regressions may delay and continue a real request or
   abort one request to simulate network loss. Do not synthesize successful REST
   bodies. Assert retained nodes/layout/scroll while the real request is pending,

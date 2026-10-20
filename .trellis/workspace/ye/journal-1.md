@@ -656,3 +656,34 @@ Implemented application credentials, durable API transitions, observable supervi
 ### Next Steps
 
 - User obtains API credentials, initiates WebUI switch and validates actual Telegram >20 MB, proxy and fnOS behavior; task remains in progress.
+
+
+## Session 22: Fix initial GitHub CI regression assertions
+
+**Date**: 2026-10-20
+**Task**: Fix initial GitHub CI regression assertions
+**Branch**: `main`
+
+### Summary
+
+Matched user-provided backend and browser failure logs; corrected same-title deletion identity assertions and overlapping browser fixture search without production changes.
+
+### Main Changes
+
+- Deletion regression asserts deleted and surviving full IDs; browser query scopes to E2E mixed group; updated executable test contracts and verification notes.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Locked sync, Ruff, mypy27; backend172pass3WindowsPOSIXskip; frontend45unit+static/build; affected4browser; deletion22/network11/scripts19 passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Push repair and confirm GitHub Linux CI; Docker daemon currently stopped, no production or Telegram operations performed.

@@ -39,7 +39,7 @@ test('login/logout invalidates the actual server session', async ({ page }) => {
 
 test('search/filter/detail and desktop/mobile pages render without overflow', async ({ page }) => {
   await login(page)
-  await page.getByLabel('搜索名称或任务编号').fill('mixed')
+  await page.getByLabel('搜索名称或任务编号').fill('E2E mixed group')
   await page.getByRole('button', { name: '搜索', exact: true }).click()
   await expect(page.locator('.task-row')).toHaveCount(1)
   await page.locator('.status-filter').click()

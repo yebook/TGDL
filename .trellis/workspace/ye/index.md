@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 21
+- **Total Sessions**: 22
 - **Last Active**: 2026-10-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~658 | Active |
+| `journal-1.md` | ~689 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 22 | 2026-10-20 | Fix initial GitHub CI regression assertions | - | `main` |
 | 21 | 2026-10-20 | WebUI managed local Bot API | - | `main` |
 | 20 | 2026-10-20 | Separate task titles and full identifiers | - | `main` |
 | 19 | 2026-10-20 | Document local Bot API migration and application credentials | - | `main` |

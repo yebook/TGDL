@@ -137,7 +137,10 @@ def test_delete_preserves_files_dedup_ingestion_and_frozen_history(authenticated
     ingest.message(7, {"message_id": 3, "from": {"id": 42}, "chat": {"id": 42, "type": "private"}, "text": "/status"}, "status")
     with state.db.sessions() as session:
         reply = session.scalar(select(Notification).where(Notification.event_key == "reply:status"))
-        assert snapshot[0] not in reply.payload["text"]
+        # Distinct requests may intentionally share their frozen display title.
+        assert snapshot[0] in reply.payload["text"]
+        assert request_id not in reply.payload["text"]
+        assert next_id in reply.payload["text"]
 
 
 def test_removed_notification_results_never_revive_or_retry(authenticated: TestClient) -> None:

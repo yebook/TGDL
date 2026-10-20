@@ -74,6 +74,10 @@ checks; old-row migration and restart persistence. Target UI selection/polling,
 cancelled confirmation, single/batch success/failure, pagination and mobile controls
 through actual APIs. Never perform deletion against the user's local deployment.
 
+Task display titles are not unique. In Bot `/status` deletion checks, assert the
+deleted full request ID is absent and the retained request ID is present. Include
+a same-title surviving request: its title may still appear after deletion.
+
 ## 7. Wrong vs Correct
 
 Wrong: determine eligibility only from the rendered status and hard-delete a
