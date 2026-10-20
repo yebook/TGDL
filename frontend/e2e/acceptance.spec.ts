@@ -1,0 +1,482 @@
+import { expect, test, type Page } from '@playwright/test'
+
+async function login(page: Page) {
+  await page.goto('/')
+  await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
+  await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '下载任务', exact: true })).toBeVisible()
+}
+
+async function settings(page: Page) {
+  await page.getByRole('link', { name: '设置', exact: true }).click()
+  await expect(page.locator('#confirmation-timeout')).toBeVisible()
+}
+
+async function noOverflow(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+}
+
+async function settle(page: Page, selector: string) {
+  await page.locator(selector).evaluate(async element => {
+    // Vue applies enter classes on the next frames; wait until finite CSS transitions actually exist.
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    await Promise.all(element.getAnimations({ subtree: true })
+      .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+      .map(animation => animation.finished.catch(() => {})))
+  })
+}
+
+test('login/logout invalidates the actual server session', async ({ page }) => {
+  await login(page)
+  await expect(page.locator('.task-row')).toHaveCount(20)
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await expect(page.getByRole('heading', { name: '登录管理界面' })).toBeVisible()
+  expect((await page.request.get('/api/v1/tasks')).status()).toBe(401)
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '登录管理界面' })).toBeVisible()
+})
+
+test('search/filter/detail and desktop/mobile pages render without overflow', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('搜索名称或任务编号').fill('mixed')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  await expect(page.locator('.task-row')).toHaveCount(1)
+  await page.locator('.status-filter').click()
+  await page.getByRole('option', { name: '部分完成', exact: true }).click()
+  await expect(page.locator('.task-row')).toHaveCount(1)
+  await page.locator('.task-row .task-name').click()
+  await expect(page.locator('.media-card')).toHaveCount(2)
+  await expect(page.locator('.detail-meta')).toContainText('groups/2026-10/e2e-mixed')
+  await noOverflow(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await noOverflow(page)
+  await page.keyboard.press('Escape')
+  await settings(page)
+  await noOverflow(page)
+  await page.getByRole('link', { name: '系统状态', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '系统状态', exact: true })).toBeVisible()
+  await noOverflow(page)
+})
+
+test('complete task identifier remains readable on desktop and mobile', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('搜索名称或任务编号').fill('E2E full identifier')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  const identifier = page.locator('.task-id')
+  await expect(identifier).toHaveText('编号：e5f6a7b80123456789abcdef01234567')
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    await expect(identifier).toBeVisible()
+    expect(await identifier.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await noOverflow(page)
+    await page.screenshot({ path: `../.runtime/task-title-id-${width}.png`, fullPage: true })
+  }
+})
+
+for (const viewport of [{ width: 1440, height: 600 }, { width: 390, height: 600 }]) {
+  test(`automatic empty task polling preserves content and scroll at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await login(page)
+    await page.getByLabel('搜索名称或任务编号').fill('no-matching-e2e-media')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(page.locator('.el-empty')).toContainText('没有符合条件的任务')
+    await expect(page.locator('.task-refresh-status')).toBeEmpty()
+    await page.locator('.list-footer').scrollIntoViewIfNeeded()
+
+    const geometry = () => page.evaluate(() => {
+      const panel = document.querySelector('.task-panel')!.getBoundingClientRect()
+      const main = document.querySelector('.main-content')!
+      return { height: panel.height, top: panel.top, mainScroll: main.scrollTop, windowScroll: window.scrollY, scrollHeight: main.scrollHeight }
+    })
+    const baseline = await geometry()
+    const guard = await page.evaluateHandle(() => {
+      const empty = document.querySelector('.el-empty')!
+      const state = { removed: false, observer: new MutationObserver(() => { if (!empty.isConnected) state.removed = true }) }
+      state.observer.observe(document.querySelector('.task-panel')!, { childList: true, subtree: true })
+      return state
+    })
+    let release: (() => void) | undefined
+    let pending = 0
+    // Delay real backend requests to inspect the loading interval; never replace successful API responses.
+    await page.route('**/api/v1/tasks?*', async route => {
+      pending++
+      await new Promise<void>(resolve => { release = resolve })
+      if (pending === 2) await route.abort('connectionfailed')
+      else await route.continue()
+    })
+    try {
+      for (let cycle = 1; cycle <= 2; cycle++) {
+        await expect.poll(() => pending, { timeout: 6000 }).toBe(cycle)
+        await expect(page.locator('.task-refresh-status')).toBeEmpty()
+        await expect(page.locator('.el-empty')).toBeVisible()
+        expect(await geometry()).toEqual(baseline)
+        const response = cycle === 1 ? page.waitForResponse('**/api/v1/tasks?*') : undefined
+        release!()
+        if (response) await response
+        if (cycle === 2) await expect(page.locator('.task-refresh-status')).toContainText('更新失败，保留上次结果')
+        expect(await geometry()).toEqual(baseline)
+      }
+      expect(await guard.evaluate(state => state.removed)).toBe(false)
+      await page.unroute('**/api/v1/tasks?*')
+      await expect(page.locator('.task-refresh-status')).toBeEmpty({ timeout: 6000 })
+      await expect(page.getByLabel('搜索名称或任务编号')).toHaveValue('no-matching-e2e-media')
+      expect(await geometry()).toEqual(baseline)
+      expect(await guard.evaluate(state => state.removed)).toBe(false)
+      await noOverflow(page)
+    } finally {
+      release?.()
+      await guard.evaluate(state => state.observer.disconnect())
+    }
+  })
+}
+
+test('queued cancellation persists in database after reload', async ({ page }) => {
+  await login(page)
+  await page.locator('.task-row').filter({ hasText: 'E2E queued video' }).locator('.task-name').click()
+  await page.getByRole('button', { name: '取消下载', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消', exact: true }).click()
+  await expect(page.locator('.detail-heading')).toContainText('已取消')
+  await page.reload()
+  const response = await page.request.get('/api/v1/tasks/e2e-queued')
+  const task = await response.json()
+  expect(task.status).toBe('cancelled')
+  expect(task.items[0].status).toBe('cancelled')
+})
+
+test('retry queues only failed file and preserves saved sibling and history', async ({ page }) => {
+  await login(page)
+  await page.locator('.task-row').filter({ hasText: 'E2E mixed group' }).locator('.task-name').click()
+  await page.getByRole('button', { name: '重试失败文件' }).click()
+  await expect(page.getByRole('button', { name: '重试失败文件' })).toHaveCount(0)
+  const task = await (await page.request.get('/api/v1/tasks/e2e-mixed')).json()
+  expect(task.items.map((item: { status: string }) => item.status)).toEqual(['succeeded', 'queued'])
+  expect(task.items[1].attempts).toHaveLength(1)
+  expect(task.items[1].attempts[0].error_code).toBe('SIMULATED_FAILURE')
+  expect(task.effective_destination).toBe('groups/2026-10/e2e-mixed')
+})
+
+test('settings persist and two real sessions conflict without losing edits', async ({ page, browser }) => {
+  await login(page)
+  await settings(page)
+  await expect(page.locator('#confirmation-timeout')).toHaveValue('30')
+  await expect(page.locator('#download-concurrency')).toHaveValue('3')
+  await page.locator('#confirmation-timeout').fill('10')
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.getByText('设置已保存，请查看各项生效状态。')).toBeVisible()
+  await page.reload()
+  await expect(page.locator('#confirmation-timeout')).toHaveValue('10')
+
+  const otherContext = await browser.newContext()
+  try {
+    const other = await otherContext.newPage()
+    await login(other)
+    await settings(other)
+    await page.locator('#confirmation-timeout').fill('15')
+    await other.locator('#download-concurrency').fill('4')
+    await other.getByRole('button', { name: '保存设置' }).click()
+    await expect(other.getByText('设置已保存，请查看各项生效状态。')).toBeVisible()
+    await page.getByRole('button', { name: '保存设置' }).click()
+    await expect(page.getByText('配置已被其他会话修改。你的输入已保留，请先重新读取，再应用修改。')).toBeVisible()
+    await expect(page.locator('#confirmation-timeout')).toHaveValue('15')
+    const actual = await (await page.request.get('/api/v1/settings')).json()
+    expect(actual.values.confirmation_timeout_seconds).toBe(600)
+    expect(actual.values.download_concurrency).toBe(4)
+    await page.getByRole('button', { name: '重新读取', exact: true }).click()
+    await page.getByRole('button', { name: '放弃并读取' }).click()
+    await expect(page.locator('#confirmation-timeout')).toHaveValue('10')
+    await expect(page.locator('#download-concurrency')).toHaveValue('4')
+  } finally { await otherContext.close() }
+})
+
+test('legacy second durations survive minute display and unrelated settings saves', async ({ page }) => {
+  await login(page)
+  const initial = await (await page.request.get('/api/v1/settings')).json()
+  const csrf = (await (await page.request.get('/api/v1/auth/me')).json()).csrf_token
+  try {
+    for (const seconds of [30, 31, 90]) {
+      const saved = await (await page.request.get('/api/v1/settings')).json()
+      expect((await page.request.patch('/api/v1/settings', { headers: { 'X-CSRF-Token': csrf }, data: { revision: saved.revision, confirmation_timeout_seconds: seconds } })).ok()).toBe(true)
+      await page.reload()
+      await settings(page)
+      await expect(page.getByLabel('确认有效期（分钟）', { exact: true })).toHaveValue(String(seconds / 60))
+      await page.locator('#download-concurrency').fill(String(saved.values.download_concurrency === 4 ? 3 : 4))
+      await page.getByRole('button', { name: '保存设置' }).click()
+      await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+      expect((await (await page.request.get('/api/v1/settings')).json()).values.confirmation_timeout_seconds).toBe(seconds)
+    }
+  } finally {
+    const saved = await (await page.request.get('/api/v1/settings')).json()
+    await page.request.patch('/api/v1/settings', { headers: { 'X-CSRF-Token': csrf }, data: { revision: saved.revision, confirmation_timeout_seconds: initial.values.confirmation_timeout_seconds, download_concurrency: initial.values.download_concurrency } })
+  }
+})
+
+test('Bot API mode switches offline in one settings form and persists without validation', async ({ page }) => {
+  await login(page)
+  await settings(page)
+  const original = await (await page.request.get('/api/v1/settings')).json()
+  let validationRequests = 0
+  page.on('request', req => { if (new URL(req.url()).pathname.endsWith('/settings/validate')) validationRequests++ })
+  const mode = page.getByLabel('Bot API 服务', { exact: true })
+  const modeSelect = page.locator('.el-select').filter({ has: mode })
+  await modeSelect.click()
+  await page.getByRole('option', { name: 'Telegram 官方云端', exact: true }).click()
+  await expect(page.locator('.mode-hint')).toContainText('只需 Bot Token，无需 API ID / Hash。单个文件最多下载 20 MB。')
+  await expect(page.locator('.mode-hint')).toBeVisible()
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+  await page.reload()
+  await expect(modeSelect).toContainText('Telegram 官方云端')
+  expect((await (await page.request.get('/api/v1/settings')).json()).values.bot_api_mode).toBe('cloud')
+  await page.setViewportSize({ width: 390, height: 600 })
+  await modeSelect.click()
+  await page.getByRole('option', { name: '本地 Bot API', exact: true }).click()
+  await expect(page.locator('.mode-hint')).toContainText('支持超过 20 MB')
+  await expect(page.locator('.mode-hint')).toContainText('API ID / Hash')
+  await expect(page.locator('.mode-hint')).toContainText('logOut')
+  await page.getByRole('button', { name: '校验配置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('配置校验通过（未配置 Bot）')
+  expect((await (await page.request.get('/api/v1/settings')).json()).values.bot_api_mode).toBe('cloud')
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+  expect(validationRequests).toBe(1)
+  const saved = await (await page.request.get('/api/v1/settings')).json()
+  expect(saved.values.bot_api_mode).toBe('local')
+  expect(saved.values.allowed_user_ids).toEqual(original.values.allowed_user_ids)
+  expect(saved.values.download_concurrency).toBe(original.values.download_concurrency)
+  await noOverflow(page)
+})
+
+test('custom Bot and filename templates preview, reject mistakes and persist offline', async ({ page }, testInfo) => {
+  await login(page)
+  await settings(page)
+  const original = await (await page.request.get('/api/v1/settings')).json()
+  const confirmation = '准备保存 {file_count} 个文件，共 {total_size}\n{files}\n目录：{destination}'
+  const filename = '{date}_{type}_{index}_{name}_{id}'
+  await page.locator('#confirmation-template').fill(confirmation)
+  await page.locator('#filename-template').fill(filename)
+  await expect(page.getByTestId('filename-preview')).toHaveText('20261020_video_1_海边日落_a1b2c3d4.mp4')
+  await expect(page.getByTestId('confirmation-preview')).toContainText('共 12.5 MB')
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+  await page.reload()
+  await expect(page.locator('#confirmation-template')).toHaveValue(confirmation)
+  await expect(page.locator('#filename-template')).toHaveValue(filename)
+  const saved = await (await page.request.get('/api/v1/settings')).json()
+  expect(saved.values.confirmation_template).toBe(confirmation)
+  expect(saved.values.filename_template).toBe(filename)
+  let saveRequests = 0
+  page.on('request', req => { if (req.method() === 'PATCH' && new URL(req.url()).pathname.endsWith('/settings')) saveRequests++ })
+  await page.locator('#confirmation-template').fill('{unknown}')
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('模板变量或括号无效')
+  await expect(page.locator('#confirmation-template')).toHaveValue('{unknown}')
+  await page.getByRole('button', { name: '恢复默认提示' }).click()
+  await page.locator('#filename-template').fill('../{name}')
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('文件名模板不能包含路径')
+  expect(saveRequests).toBe(0)
+  expect(await (await page.request.get('/api/v1/settings')).json()).toEqual(saved)
+  await page.getByRole('button', { name: '恢复默认文件名' }).click()
+  await expect(page.locator('#filename-template')).toHaveValue('{name}_{id}')
+  const rules = page.locator('details').filter({ has: page.getByText('命名示例与模板规则', { exact: true }) })
+  await expect(rules).not.toHaveAttribute('open', '')
+  await rules.locator('summary').focus()
+  await page.keyboard.press('Enter')
+  await expect(rules).toHaveAttribute('open', '')
+  await expect(rules).toContainText('恢复默认只修改表单，仍需保存设置。')
+  await page.keyboard.press('Enter')
+  await expect(rules).not.toHaveAttribute('open', '')
+  for (const viewport of [{ width: 1440, height: 600 }, { width: 390, height: 600 }]) {
+    await page.setViewportSize(viewport)
+    await page.locator('#filename-template').evaluate(element => element.blur())
+    await page.locator('#filename-template').focus()
+    await expect(page.locator('#filename-template')).toBeInViewport({ ratio: 1 })
+    const dock = await page.locator('.save-bar').boundingBox()
+    const scroll = await page.locator('.settings-scroll').boundingBox()
+    const field = await page.locator('#filename-template').boundingBox()
+    expect(dock && scroll && Math.abs(scroll.y + scroll.height - dock.y) <= 1).toBeTruthy()
+    expect(dock && field && field.y + field.height <= dock.y).toBeTruthy()
+    await noOverflow(page)
+    await page.screenshot({ path: testInfo.outputPath(`settings-templates-${viewport.width}.png`) })
+  }
+  // Return fixture settings to their original values for the following cases.
+  await page.locator('#confirmation-template').fill(original.values.confirmation_template)
+  await page.locator('#filename-template').fill(original.values.filename_template)
+  await page.getByRole('button', { name: '保存设置' }).click()
+  await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.getByRole('heading', { name: '提示与文件命名', exact: true }).scrollIntoViewIfNeeded()
+  const editor = await page.locator('.template-editor').first().boundingBox()
+  const preview = await page.locator('.template-preview').first().boundingBox()
+  expect(editor && preview && preview.x >= editor.x + editor.width).toBeTruthy()
+  await page.screenshot({ path: testInfo.outputPath('settings-help-desktop.png') })
+  await page.setViewportSize({ width: 390, height: 600 })
+  await page.locator('#filename-template').evaluate(element => element.blur())
+  await page.locator('#filename-template').focus()
+  await page.screenshot({ path: testInfo.outputPath('settings-help-mobile.png') })
+})
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 390, height: 600 }]) {
+  test(`offline Bot save and manual feedback stay visible at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport)
+    await login(page)
+    await settings(page)
+    const token = '123456:synthetic-e2e-offline-token'
+    let validationRequests = 0
+    page.on('request', req => { if (new URL(req.url()).pathname.endsWith('/settings/validate')) validationRequests++ })
+    await page.locator('#bot-token').fill(token)
+    await page.locator('#user-ids').fill('42\n43')
+    await page.getByRole('button', { name: '保存设置' }).click()
+    await expect(page.getByText('设置已保存，请查看各项生效状态。')).toBeVisible()
+    expect(validationRequests).toBe(0)
+    const saved = await (await page.request.get('/api/v1/settings')).json()
+    expect(saved.configured.bot_token).toBe(true)
+    expect(saved.values.allowed_user_ids).toEqual([42, 43])
+    expect(JSON.stringify(saved)).not.toContain(token)
+
+    // Toasts remain visible without adding height to the bottom action row.
+    await page.getByLabel('启用代理', { exact: true }).scrollIntoViewIfNeeded()
+    const versions = page.locator('details').filter({ has: page.getByText('查看应用版本与状态说明', { exact: true }) })
+    await versions.locator('summary').focus()
+    await page.keyboard.press('Enter')
+    await expect(versions).toHaveAttribute('open', '')
+    await expect(versions).toContainText('期望版本')
+    await expect(versions).toContainText('不包含尚未保存的修改')
+    await page.getByRole('button', { name: '校验配置' }).click()
+    const feedback = page.locator('.el-message').last()
+    await expect(feedback).toContainText('无法验证 Bot')
+    await expect(feedback).toBeInViewport({ ratio: 1 })
+    await expect(page.getByRole('button', { name: '校验配置' })).toBeInViewport({ ratio: 1 })
+    const dock = await page.locator('.save-bar').boundingBox()
+    const scroll = await page.locator('.settings-scroll').boundingBox()
+    expect(dock && Math.abs(dock.y + dock.height - viewport.height) <= 1).toBeTruthy()
+    expect(dock && scroll && Math.abs(scroll.y + scroll.height - dock.y) <= 1).toBeTruthy()
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true)
+    // Scrolling cannot reveal content beneath the dock or move the action region off the viewport.
+    await page.locator('.settings-scroll').evaluate(element => { element.scrollTop = element.scrollHeight / 2 })
+    expect(await page.locator('.save-bar').boundingBox()).toEqual(dock)
+    expect(validationRequests).toBe(1)
+    await expect(page.locator('.settings-feedback')).toHaveCount(0)
+    expect(await (await page.request.get('/api/v1/settings')).json()).toEqual(saved)
+    await noOverflow(page)
+    await settle(page, '.app-shell')
+    await page.screenshot({ path: testInfo.outputPath(`settings-feedback-${viewport.width}.png`) })
+    await page.getByLabel('启用代理', { exact: true }).focus()
+    const lastField = await page.locator('#proxy-enabled').boundingBox()
+    const bar = await page.locator('.save-bar').boundingBox()
+    expect(lastField && bar && lastField.y + lastField.height <= bar.y).toBeTruthy()
+    // Expand the final section and focus its final field; the dock reserves real layout space.
+    await page.locator('.el-switch').click()
+    await page.locator('#proxy-password').focus()
+    await expect(page.locator('#proxy-password')).toBeInViewport({ ratio: 1 })
+    const passwordField = await page.locator('#proxy-password').boundingBox()
+    expect(passwordField && bar && passwordField.y + passwordField.height <= bar.y).toBeTruthy()
+    await page.screenshot({ path: testInfo.outputPath(`settings-dock-focus-${viewport.width}.png`) })
+    await page.locator('.el-switch').click()
+
+    // Validate an unsaved clear candidate against the real endpoint, then verify persistence is untouched.
+    await page.getByText('清除已保存的 Token', { exact: true }).click()
+    await expect(page.getByLabel('清除已保存的 Token', { exact: true })).toBeChecked()
+    await page.getByRole('button', { name: '校验配置' }).click()
+    await expect(feedback).toContainText('配置校验通过（未配置 Bot）')
+    await expect(feedback).toBeInViewport({ ratio: 1 })
+    expect(await (await page.request.get('/api/v1/settings')).json()).toEqual(saved)
+    await page.getByRole('button', { name: '保存设置' }).click()
+    await expect(feedback).toContainText('设置已保存')
+  })
+}
+
+test('task selection survives polling and single/batch deletion preserves files on desktop/mobile', async ({ page }, testInfo) => {
+  await login(page)
+  await page.getByLabel('搜索名称或任务编号').fill('Delete fixture')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  const savedRow = page.locator('.task-row').filter({ hasText: 'Delete fixture saved image' })
+  const mixedRow = page.locator('.task-row').filter({ hasText: 'Delete fixture mixed group' })
+  const queuedRow = page.locator('.task-row').filter({ hasText: 'Delete fixture queued video' })
+  await expect(queuedRow.getByRole('checkbox')).toBeDisabled()
+  await expect(queuedRow.getByRole('button', { name: '删除任务' })).toBeDisabled()
+  await savedRow.getByRole('checkbox').focus()
+  await page.keyboard.press('Space')
+  await expect(page.locator('.task-selection')).toContainText('已选 1 条')
+  await page.waitForResponse('**/api/v1/tasks?*')
+  await expect(savedRow.getByRole('checkbox')).toBeChecked()
+  await page.getByLabel('搜索名称或任务编号').fill('mixed')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  await expect(page.locator('.task-selection')).toContainText('已选 0 条')
+  await page.getByLabel('搜索名称或任务编号').fill('Delete fixture')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  await expect(page.locator('.task-row')).toHaveCount(3)
+  await page.getByText('全选本页', { exact: true }).click()
+  await expect(page.locator('.task-selection')).toContainText('已选 2 条')
+  await noOverflow(page)
+  await expect(savedRow.getByRole('checkbox')).toBeChecked()
+  await expect(mixedRow.getByRole('checkbox')).toBeChecked()
+  await settle(page, '.task-panel')
+  await page.screenshot({ path: testInfo.outputPath('task-selection-desktop.png') })
+  await savedRow.locator('.task-name').click()
+  await page.getByRole('button', { name: '删除任务', exact: true }).click()
+  await expect(page.getByText('仅删除任务记录，保留已下载文件。', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: '保留任务', exact: true }).click()
+  expect((await page.request.get('/api/v1/tasks/delete-done')).status()).toBe(200)
+  await page.getByRole('button', { name: '删除任务', exact: true }).click()
+  await page.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(page.locator('.el-drawer')).not.toBeVisible()
+  await expect(page.locator('.task-row')).toHaveCount(2)
+  expect((await page.request.get('/api/v1/tasks/delete-done')).status()).toBe(404)
+
+  await page.setViewportSize({ width: 390, height: 600 })
+  await queuedRow.locator('.task-name').click()
+  await page.getByRole('button', { name: '取消下载', exact: true }).click()
+  await page.getByRole('button', { name: '确认取消', exact: true }).click()
+  await expect(page.locator('.detail-heading')).toContainText('已取消')
+  await page.keyboard.press('Escape')
+  await expect(queuedRow.getByRole('checkbox')).toBeEnabled()
+  // The saved item's selection survives its sibling's cancellation; toggle to select both.
+  if (await page.getByRole('checkbox', { name: '全选本页' }).isChecked()) {
+    await page.getByText('全选本页', { exact: true }).click()
+  }
+  await page.getByText('全选本页', { exact: true }).click()
+  await expect(page.locator('.task-selection')).toContainText('已选 2 条')
+  await expect(mixedRow.getByRole('checkbox')).toBeChecked()
+  await page.route('**/api/v1/tasks/delete', route => route.fulfill({ status: 409, json: { error: { code: 'TASK_DELETE_BUSY', message: '任务状态已变化，请刷新后重试。' } } }))
+  await page.getByRole('button', { name: '删除所选' }).click()
+  await page.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(page.locator('.el-message').last()).toContainText('任务状态已变化')
+  await expect(page.locator('.el-message-box')).not.toBeVisible()
+  await expect(page.locator('.task-selection')).toContainText('已选 2 条')
+  await page.unroute('**/api/v1/tasks/delete')
+  await noOverflow(page)
+  await page.locator('.el-message__closeBtn').last().click()
+  await expect(page.locator('.el-message')).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('heading', { name: '下载任务', exact: true }).scrollIntoViewIfNeeded()
+  await settle(page, '.task-panel')
+  await page.screenshot({ path: testInfo.outputPath('task-selection-mobile.png') })
+  await page.getByRole('button', { name: '删除所选' }).click()
+  await expect(page.locator('.el-message-box')).toBeVisible()
+  await settle(page, 'body')
+  await expect.poll(() => page.locator('.el-message-box').evaluate(element => `${getComputedStyle(element).opacity}|${getComputedStyle(element).transform}`)).toBe('1|none')
+  await page.screenshot({ path: testInfo.outputPath('task-delete-confirm-mobile.png') })
+  await page.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(page.locator('.el-empty')).toContainText('没有符合条件的任务')
+  await page.reload()
+  expect((await (await page.request.get('/api/v1/tasks?q=Delete+fixture')).json()).total).toBe(0)
+})
+
+test('task selection clears on pagination and deleting the final page returns to previous page', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('搜索名称或任务编号').fill('Pagination fixture')
+  await page.getByRole('button', { name: '搜索', exact: true }).click()
+  await expect(page.locator('.task-row')).toHaveCount(20)
+  await page.getByText('全选本页', { exact: true }).click()
+  await page.locator('.el-pager').getByText('2', { exact: true }).click()
+  await expect(page.locator('.task-row')).toHaveCount(1)
+  await expect(page.locator('.task-selection')).toContainText('已选 0 条')
+  await page.locator('.task-delete').click()
+  await page.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(page.locator('.el-pager .is-active')).toHaveText('1')
+  await expect(page.locator('.task-row')).toHaveCount(20)
+  expect((await (await page.request.get('/api/v1/tasks?q=Pagination+fixture')).json()).total).toBe(20)
+  await expect(page.locator('.task-selection')).toContainText('已选 0 条')
+})

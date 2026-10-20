@@ -1,0 +1,57 @@
+name: tgd
+services:
+  app:
+    build: .
+    image: tgd-app:0.1.0
+    user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${TGD_BIND_IP:-127.0.0.1}:${TGD_WEB_PORT:-8000}:8000"
+    environment:
+      TGD_DATA_DIR: /data
+      TGD_DOWNLOAD_ROOT: /downloads
+      TGD_BOT_API_BASE: http://bot-api:8081
+      TGD_BOT_API_ROOT: /var/lib/telegram-bot-api
+      TGD_MANAGED_LOCAL_API: "true"
+      TGD_LOCAL_API_CONTROL_DIR: /run/tgd-api-control
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TGD_STATIC_DIR: /app/frontend/dist
+      TGD_PROXY_CAPABLE: "false"
+      TGD_TIMEZONE: ${TGD_TIMEZONE:-Asia/Shanghai}
+    volumes:
+      - ${TGD_HOST_DATA:?Set TGD_HOST_DATA}:/data
+      - ${TGD_HOST_DOWNLOADS:?Set TGD_HOST_DOWNLOADS}:/downloads
+      - ${TGD_HOST_API_CACHE:?Set TGD_HOST_API_CACHE}:/var/lib/telegram-bot-api:ro
+      - ${TGD_HOST_API_CONTROL:-./api-control}:/run/tgd-api-control
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      bot-api: {condition: service_started}
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    logging: &logging
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  bot-api:
+    build:
+      context: .
+      dockerfile: deploy/bot-api/Dockerfile
+    image: tgd-bot-api:0.1.0
+    user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
+    init: true
+    restart: unless-stopped
+    environment:
+      TGD_LOCAL_API_CONTROL_DIR: /run/tgd-api-control
+    volumes:
+      - ${TGD_HOST_API_CACHE:?Set TGD_HOST_API_CACHE}:/var/lib/telegram-bot-api
+      - ${TGD_HOST_API_CONTROL:-./api-control}:/run/tgd-api-control
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    logging: *logging

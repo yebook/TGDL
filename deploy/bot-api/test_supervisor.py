@@ -1,0 +1,199 @@
+"""Real fake subprocesses only; never contact Telegram or the user's runtime."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import socket
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from cryptography.fernet import Fernet
+
+spec = importlib.util.spec_from_file_location("tgd_api_supervisor", Path(__file__).with_name("supervisor.py"))
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+
+@pytest.fixture
+def service(tmp_path: Path) -> Any:
+    shared, cache = tmp_path / "control", tmp_path / "cache"
+    shared.mkdir()
+    cache.mkdir()
+    key = Fernet.generate_key()
+    module.atomic_write(shared / "control.key", key)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    fake = tmp_path / "fake_api.py"
+    fake.write_text(
+        "import os, socket\n"
+        "assert os.environ['TELEGRAM_API_ID'] == '12345'\n"
+        "assert os.environ['TELEGRAM_API_HASH'] == 'a' * 32\n"
+        f"server=socket.socket(); server.bind(('127.0.0.1', {port})); server.listen()\n"
+        "while True:\n"
+        " client, address = server.accept(); client.close()\n",
+        encoding="utf-8",
+    )
+    supervisor = module.Supervisor(
+        shared, cache, command=[sys.executable, str(fake)], port=port, retry_delay=0,
+    )
+    yield supervisor, key
+    supervisor.stop_process()
+
+
+def command(supervisor: Any, key: bytes, identifier: str, action: str = "start", **changes: Any) -> None:
+    desired = {
+        "version": 1, "command_id": identifier, "action": action,
+        "credential_revision": 1, "api_id": 12345,
+        "api_hash_encrypted": Fernet(key).encrypt(b"a" * 32).decode(),
+    }
+    desired.update(changes)
+    module.atomic_write(supervisor.shared / "desired.json", json.dumps(desired).encode())
+
+
+def settle(supervisor: Any, state: str) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        supervisor.tick()
+        if supervisor.state == state:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"Expected {state}, got {supervisor.state}")
+
+
+def test_waits_without_credentials_and_publishes_heartbeat(service: Any) -> None:
+    supervisor, _ = service
+    supervisor.tick()
+    first = json.loads((supervisor.shared / "applied.json").read_text())
+    supervisor.tick()
+    second = json.loads((supervisor.shared / "applied.json").read_text())
+    assert first["state"] == "waiting_credentials"
+    assert second["heartbeat_at"] >= first["heartbeat_at"]
+    assert supervisor.process is None
+
+
+def test_process_lifecycle_idempotency_and_generation(service: Any) -> None:
+    supervisor, key = service
+    command(supervisor, key, "start_1")
+    settle(supervisor, "running")
+    first_process, generation = supervisor.process, supervisor.generation
+    supervisor.tick()
+    assert supervisor.process is first_process
+    # Re-encryption has a fresh nonce, but an unchanged credential revision must
+    # not restart the same credential set for an idempotent start command.
+    command(supervisor, key, "start_again")
+    supervisor.tick()
+    assert supervisor.process is first_process
+    assert (supervisor.cache / ".tgd-api-generation").read_text().strip() == generation
+    assert "a" * 32 not in (supervisor.shared / "applied.json").read_text()
+    assert supervisor.process.args == supervisor.command
+    command(supervisor, key, "restart_2", "restart")
+    settle(supervisor, "running")
+    assert first_process.poll() is not None
+    assert supervisor.generation != generation
+    command(supervisor, key, "stop_3", "stop", api_id=None, api_hash_encrypted=None)
+    settle(supervisor, "stopped")
+    assert supervisor.process is None
+
+
+def test_credential_errors_ack_without_killing_previous_process(service: Any) -> None:
+    supervisor, key = service
+    command(supervisor, key, "start")
+    settle(supervisor, "running")
+    process = supervisor.process
+    command(supervisor, key, "bad", api_hash_encrypted="not-encrypted")
+    supervisor.tick()
+    status = json.loads((supervisor.shared / "applied.json").read_text())
+    assert status["command_id"] == "bad" and status["state"] == "failed"
+    assert status["error_code"] == "invalid_credentials"
+    assert process.poll() is None
+    command(supervisor, key, "recover", "restart")
+    settle(supervisor, "running")
+    assert process.poll() is not None
+
+
+def test_reencrypted_restart_replay_does_not_restart_twice(service: Any) -> None:
+    supervisor, key = service
+    command(supervisor, key, "restart_once", "restart")
+    settle(supervisor, "running")
+    process, generation = supervisor.process, supervisor.generation
+    command(supervisor, key, "restart_once", "restart")
+    supervisor.tick()
+    assert supervisor.process is process
+    assert supervisor.generation == generation
+    assert supervisor.state == "running"
+    assert supervisor.error_code is None
+
+
+def test_bounded_crash_retries_and_explicit_recovery(service: Any) -> None:
+    supervisor, key = service
+    supervisor.command = [sys.executable, "-c", "raise SystemExit(1)"]
+    command(supervisor, key, "crash")
+    deadline = time.monotonic() + 5
+    while supervisor.failures < 4 and time.monotonic() < deadline:
+        supervisor.tick()
+        time.sleep(0.02)
+    assert supervisor.failures == 4
+    generation = supervisor.generation
+    supervisor.tick()
+    assert supervisor.process is None and supervisor.generation == generation
+    assert supervisor.error_code == "process_exited"
+
+
+def test_listen_timeout_reaps_process(service: Any) -> None:
+    supervisor, key = service
+    supervisor.command = [sys.executable, "-c", "import time; time.sleep(30)"]
+    supervisor.startup_timeout = 0
+    command(supervisor, key, "timeout")
+    supervisor.tick()
+    assert supervisor.process is None
+    assert supervisor.error_code == "listen_timeout"
+
+
+@pytest.mark.parametrize("changes", [
+    {"version": 2}, {"version": True}, {"api_id": True}, {"action": "shell"},
+    {"command_id": "../escape"}, {"extra": "no"}, {"credential_revision": -1},
+])
+def test_rejects_malformed_handoff(service: Any, changes: dict[str, Any]) -> None:
+    supervisor, key = service
+    command(supervisor, key, "bad", **changes)
+    supervisor.tick()
+    assert supervisor.state == "failed"
+    assert supervisor.process is None
+
+
+def test_bounded_read(service: Any) -> None:
+    supervisor, _ = service
+    module.atomic_write(supervisor.shared / "desired.json", b"x" * (module.MAX_BYTES + 1))
+    supervisor.tick()
+    assert supervisor.error_code == "invalid_configuration"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux NOFOLLOW and POSIX permissions")
+def test_rejects_symlink_and_world_readable_inputs(service: Any) -> None:
+    supervisor, key = service
+    command(supervisor, key, "bad")
+    desired = supervisor.shared / "desired.json"
+    desired.chmod(0o644)
+    supervisor.tick()
+    assert supervisor.error_code == "control_permissions"
+    desired.unlink()
+    desired.symlink_to(supervisor.shared / "control.key")
+    supervisor.tick()
+    assert supervisor.error_code == "control_io_failed"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO")
+def test_rejects_fifo_without_blocking_heartbeat(service: Any) -> None:
+    supervisor, _ = service
+    getattr(os, "mkfifo", None)(supervisor.shared / "desired.json", 0o600)
+    supervisor.tick()
+    assert supervisor.error_code == "invalid_configuration"
+    assert (supervisor.shared / "applied.json").exists()

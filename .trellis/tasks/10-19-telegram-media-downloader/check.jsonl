@@ -1,0 +1,8 @@
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/technical-evidence.md", "reason": "Check official constraints and experiment status: webhook-only proxy flag, surviving backend downloads, cache ownership, and real versus simulated verification."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review shared state/DTO, idempotency and file/DB recovery against the task design and AC-01 through AC-22."}
+{"file": ".trellis/spec/backend/runtime-contracts.md", "reason": "Current implemented API, persistence, authentication, storage and runtime contracts."}
+{"file": ".trellis/spec/frontend/ui-contracts.md", "reason": "Current UI/API, same-origin, settings revision and browser acceptance contracts."}
+{"file": ".trellis/spec/backend/acceptance-contracts.md", "reason": "Local/API acceptance CLI, isolated browser fixture, CI and sensitive-output contracts."}
+{"file": ".trellis/spec/backend/template-contracts.md", "reason": "Executable confirmation/filename template grammar, defaults, snapshots, migration, UI preview and filesystem safety contracts."}
+{"file": ".trellis/spec/backend/task-deletion-contracts.md", "reason": "Verify task deletion transactions, visibility, storage ownership, callbacks and selection."}
+{"file": ".trellis/spec/backend/managed-api-contracts.md", "reason": "Verify managed API secrets, supervisor generations and persistent switch/restart safety barriers."}

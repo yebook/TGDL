@@ -1,0 +1,48 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+*.egg-info/
+
+# Frontend / browser artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
+.playwright-mcp/
+
+# Runtime state and downloads
+.runtime/
+data/
+downloads/
+/bot-api/
+/api-control/
+/network/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+.pnpm-store/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
