@@ -12,6 +12,7 @@ from app.core.errors import AppError
 from app.core.templates import render_confirmation
 from app.db.models import Attempt, Job, MediaItem, MediaRequest, Notification, uid
 from app.db.session import Database
+from app.services.diagnostics import DiagnosticLog
 from app.services.settings import SettingsService
 from app.storage.naming import fit_name, legacy_name, planned_name, request_summary, unique_name
 
@@ -88,6 +89,7 @@ def project(session: Session, request: MediaRequest) -> None:
 class TaskService:
     def __init__(self, database: Database, settings: SettingsService) -> None:
         self.db, self.settings = database, settings
+        self.diagnostics: DiagnosticLog | None = None
 
     def destination(self, request: MediaRequest, summary: str, timezone: str) -> str:
         date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
@@ -243,6 +245,9 @@ class TaskService:
                     job.state = "cancelling" if job.state != "recovery_blocked" else "recovery_blocked"
             session.flush()
             project(session, request)
+            outcome = request.status
+        if self.diagnostics:
+            self.diagnostics.emit("task_result", level="info", task_id=request_id, outcome=outcome)
         return self.detail(request_id)
 
     def retry(self, request_id: str, item_ids: list[str] | None) -> dict[str, Any]:

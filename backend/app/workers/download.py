@@ -31,6 +31,7 @@ from app.db.models import (
     StoredFile,
 )
 from app.db.session import Database
+from app.services.diagnostics import DiagnosticLog
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.tasks import project
 from app.storage.files import (
@@ -61,8 +62,20 @@ class DownloadWorker:
         self.db, self.storage, self.config, self.boot_id = db, storage, config, boot_id
         self.progress_times: dict[str, float] = {}
         self.credential_hash = ""
+        self.diagnostics: DiagnosticLog | None = None
 
     def claim(self, bot_id: int | None = None, mode: str | None = None) -> str | None:
+        outcomes: list[str] = []
+        result = self._claim(bot_id, mode, outcomes)
+        if self.diagnostics:
+            for job_id in outcomes:
+                try:
+                    self.record_result(job_id)
+                except Exception:
+                    self.diagnostics.error = True
+        return result
+
+    def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str]) -> str | None:
         with self.db.transaction() as session:
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
             if safety and RequestSafetyService.blocked(safety.values, time.time()):
@@ -91,6 +104,7 @@ class DownloadWorker:
                 item = session.get(MediaItem, job.item_id)
                 assert item
                 if job.cancel_requested:
+                    outcomes.append(job.id)
                     job.state, job.finished_at = "cancelled", time.time()
                     request = session.get(MediaRequest, job.request_id)
                     assert request
@@ -99,6 +113,7 @@ class DownloadWorker:
                 try:
                     storage = self.storage.get(job.root_id)
                 except AppError as exc:
+                    outcomes.append(job.id)
                     job.state, job.phase, job.finished_at = "failed", "failed", time.time()
                     job.error_code, job.error_message = exc.code, exc.message
                     session.execute(delete(FileReservation).where(FileReservation.job_id == job.id))
@@ -115,6 +130,7 @@ class DownloadWorker:
                     except AppError:
                         available = False
                     if stored and available:
+                        outcomes.append(job.id)
                         job.state, job.phase = "already_exists", "already_exists"
                         job.linked_job_id, job.relative_path, job.root_id = stored.job_id, stored.relative_path, stored.root_id
                         job.completed_bytes, job.finished_at = stored.size_bytes, time.time()
@@ -149,6 +165,7 @@ class DownloadWorker:
                         if shutil.disk_usage(self.config.bot_api_root).free < self.config.minimum_free_bytes + (item.size_bytes or 0) + budget:
                             raise AppError("NO_SPACE", "Bot API 缓存空间不足")
                 except (OSError, AppError) as exc:
+                    outcomes.append(job.id)
                     job.error_code = exc.code if isinstance(exc, AppError) else "STORAGE_UNAVAILABLE"
                     job.error_message = exc.message if isinstance(exc, AppError) else "存储不可用，请检查挂载和权限"
                     job.next_run_at = time.time() + 10
@@ -332,6 +349,22 @@ class DownloadWorker:
             await asyncio.to_thread(self.failed, job_id, code, message, retry, uncertain, delay)
         finally:
             self.progress_times.pop(job_id, None)
+            if self.diagnostics:
+                try:
+                    await asyncio.to_thread(self.record_result, job_id)
+                except Exception:
+                    self.diagnostics.error = True
+
+    def record_result(self, job_id: str) -> None:
+        if not self.diagnostics:
+            return
+        with self.db.sessions() as session:
+            job = session.get(Job, job_id)
+            if not job:
+                return
+            fields: dict[str, Any] = {"task_id": job.request_id, "job_id": job.id, "mode": job.acquisition_mode,
+                      "outcome": job.state, "error_code": job.error_code}
+        self.diagnostics.emit("task_result", level="info" if fields["outcome"] == "succeeded" else "warning", **fields)
 
     async def cloud_operation[T](self, operation: Any, job_id: str) -> T:
         task = asyncio.create_task(operation)

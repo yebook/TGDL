@@ -720,3 +720,36 @@ Added shared cloud/local request pacing, persistent cooldown/auth pause/backoff,
 ### Next Steps
 
 - Real Telegram, greater-than-20MB, proxy and fnOS acceptance remain pending; Docker was not started or updated.
+
+
+## Session 24: Incident timeline and persistent diagnostic logs
+
+**Date**: 2026-10-20
+**Task**: Incident timeline and persistent diagnostic logs
+**Branch**: `main`
+
+### Summary
+
+Recovered limited 17:00-18:30 task evidence; first Bot disconnect unavailable after container recreation. Added bounded sanitized persistent logs, admin export and WebUI action, plus proxy error backoff correction.
+
+### Main Changes
+
+- Read-only incident review: 17:01 cloud size rejection, 17:06 cloud success, 17:10 task later cancelled; no first authentication/rate-limit error available.
+- Persistent 10MiB JSONL with three archives, strict event projection and bounded authenticated export; status and explicit WebUI JSONL download.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Windows backend 250 passed, 6 POSIX skips; Linux isolated nonroot network-none diagnostics 36 passed. Ruff and mypy 29 files passed.
+- [OK] Frontend lint/typecheck/build, 49 unit and 2 mock UI contract browser cases passed; desktop/mobile screenshots independently reviewed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Running user containers were not updated; deploy logging before further Bot testing. Real Telegram, proxy and fnOS gates remain pending.

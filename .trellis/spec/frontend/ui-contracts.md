@@ -126,6 +126,13 @@ ineligible actions, use transient action feedback, and keep status polling from
 overwriting unsaved settings. Process running is separate from Bot connectivity
 and protection; never label the feature as guaranteed protection from bans.
 
+Diagnostic export follows ../backend/diagnostic-log-contracts.md. Show log
+availability in system diagnostics; export on explicit action using existing
+session handling, busy/stale/unmount protection and a released object URL.
+Do not poll event content, navigate to arbitrary paths or send logs externally.
+Empty/truncated/error feedback is transient. Exported content is server-filtered
+JSONL; it cannot establish a historical ban reason when evidence is absent.
+
 Wrong: present desired proxy settings as applied or discard unsaved settings on409. Correct: render supervisor acknowledgement, compare revisions before applying diagnostics, and retain user input on conflicts.
 
 Dependency build convention: keep pnpm's default release-age policy enabled in local and Docker installs. If a freshly published pinned dependency fails that policy, select an eligible stable version and regenerate the lock with policy enforced; do not add release-age exemptions. Verify manifest/importer/transitive family alignment, frozen install and the normal frontend checks. Any future workspace policy file must be copied before Docker's install step.

@@ -7,3 +7,4 @@
 {"file": ".trellis/spec/backend/task-deletion-contracts.md", "reason": "Verify task deletion transactions, visibility, storage ownership, callbacks and selection."}
 {"file": ".trellis/spec/backend/managed-api-contracts.md", "reason": "Verify managed API secrets, supervisor generations and persistent switch/restart safety barriers."}
 {"file": ".trellis/spec/backend/request-safety-contracts.md", "reason": "Shared durable Telegram pacing, cooldown, auth pause, safe recovery and migration/download ownership boundaries."}
+{"file": ".trellis/spec/backend/diagnostic-log-contracts.md", "reason": "Persistent bounded sanitized events, failure isolation and authenticated WebUI export."}

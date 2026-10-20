@@ -5,6 +5,7 @@ import { bytes } from '../api/format'
 import { usePolling } from '../composables/usePolling'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
 import BotSafetyPanel from '../components/BotSafetyPanel.vue'
+import DiagnosticLogPanel from '../components/DiagnosticLogPanel.vue'
 const { data, error, loading, updatedAt, refresh } = usePolling(signal => request<SystemStatus>('/system/status', { signal }), 3000)
 function localApiChanged(status: LocalApiStatus) {
   if (data.value) data.value.local_api = status
@@ -30,6 +31,7 @@ const good = (state: string) => ['connected', 'online', 'running', 'ready', 'app
       <section class="panel diagnostic-card"><LocalApiPanel :status="data.local_api" :bot="data.bot" :stale="!!error" detailed @changed="localApiChanged" /></section>
       <section class="panel diagnostic-card"><div class="diagnostic-title"><div><p class="eyebrow">STORAGE</p><h2>下载存储</h2></div><span class="muted">目录由部署环境提供</span></div><div v-for="root in data.storage.roots" :key="root.id" class="storage-row"><div><strong>{{ root.label }}</strong><p class="muted">{{ root.message || (root.available ? '存储检查正常' : '请检查挂载和权限') }}</p></div><div><el-tag :type="root.available ? 'success' : 'danger'" round>{{ root.available ? '可用' : '不可用' }}</el-tag><p class="muted">剩余 {{ bytes(root.free_bytes) }} / {{ bytes(root.total_bytes) }}</p></div></div><p class="field-hint">Telegram 缓存可用空间：{{ bytes(data.storage.cache.free_bytes) }} / {{ bytes(data.storage.cache.total_bytes) }}。下载存储与缓存都需要足够空间。</p></section>
       <div class="system-grid"><section class="panel diagnostic-card"><p class="eyebrow">NETWORK</p><div class="diagnostic-title"><h2>代理链路</h2><el-tag :type="good(data.proxy.state) ? 'success' : 'warning'" round>{{ labels[data.proxy.state] || data.proxy.state }}</el-tag></div><p class="muted">{{ data.proxy.message || '查看已保存与实际生效配置是否一致。' }}</p><dl class="small-meta"><div><dt>期望配置版本</dt><dd>{{ data.proxy.desired_revision ?? '—' }}</dd></div><div><dt>已应用版本</dt><dd>{{ data.proxy.applied_revision ?? '—' }}</dd></div></dl></section><section class="panel diagnostic-card"><p class="eyebrow">RECOVERY</p><h2>恢复与诊断</h2><p class="muted">{{ data.recovery.message || '没有待处理的恢复问题。' }}</p><p v-if="data.recovery.blocked_jobs" class="warning-text">{{ data.recovery.blocked_jobs }} 个任务需要处理</p><p class="field-hint">应用版本 {{ data.version }}</p></section></div>
+      <section v-if="data.diagnostic_log" class="panel diagnostic-card"><DiagnosticLogPanel :status="data.diagnostic_log" :stale="!!error" /></section>
       <p class="system-footer muted">{{ loading ? '正在检查…' : `最近更新 ${updatedAt?.toLocaleTimeString('zh-CN', { hour12: false }) || '—'} · 每 3 秒刷新` }}</p>
     </template>
   </section>

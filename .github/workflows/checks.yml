@@ -90,3 +90,6 @@ jobs:
         working-directory: frontend
         env:
           E2E_REQUEST_SAFETY: throttled
+      - name: Diagnostic log export UI contract
+        run: pnpm exec playwright test --config playwright.logs.config.ts
+        working-directory: frontend

@@ -8,6 +8,8 @@ Read [managed-api-contracts.md](managed-api-contracts.md) for WebUI-managed loca
 API lifecycle, credentials, persisted transitions and supervisor control.
 Read [request-safety-contracts.md](request-safety-contracts.md) for all Telegram
 request pacing, cooldown, credential pause and explicit recovery changes.
+Read [diagnostic-log-contracts.md](diagnostic-log-contracts.md) for persistent
+sanitized events and authenticated diagnostic export.
 Read [template-contracts.md](template-contracts.md) for confirmation and filename templates.
 Read [task-deletion-contracts.md](task-deletion-contracts.md) for task record removal.
 Other topic files remain bootstrap templates, not additional implemented conventions.

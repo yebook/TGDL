@@ -156,7 +156,15 @@ class LocalApiStatus(BaseModel):
     can_retry: bool
 
 
+class DiagnosticLogStatus(BaseModel):
+    state: Literal["ready", "error"]
+    message: str
+    max_file_bytes: int
+    backup_count: int
+
+
 class SystemStatus(BaseModel):
+    diagnostic_log: DiagnosticLogStatus | None = None
     version: str
     bot: BotStatus
     storage: StorageStatus

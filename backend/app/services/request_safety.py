@@ -19,11 +19,13 @@ from aiogram.exceptions import (
     TelegramUnauthorizedError,
 )
 from aiohttp import ClientError
+from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.errors import AppError
 from app.core.security import digest
 from app.db.models import RequestSafety
 from app.db.session import Database
+from app.services.diagnostics import DiagnosticLog
 
 # Keep persisted deadlines representable on supported platforms and in the UI.
 MAX_DEADLINE = 253402214400.0
@@ -58,6 +60,7 @@ class RequestSafetyService:
     def __init__(self, db: Database, clock: Callable[[], float] = time.time,
                  jitter: Callable[[], float] = random.random) -> None:
         self.db, self.clock, self.jitter = db, clock, jitter
+        self.diagnostics: DiagnosticLog | None = None
 
     @staticmethod
     def blocked(values: dict[str, Any], now: float) -> bool:
@@ -151,7 +154,8 @@ class RequestSafetyService:
             elif unauthorized or isinstance(error, TelegramUnauthorizedError):
                 values["auth_paused"] = True
                 values["auth_revision"] = values.get("auth_revision", 0) + 1
-            elif transient or isinstance(error, (TelegramConflictError, TelegramServerError, TelegramNetworkError, ClientError, TimeoutError)):
+            elif transient or isinstance(error, (TelegramConflictError, TelegramServerError, TelegramNetworkError, ClientError, TimeoutError,
+                                                 ProxyConnectionError, ProxyTimeoutError, ProxyError)):
                 failures = min(6, values.get("failures", 0) + 1)
                 values.update(failures=failures, backoff=max(values.get("backoff", 0), now + min(120, 5 * 2 ** (failures - 1)) + self.jitter()))
             elif error is None:
@@ -160,3 +164,12 @@ class RequestSafetyService:
                 if probe and values.get("probe_auth_revision") == values.get("auth_revision", 0):
                     values["auth_paused"] = False
             row.values = values
+
+        if self.diagnostics:
+            try:
+                state = self.status(token)
+                if state["state"] != "ready":
+                    self.diagnostics.emit("request_protection", dedupe=True, level="warning",
+                                          outcome=state["state"], retry_at=state["retry_at"])
+            except Exception:
+                self.diagnostics.error = True

@@ -98,6 +98,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             application.state.tasks, application.state.runtime = tasks, runtime
             application.state.storage = storage
             application.state.ready = True
+            runtime.diagnostics.emit("service_started", level="info")
             if cfg.run_background:
                 await runtime.start()
             yield
@@ -105,6 +106,9 @@ def create_app(config: Config | None = None) -> FastAPI:
             application.state.ready = False
             if "runtime" in application.state._state and cfg.run_background:
                 await runtime.close()
+            if "runtime" in application.state._state:
+                runtime.diagnostics.flush()
+                runtime.diagnostics.emit("service_stopped", level="info")
             if "db" in application.state._state:
                 db.engine.dispose()
             lock.release()
@@ -329,6 +333,10 @@ def create_app(config: Config | None = None) -> FastAPI:
         async with runtime.connection_lock:
             return await asyncio.to_thread(runtime.local_api.action, False, bool(payload and payload.acknowledge_logout_uncertain))
 
+    @application.get("/api/v1/system/logs", dependencies=[Depends(auth)])
+    def export_logs() -> dict[str, Any]:
+        return runtime.diagnostics.export()
+
     @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
     def system_status() -> dict[str, Any]:
         revision, values, _ = settings.read()
@@ -350,7 +358,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         bot = dict(runtime.bot_status) | {"request_safety": safety}
         if safety["state"] != "ready":
             bot.update(state="error", message=safety["message"])
-        return {"version": "0.1.0", "bot": bot, "local_api": runtime.local_api.status(), "storage": {"roots": roots, "cache": cache},
+        return {"version": "0.1.0", "diagnostic_log": runtime.diagnostics.status(), "bot": bot, "local_api": runtime.local_api.status(), "storage": {"roots": roots, "cache": cache},
                 "proxy": settings.proxy_status(revision, values),
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}

@@ -41,6 +41,9 @@ Use bounded exponential network backoff. Manual recovery may probe saved
 credentials at most once per 60 seconds; it cannot skip server cooldown or
 managed-mode restrictions, execute logout, or clear auth pause without success.
 Status reads and offline saves never probe or clear protection.
+Cloud file proxy failures include aiohttp_socks ProxyConnectionError,
+ProxyTimeoutError and ProxyError, even when not subclasses of ClientError;
+they must establish the same shared backoff as ordinary network failures.
 
 Distinguish short normal pacing from blocked/cooldown deferral. Do not wait for
 minutes while holding connection/poll/notify locks. Skip new claims and outbox

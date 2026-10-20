@@ -45,9 +45,16 @@ export interface BotRequestSafety {
   retry_at: string | null; message: string; can_retry: boolean
 }
 export interface SystemStatus {
+  diagnostic_log?: DiagnosticLogStatus
   local_api: LocalApiStatus
   bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety }
   storage: { roots: StorageRoot[]; cache: { free_bytes: number | null; total_bytes: number | null } }
   proxy: Settings['proxy_status']; queue: { active: number; pending: number; concurrency: number }
   version: string; recovery: { blocked_jobs: number; message: string }
+}
+export interface DiagnosticLogStatus {
+  state: 'ready' | 'error'; message: string; max_file_bytes: number; backup_count: number
+}
+export interface DiagnosticLogExport {
+  events: Array<Record<string, string | number | boolean | null>>; truncated: boolean
 }

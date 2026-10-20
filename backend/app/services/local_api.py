@@ -107,6 +107,9 @@ def private_json(path: Path) -> dict[str, Any]:
 
 class LocalApiService:
     def __init__(self, settings: Any) -> None:
+        from app.services.diagnostics import DiagnosticLog
+
+        self.diagnostics: DiagnosticLog | None = None
         self.settings, self.db, self.config = settings, settings.db, settings.config
         if self.config.managed_local_api:
             initial = self.settings.read()[1]
@@ -135,7 +138,11 @@ class LocalApiService:
             row = session.get(LocalApiRuntime, 1)
             assert row
             row.values = dict(row.values) | updates
-            return dict(row.values)
+            values = dict(row.values)
+        if self.diagnostics and "phase" in updates:
+            self.diagnostics.emit("local_api_transition", dedupe=True, level="info",
+                                  outcome=updates["phase"], mode=values.get("target_mode"))
+        return values
 
     def applied(self) -> dict[str, Any]:
         try:

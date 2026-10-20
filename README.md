@@ -45,6 +45,8 @@ docker compose --env-file .env -f compose.yaml ps
 
 云端和本地模式均内置请求节流、限流等待、网络退避及认证失败暂停。WebUI 显示原因和恢复时间，系统状态提供“重试 Bot 连接”；重启应用不清除同一凭据的冷却。无需新增必填设置，详见 [请求保护与处理方式](docs/operations.md#telegram-请求等待与认证暂停)。这些措施减少不必要请求，不保证 Telegram 不限制 Bot 或关联账号。
 
+应用默认保存随数据卷持久化的滚动诊断日志，可在系统状态页导出最近事件，便于排查首次断连、限流和下载错误。日志不记录凭据或媒体正文，详见 [诊断日志说明](docs/operations.md#持久诊断日志)。
+
 ## 开发与验证
 
 后端位于 `backend/`，前端位于 `frontend/`。使用 Python 3.12、uv 和 Node/pnpm。

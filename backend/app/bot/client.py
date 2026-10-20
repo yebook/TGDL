@@ -2,7 +2,9 @@ import asyncio
 import json
 import math
 import re
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing
 from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -15,9 +17,11 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
 from aiogram.methods import GetFile, GetUpdates
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import ClientError
+from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.config import Config
 from app.core.errors import AppError
+from app.core.security import digest
 from app.schemas.contracts import UserSettings
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 
@@ -44,18 +48,40 @@ class TelegramClient:
         self.bot = Bot(token=token, session=session)
         self.timeout = config.get_file_timeout
 
+    async def record(self, method: str, error: BaseException | None, started: float,
+                     *, empty: bool = False) -> None:
+        diagnostic = getattr(self.safety, "diagnostics", None)
+        if diagnostic:
+            try:
+                await asyncio.to_thread(diagnostic.request, self.mode, method, error=error,
+                                        duration_ms=int(max(0, time.monotonic() - started) * 1000),
+                                        empty=empty, scope=digest(self.bot.token),
+                                        http_status=getattr(error, "diagnostic_http_status", None))
+            except Exception:
+                diagnostic.error = True
+
     async def request[T](self, operation: Callable[[], Awaitable[T]], chat_id: int | None = None,
-                         *, probe: bool = False) -> T:
-        if self.safety:
-            await self.safety.before(self.bot.token, chat_id, probe=probe)
+                         *, probe: bool = False, method: str = "getMe") -> T:
+        started = time.monotonic()
+        try:
+            if self.safety:
+                await self.safety.before(self.bot.token, chat_id, probe=probe)
+        except Exception as exc:
+            await self.record(method, exc, started)
+            raise
         try:
             result = await operation()
+        except asyncio.CancelledError as exc:
+            await self.record(method, exc, started)
+            raise
         except Exception as exc:
+            await self.record(method, exc, started)
             if self.safety:
                 await asyncio.to_thread(self.safety.observe, self.bot.token, exc)
                 if isinstance(exc, (TelegramRetryAfter, TelegramUnauthorizedError)):
                     raise SafetyDeferred("Telegram 请求已暂停，请等待或检查 Bot 凭据", sent=True) from exc
             raise
+        await self.record(method, None, started, empty=method == "getUpdates" and not result)
         if self.safety:
             await asyncio.to_thread(self.safety.observe, self.bot.token, None, probe=probe)
         return result
@@ -66,16 +92,31 @@ class TelegramClient:
 
     async def updates(self, offset: int) -> list[dict[str, Any]]:
         result = await self.request(lambda: self.bot(GetUpdates(offset=offset, timeout=25, allowed_updates=["message", "callback_query"]),
-                                request_timeout=35))
+                                request_timeout=35), method="getUpdates")
         return [item.model_dump(mode="json", exclude_none=True) for item in result]
 
     async def get_file(self, file_id: str) -> str:
-        result = await self.request(lambda: self.bot(GetFile(file_id=file_id), request_timeout=self.timeout))
+        result = await self.request(lambda: self.bot(GetFile(file_id=file_id), request_timeout=self.timeout), method="getFile")
         if self.mode == "cloud":
             cloud_size_check(result.file_size)
         return result.file_path or ""
 
     async def file_chunks(self, path: str) -> AsyncGenerator[bytes]:
+        started = time.monotonic()
+        try:
+            async with aclosing(self._file_chunks(path)) as stream:
+                async for chunk in stream:
+                    yield chunk
+        except (asyncio.CancelledError, GeneratorExit) as exc:
+            await self.record("downloadFile", exc, started)
+            raise
+        except Exception as exc:
+            await self.record("downloadFile", exc, started)
+            raise
+        else:
+            await self.record("downloadFile", None, started)
+
+    async def _file_chunks(self, path: str) -> AsyncGenerator[bytes]:
         # Only official relative file paths; reject encoded separators, URL syntax and traversal.
         if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)+", path) or any(
                 segment in {".", ".."} for segment in path.split("/")):
@@ -118,19 +159,23 @@ class TelegramClient:
                     await asyncio.to_thread(self.safety.observe, self.bot.token, None,
                                             retry_after=wait if response.status == 429 else None,
                                             unauthorized=response.status == 401)
-                    raise SafetyDeferred("Telegram 已暂停文件请求，请等待或检查 Bot 凭据", sent=True)
+                    paused = SafetyDeferred("Telegram 已暂停文件请求，请等待或检查 Bot 凭据", sent=True)
+                    paused.diagnostic_http_status = response.status  # type: ignore[attr-defined]
+                    raise paused
                 if response.status != 200:
                     transient = response.status == 429 or response.status >= 500
                     if self.safety and transient:
                         await asyncio.to_thread(self.safety.observe, self.bot.token, None, transient=True)
-                    raise AppError("CLOUD_DOWNLOAD_FAILED" if transient else "CLOUD_DOWNLOAD_REJECTED",
-                                   "云端文件下载失败，请检查网络、代理或稍后重试")
+                    rejected = AppError("CLOUD_DOWNLOAD_FAILED" if transient else "CLOUD_DOWNLOAD_REJECTED",
+                                        "云端文件下载失败，请检查网络、代理或稍后重试")
+                    rejected.diagnostic_http_status = response.status  # type: ignore[attr-defined]
+                    raise rejected
                 cloud_size_check(response.content_length)
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     yield chunk
             if self.safety:
                 await asyncio.to_thread(self.safety.observe, self.bot.token, None)
-        except (ClientError, TimeoutError) as exc:
+        except (ClientError, TimeoutError, ProxyConnectionError, ProxyTimeoutError, ProxyError) as exc:
             if self.safety:
                 await asyncio.to_thread(self.safety.observe, self.bot.token, exc)
             raise
@@ -142,14 +187,14 @@ class TelegramClient:
             markup = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="确认下载", callback_data=f"y:{request_id}:{nonce}"),
                 InlineKeyboardButton(text="取消", callback_data=f"n:{request_id}:{nonce}")]])
-        result = await self.request(lambda: self.bot.send_message(chat_id, text, reply_markup=markup, request_timeout=30), chat_id)
+        result = await self.request(lambda: self.bot.send_message(chat_id, text, reply_markup=markup, request_timeout=30), chat_id, method="sendMessage")
         return result.message_id
 
     async def answer(self, query_id: str, text: str) -> None:
-        await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15))
+        await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15), method="answerCallbackQuery")
 
     async def close(self) -> None:
         await self.bot.session.close()
 
     async def logout(self) -> bool:
-        return bool(await self.request(lambda: self.bot.log_out(request_timeout=30)))
+        return bool(await self.request(lambda: self.bot.log_out(request_timeout=30), method="logOut"))

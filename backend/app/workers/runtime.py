@@ -18,6 +18,7 @@ from app.core.errors import AppError
 from app.core.security import digest
 from app.db.models import BotIdentity, Job, MediaRequest, Notification, uid
 from app.db.session import Database
+from app.services.diagnostics import DiagnosticLog
 from app.services.local_api import LocalApiService
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.settings import SettingsService
@@ -30,9 +31,13 @@ class Runtime:
     def __init__(self, db: Database, config: Config, settings: SettingsService,
                  tasks: TaskService, storage: StorageManager) -> None:
         self.db, self.config, self.settings, self.tasks, self.storage = db, config, settings, tasks, storage
+        self.diagnostics = DiagnosticLog(config.data_dir)
         self.safety = RequestSafetyService(db)
+        self.safety.diagnostics = self.diagnostics
+        tasks.diagnostics = self.diagnostics
         self.ingest = IngestService(db, settings, tasks)
         self.worker = DownloadWorker(db, storage, config, uid())
+        self.worker.diagnostics = self.diagnostics
         self.client: TelegramClient | None = None
         self.token_hash = ""
         self.client_signature = ""
@@ -47,6 +52,7 @@ class Runtime:
         self.poll_lock = asyncio.Lock()
         self.notify_lock = asyncio.Lock()
         self.local_api = LocalApiService(settings)
+        self.local_api.diagnostics = self.diagnostics
         self.connection_lock = asyncio.Lock()
 
     async def start(self) -> None:

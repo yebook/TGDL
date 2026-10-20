@@ -8,3 +8,4 @@
 {"file": ".trellis/spec/backend/managed-api-contracts.md", "reason": "WebUI credentials, persistent migration barriers, process supervisor protocol and observability."}
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/managed-api-plan.md", "reason": "Managed API lifecycle research and known real-device validation boundaries."}
 {"file": ".trellis/spec/backend/request-safety-contracts.md", "reason": "Shared durable Telegram pacing, cooldown, auth pause, safe recovery and migration/download ownership boundaries."}
+{"file": ".trellis/spec/backend/diagnostic-log-contracts.md", "reason": "Persistent bounded sanitized events, failure isolation and authenticated WebUI export."}
