@@ -287,3 +287,25 @@ Bot Token/代理认证加密存储，主密钥在独立权限受限文件或部�
 默认在 data_dir/logs/events.jsonl 写结构化事件，UTC ISO 时间含时区；单文件 10 MiB、保留 3 个归档，随 /data 持久卷跨容器重建保留。事件仅白名单字段：固定事件/方法/结果分类、云端或本地模式、HTTP/应用错误码、耗时、等待期限及内部任务/请求编号；不写入 Token/Hash/密码、URL、原始异常或堆栈、媒体文字/文件路径、Telegram 用户和聊天资料。正常空长轮询不逐条写，重复失败或等待合并，保留首发与恢复/摘要。日志失败不改变下载及迁移结果，但须在诊断状态中可见；写入/轮转线程安全，不在数据库事务内执行日志 I/O。日志组件不获取业务网络锁，异步调用通过线程执行并等待短文件 I/O 返回，以优先保留首次异常；已有调用者的连接/轮询/通知锁可能在等待落盘期间继续持有，慢日志卷可延长调用与排空时间，不声称完全非阻塞，也不引入后台无限队列。
 
 系统页提供诊断日志状态和导出按钮，无自动下载/上传；GET /api/v1/system/logs 需管理员认证，返回有界的最新日志事件 JSON 数组与截断信息，按固定字段再次投影，不允许用户指定任意路径。前端由响应生成 JSONL 下载，使用现有会话失效处理。系统状态含日志可用/失败与保留说明。写入失败、恶意异常、并发轮转、跨服务关联、认证及导出边界须有自动测试；使用模拟 Telegram 和临时目录，不操作用户服务或密钥。
+
+## 19. 日志保留与清理
+
+UserSettings/SettingsPatch 新增 diagnostic_log_retention_days，默认 7，允许整数 0–3650，0 关闭按天清理但不关闭容量轮转；持久化与 revision 冲突处理沿用现有设置，修改不触发 Telegram 校验、重连或 API 切换。启动及后台周期维护即使无 Bot、空闲或请求暂停也能执行，最长一小时内按新配置清理；按事件 UTC 时间去除过期记录，保留边界后的有效记录，不以文件 mtime 代替记录时间，不声称恰好保存满七天。
+
+DELETE /api/v1/system/logs 使用现有管理员认证、Origin/CSRF，返回 DiagnosticLogStatus。仅处理固定 events.jsonl 及三个归档与自身维护临时文件，不接受路径；文件类型、安全路径和并发锁与写入/导出一致。清除待合并旧摘要/失败关联，防止下次导出或关闭时恢复已删记录；保留请求保护数据库及下载状态。手动清理后记录 logs_cleared 审计事件并继续记新事件，因此不是永久保持空文件。部分失败必须可见，不能误报全部成功。
+
+DiagnosticLogStatus 增加 retention_days（已生效天数）、last_cleanup_at（可空 UTC ISO）、next_cleanup_at（可空 UTC ISO）；必要安全元数据由实现确认。设置页控制保留天数；系统页显示策略并提供确认后的清理入口，清理/导出忙碌互斥、stale/unmount 防护和普通短暂反馈。过期清理、手动清理与轮转/并发读写、权限及链接攻击有定向回归；不调用用户真实日志清理。
+
+## 20. 公开文档与静态站
+
+README 面向首次使用者，公开文档包含快速开始、Docker/fnOS、云端/本地 API 与凭据、任务/配置/日志、代理/维护/排障和开发验证。内部 Trellis 计划、本机专用运行状态与逐轮历史不作为公开站点内容；旧文件链接尽量保留兼容或提供明确来源。MIT LICENSE 按用户已选许可添加，补贡献、安全报告及版本变更说明，不编造维护邮箱、已发布镜像或未验证功能。
+
+静态站独立构建，与应用依赖/镜像分离，Markdown 在仓库仍可读；支持 TGDL 仓库子路径、导航、搜索、手机阅读和本地预览，严格检查链接及构建输出，排除 .runtime/密钥/Trellis 与内部记录。准备不添加仓库 workflow 的 Pages 分支发布步骤/静态产物，保留 .nojekyll；说明 GitHub 自带 Pages 部署机制及私有仓库套餐限制，不擅自创建公开分支、改可见性或声称已上线。
+
+## 21. Documentation-only automatic Pages publication
+
+User authorization (2026-10-21) supersedes the earlier no-workflow decision only for docs. A path-filtered main push/manual workflow builds the independent docs package with frozen dependencies, then uploads only docs/.vitepress/dist and deploys via GitHub Pages OIDC permissions. No application tests, images, NAS access or project secrets. Build permissions are read-only; deploy permissions are limited to pages/id-token. Repository Pages source must be configured separately. Visibility changes and actual publication are not executed during preparation.
+
+Before any repository-public action, fetch remote heads/tags and inspect reachable history plus pending source for credentials and personal data. Reports contain only locations/classifications, never values. Distinguish synthetic fixtures and commit metadata from actual credential leaks; explicitly state scanner and remote-surface limitations. Historical exposures require separate reviewed remediation, not merely deleting current files.
+
+Final publication authorization: the user accepts existing commit-email/internal-note exposure and configured Pages to GitHub Actions. Proceed with ordinary commits/push and verify the docs deployment. Do not rewrite history or modify repository visibility; do not deploy the application. Remote metadata confirms public visibility and Pages enabled as of this verification.

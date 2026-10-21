@@ -1,6 +1,7 @@
 # Frontend Development Guidelines
 
 Read [ui-contracts.md](ui-contracts.md) before editing this layer. Other topic files remain bootstrap templates, not additional implemented conventions.
+Read [documentation-contracts.md](documentation-contracts.md) for the independent static documentation site and public project guides.
 
 ## Quality Check
 

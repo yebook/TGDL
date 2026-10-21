@@ -1,0 +1,14 @@
+{
+  "name": "tgdl-docs",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.23.0",
+  "engines": { "node": ">=24 <25", "pnpm": ">=11 <12" },
+  "scripts": {
+    "docs:dev": "vitepress dev . --host 127.0.0.1",
+    "docs:check": "node scripts/check-links.mjs",
+    "docs:build": "pnpm docs:check && vitepress build . && node scripts/check-output.mjs",
+    "docs:preview": "node scripts/preview.mjs"
+  },
+  "devDependencies": { "vitepress": "1.6.4" }
+}

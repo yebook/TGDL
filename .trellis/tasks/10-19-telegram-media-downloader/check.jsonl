@@ -8,3 +8,7 @@
 {"file": ".trellis/spec/backend/managed-api-contracts.md", "reason": "Verify managed API secrets, supervisor generations and persistent switch/restart safety barriers."}
 {"file": ".trellis/spec/backend/request-safety-contracts.md", "reason": "Shared durable Telegram pacing, cooldown, auth pause, safe recovery and migration/download ownership boundaries."}
 {"file": ".trellis/spec/backend/diagnostic-log-contracts.md", "reason": "Persistent bounded sanitized events, failure isolation and authenticated WebUI export."}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/log-retention-plan.md", "reason": "Review timestamp retention, concurrency, cached summaries, path safety, auth and failure reporting."}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/public-docs-plan.md", "reason": "Review independent static build, curated output, MIT, portable links and accurate Pages deployment limits."}
+{"file": ".trellis/spec/frontend/documentation-contracts.md", "reason": "Verify public site source/output links, exclusion, independent dependencies and hosting claims."}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/remote-privacy-audit.md", "reason": "Pre-public reachable-history audit scope, redacted email/internal-note findings and publication limitations."}

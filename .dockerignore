@@ -34,3 +34,4 @@ downloads
 /network
 backend/tools/
 *.log
+docs/

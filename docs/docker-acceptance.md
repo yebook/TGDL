@@ -19,7 +19,7 @@ Windows Docker Desktop 需切换 Linux 容器。
 
 脚本在系统临时目录创建独立数据、下载和缓存目录，容器名包含随机标识，
 Web 端口由 Docker 动态分配且只绑定 `127.0.0.1`。不读取 `.env`，
-不使用 `.runtime/local-docker` 的管理员、配置或媒体，不启动 Bot API，也不访问 Telegram。
+不使用已有部署的管理员、配置或媒体，不启动 Bot API，也不访问 Telegram。
 应用使用镜像默认生产入口、UID/GID `1000:1000`、只读根文件系统、
 移除 capabilities 与禁止提权；备份复制和清理也由该 UID 执行，兼容 Linux 文件属主。
 为允许容器 UID 写入，只有本次专用的临时目录设置为 `0777`，结束后清理。

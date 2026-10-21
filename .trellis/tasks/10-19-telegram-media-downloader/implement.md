@@ -337,3 +337,21 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 
 - [x] 更新前备份停止状态的数据并保留旧镜像；原 Compose 重建应用并启动栈，所有挂载与下载清单保留。
 - [x] 健康检查、原管理员状态、迁移 0007、日志落盘及独立匿名接口/生产资源检查通过；启动记录 Bot 网络异常，未将应用就绪当作真实 Bot 下载验收。
+
+## 34. 日志保留与手动清理
+
+- [x] 默认保留 7 天，可配置 0–3650 天（0 关闭按天清理），沿用设置 revision；启动/周期维护不依赖 Bot 在线。
+- [x] 受保护的手动清理只清诊断文件和待合并事件；并发、路径、失败与过期边界有测试，不影响业务及请求保护。
+- [x] 设置/系统页策略、确认清理和正常提示，API/DTO/文档同步；独立审查修复无关设置触发 TUN 重载，网络版本仅随代理内容变化。Windows 相关回归合计 82 项通过、8 项 POSIX 跳过，Linux 日志 57 项通过；前端 2 单测、6 桌面/手机浏览器及静态/构建检查通过。测试未触碰运行服务或真实日志。
+
+## 35. 公开文档与静态文档站
+
+- [x] README/使用/部署/开发文档重组，移除公开入口中的本机及 Trellis 会话依赖；添加用户已选 MIT、贡献/安全/变更文档。
+- [x] 独立 VitePress 1.6.4 静态站构建通过：20 Markdown 文件、87 相对链接、15 公开页及锚点/base/排除/.nojekyll 检查；桌面中文搜索/跳转与手机目录/长页无横向溢出通过。预览脚本只读并显式绑定本机，避免上游 preview 忽略 host 参数。
+- [x] 提供无新增仓库 Actions workflow 的 Pages 分支发布方法与套餐/访问限制；不变更可见性、不发布、不更新应用容器。规范与会话记录已同步，可审查变更保留在工作区。
+
+## 36. Documentation Pages automation and pre-public privacy audit
+
+- [x] Documentation-only path filters, independent build/artifact and least-privilege deployment workflow; current docs describe setup accurately.
+- [x] Fresh remote snapshot 78a000a: 6 commits, 326 unique textual blobs, 269 HEAD files plus 291 pending source files audited. No confirmed real credentials; external commit email and internal dated incident/development notes remain privacy decisions before public visibility. Custom offline scanner limitations and unaudited GitHub surfaces recorded in research/remote-privacy-audit.md; no history rewrite performed.
+- [x] Independent YAML/workflow permission/path/artifact review and docs build pass (20 Markdown, 89 relative links, 15 pages). Final authorization accepts existing email/internal notes; official Actions now pinned to REST-verified commit SHAs, Node 24 installs fixed pnpm 11.23.0, and deployments serialize without interruption. User configured Pages Actions source; ordinary commit/push and publication are authorized. No application/container deployment or history rewrite.

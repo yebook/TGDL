@@ -46,3 +46,7 @@ downloads/
 Thumbs.db
 .idea/
 .vscode/
+
+# Documentation build cache
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
