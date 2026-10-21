@@ -368,3 +368,8 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 - [x] Recorded images/mounts and private media manifest; stopped consistent backup at .runtime/local-docker/backups/before-update-20261021T035213Z/ includes app data/config/control volume and rollback image metadata. Backup database integrity/foreign-key checks passed. Windows helper bind-write failure was corrected by streaming a read-only control-volume archive; original services were restored before retry.
 - [x] Built current source and recreated only app: inspected image 502e1b147880 to f14161d7c848. Supervisor original container/image/mounts and unrelated containers preserved; app mounts normalized by Destination and download counts/sizes/SHA256 unchanged.
 - [x] Independent read-only acceptance passed: live/ready 200, initialized true, migration 0007, effective/default retention 7, new status DTO fields and production JS clear action. No actual log clearing, administrator session or Telegram probe; current Bot connectivity not established by application health. Recorded session and preserved parent task for real-device acceptance.
+
+## 39. Open-source README landing page
+
+- [x] Reorganized root README for first-time visitors: project/workflow/features, visible live docs, cloud/local comparison, three-step source-build deployment, documentation/contribution/security/MIT.
+- [x] README-only editorial change checked against Compose/environment/deployment sources and independent review. docs:check passed 20 Markdown files and 97 relative links; no application tests/build/container changes needed.

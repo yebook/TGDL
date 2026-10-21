@@ -16,6 +16,11 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
 - Public pages describe actual application behavior and portable deployment
   commands. Keep internal plans, machine-specific runtime records and historical
   sessions outside the generated site and search index.
+- Root README is the open-source landing page: purpose, visible online docs,
+  core workflow/features, executable deployment prerequisites, guide links,
+  contribution/security and MIT attribution. Put detailed operational and docs
+  toolchain instructions in the guides; never shorten setup into commands that
+  omit required directory permissions or claim unverified NAS support.
 - Documentation dependencies and lockfile live in docs independently of frontend
   and the application Docker image. Keep release-age policy enabled.
 - Use strict missing-link checks; test the case-sensitive `/TGDL/` base, local

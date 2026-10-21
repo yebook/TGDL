@@ -1,32 +1,59 @@
 # TGDL · Telegram 媒体下载助手
 
-把发送或转发给专属 Telegram Bot 的视频、图片，确认后保存到本地或 NAS。通过中文 WebUI 配置 Bot、查看任务和管理本地 Bot API，面向个人自托管与飞牛 OS 用户。
+将发送或转发给专属 Telegram Bot 的视频、图片，经确认后下载到本地或 NAS。通过中文 WebUI 完成配置、查看下载状态和管理本地 Bot API，适合个人自托管使用。
 
-**在线文档：[https://yebook.github.io/TGDL/](https://yebook.github.io/TGDL/)**
+**[在线文档](https://yebook.github.io/TGDL/)** · [快速开始](docs/quick-start.md) · [问题反馈](https://github.com/yebook/TGDL/issues) · [参与贡献](CONTRIBUTING.md) · [MIT 许可](LICENSE)
 
-## 能做什么
+## 使用流程
 
-- 单文件、同组多文件及图片/视频混合归档，Bot 确认后下载并反馈结果。
-- 按日保存：单文件直接放入 `YYYY-MM-DD/`，同组文件放入日期下的组目录；优先采用消息文字摘要命名任务。
-- 同一 WebUI 切换官方云端与本地 Bot API。云端下载上限 **20 MB**，无需 API ID / Hash；本地模式用于大文件。
-- 白名单、可配置确认有效期（默认 30 分钟）、全局文件并发（默认 3）、去重、取消、重试与恢复。
-- 已结束任务可单条或多选删除记录，保留媒体文件；可自定义 Bot 提示与文件名。
-- 持久脱敏诊断日志，默认保留 7 天，可导出、调整保留天数或手动清理。
-- 可选 HTTP CONNECT / SOCKS5 代理；内置请求节流、冷却和认证异常暂停。
+1. 在 Telegram 中，将视频或图片发送、转发给自己的 Bot。
+2. 查看 Bot 返回的文件信息，点击「确认下载」或「取消」。
+3. 确认后开始下载，在 WebUI 查看进度，完成后由 Bot 反馈成功或失败。
 
-只处理实际发给 Bot 的媒体，暂不支持消息链接、个人账号登录、频道监听、转码或媒体删除。请求保护可减少无效调用，不能保证 Telegram 不限制 Bot 或关联账号。
+支持单文件和同组多文件，包括图片与视频混合的媒体组。只处理实际发送给 Bot 的媒体，暂不支持消息链接、频道自动监听或个人账号登录。
 
-## 开始部署
+## 主要功能
 
-部署文件位于**项目根目录**，与本 README 同级：
+- **确认下载**：用户 ID 白名单，确认有效期可配置，默认 30 分钟。
+- **自动归档**：按 `YYYY-MM-DD/` 保存；单文件直接归档，同组文件放入组目录，优先使用消息文字摘要命名任务。
+- **任务管理**：进度查看、去重、取消、重试与恢复；文件并发默认 3，可配置。
+- **WebUI 配置**：切换云端 / 本地 Bot API，自定义 Bot 确认提示和保存文件名。
+- **记录管理**：单条或多选删除已结束任务记录，保留已下载的媒体文件。
+- **维护与诊断**：脱敏日志默认保留 7 天，支持导出、修改保留策略和手动清理。
+- **网络配置**：可选 HTTP CONNECT / SOCKS5 代理，内置请求节流、冷却和认证异常暂停。
 
-| 文件 | 用途 |
+## 选择 Bot API 模式
+
+| 模式 | 适用场景 | 所需 Telegram 凭据 |
+| --- | --- | --- |
+| 官方云端（默认） | 下载不超过 **20 MB** 的文件，先开始使用 | Bot Token，无需 API ID / Hash |
+| 本地 Bot API | 下载超过 **20 MB** 的文件 | Bot Token、API ID 和 API Hash |
+
+两种模式均需配置允许使用的 Telegram 用户 ID。标准部署包含常驻的本地 API 管理组件，无应用凭据时等待；之后可在 WebUI 填写 API ID / Hash、切换模式、查看进程状态并重试或重启 API 进程，日常无需重启应用或容器。详见 [本地 API 接入与凭据获取](docs/telegram-api.md)。
+
+## 快速部署
+
+需要 Docker Compose v2、完整项目源码、Bot Token 和自己的数字 Telegram 用户 ID。目前采用**源码构建**，尚未提供可直接拉取的公开应用镜像。
+
+### 1. 准备配置与目录
+
+在项目根目录执行：
+
+```sh
+cp .env.example .env
+```
+
+编辑 `.env`，设置下载位置、非 root UID/GID 和 WebUI 绑定地址。启动前，按 [Docker / 飞牛 OS 部署指南](docs/deployment.md#目录和参数) 创建持久目录、授予读写权限，并确认 NAS 媒体共享已挂载。
+
+| 根目录文件 | 用途 |
 | --- | --- |
-| [compose.yaml](compose.yaml) | 默认部署：应用 + 常驻本地 API 管理组件，初始使用云端 |
-| [compose.proxy.yaml](compose.proxy.yaml) | 本地 API 需要 TUN 代理时独立使用，不与默认文件叠加 |
-| [.env.example](.env.example) | 复制为 `.env`，配置下载位置、UID/GID 和 WebUI 绑定地址 |
+| [compose.yaml](compose.yaml) | 默认部署，包含应用和本地 API 管理组件，初始使用云端模式 |
+| [.env.example](.env.example) | 环境参数模板，复制为 `.env` 后修改 |
+| [compose.proxy.yaml](compose.proxy.yaml) | 本地 API 需要 TUN 代理时使用的独立部署文件，不与默认文件叠加 |
 
-目前需要**完整源码构建**，尚未提供可直接拉取的公开应用镜像。先阅读 [快速开始](docs/quick-start.md) 与 [Docker / 飞牛 OS 部署](docs/deployment.md)，准备 `.env`、持久目录和权限，再在项目根目录执行：
+### 2. 构建并启动
+
+完成上一步后，在项目根目录执行：
 
 ```sh
 docker compose --env-file .env -f compose.yaml config --quiet
@@ -34,17 +61,34 @@ docker compose --env-file .env -f compose.yaml up -d --build
 docker compose --env-file .env -f compose.yaml ps
 ```
 
-默认 WebUI 为 `http://127.0.0.1:8000`；NAS 内网访问需要将 `.env` 的 `TGD_BIND_IP` 改为 NAS 固定局域网 IP。首次初始化使用数据目录的 `bootstrap.key`，没有通用默认密码。
+首次构建需要下载依赖并编译本地 API，耗时较长。默认 WebUI 地址为 `http://127.0.0.1:8000`，仅部署主机可访问；NAS 内网访问需将 `.env` 中的 `TGD_BIND_IP` 改为 NAS 的固定局域网 IP，再访问对应地址。
 
-先在 WebUI 保存 Bot Token 和允许用户 ID 即可使用云端。之后可在 WebUI 填写 API ID / Hash 并切换本地，日常无需重启应用或容器；操作状态、失败重试和 API 进程重启都在页面中查看或执行，详见 [本地 API 接入](docs/telegram-api.md)。
+### 3. 初始化并验证
 
-## 文档与开发
+从应用数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），在 WebUI 中创建管理员账号和密码。随后选择官方云端模式，填写 Bot Token 和允许用户 ID，保存配置。
 
-- [文档索引](docs/README.md)：部署、使用、模板、日志、维护与常见问题。
-- [开发指南](docs/development.md) / [参与贡献](CONTRIBUTING.md) / [安全报告](SECURITY.md) / [变更记录](CHANGELOG.md)。
-- [验证范围](docs/verification.md)：模拟测试与真实 Telegram、飞牛 OS、TUN 验收分开记录，尚未完成的实机验证不能视为已通过。
-- [在线文档](https://yebook.github.io/TGDL/)：支持中文搜索；[构建与发布指南](docs/pages.md)介绍本地预览、GitHub Pages 和 NAS 静态托管。
+保存配置无需在线验证；可手动点击「校验配置」，并在系统状态页查看实际连接。先向 Bot 发送一个小于 20 MB 的媒体文件，确认下载并检查保存结果。完整步骤见 [快速开始](docs/quick-start.md)。
 
-在 `docs/` 中运行 `pnpm install --frozen-lockfile`、`pnpm docs:build`、`pnpm docs:preview`，即可本地查看文档站；默认子路径 `/TGDL/`。仓库仅提供[文档站自动发布工作流](.github/workflows/docs-pages.yml)，启用方式见[Pages 指南](docs/pages.md)。它不构建应用镜像、不更新 NAS，也不恢复应用检查任务。
+## 文档
 
-代码按 [MIT](LICENSE) 许可证分发。感谢 [tg-bot-video-download](https://github.com/welkin621/tg-bot-video-download) 提供的参考思路。
+在线阅读：**https://yebook.github.io/TGDL/**，支持中文搜索；也可直接阅读仓库中的 [文档索引](docs/README.md)。
+
+| 主题 | 内容 |
+| --- | --- |
+| [Docker / 飞牛 OS 部署](docs/deployment.md) | 目录权限、挂载、内网访问和代理部署 |
+| [Telegram API 接入](docs/telegram-api.md) | API ID / Hash 获取、云端与本地切换、进程管理 |
+| [任务与归档](docs/usage.md) / [模板设置](docs/templates.md) | 多文件、目录结构、任务操作、Bot 提示和文件名 |
+| [维护与诊断](docs/operations.md) / [常见问题](docs/faq.md) | 日志、备份恢复、请求保护和故障排查 |
+| [开发指南](docs/development.md) / [文档站维护](docs/pages.md) | 本地开发、测试、文档构建与发布 |
+
+当前处于首版实现与验证阶段，真实 Telegram 大文件、飞牛 OS 和 TUN 代理的完整验收仍待完成，详见 [验证范围](docs/verification.md)。
+
+## 参与贡献
+
+欢迎通过 [Issues](https://github.com/yebook/TGDL/issues) 反馈问题、提出建议，或提交 Pull Request。开发环境和检查命令见 [开发指南](docs/development.md)，提交约定见 [贡献指南](CONTRIBUTING.md)，已记录的变更见 [CHANGELOG](CHANGELOG.md)。
+
+报告问题时请勿包含 Bot Token、API Hash、初始化密钥或真实媒体；安全漏洞请按 [安全报告指引](SECURITY.md) 提交。请求保护用于减少无效调用，无法保证 Telegram 不限制 Bot 或关联账号。
+
+## 许可与致谢
+
+本项目采用 [MIT 许可证](LICENSE)。感谢 [tg-bot-video-download](https://github.com/welkin621/tg-bot-video-download) 提供的参考思路。
