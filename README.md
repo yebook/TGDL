@@ -2,6 +2,8 @@
 
 把发送或转发给专属 Telegram Bot 的视频、图片，确认后保存到本地或 NAS。通过中文 WebUI 配置 Bot、查看任务和管理本地 Bot API，面向个人自托管与飞牛 OS 用户。
 
+**在线文档：[https://yebook.github.io/TGDL/](https://yebook.github.io/TGDL/)**
+
 ## 能做什么
 
 - 单文件、同组多文件及图片/视频混合归档，Bot 确认后下载并反馈结果。
