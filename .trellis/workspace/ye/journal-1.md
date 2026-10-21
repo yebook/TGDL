@@ -753,3 +753,34 @@ Recovered limited 17:00-18:30 task evidence; first Bot disconnect unavailable af
 ### Next Steps
 
 - Running user containers were not updated; deploy logging before further Bot testing. Real Telegram, proxy and fnOS gates remain pending.
+
+
+## Session 25: Remove GitHub Actions workflows
+
+**Date**: 2026-10-21
+**Task**: Remove GitHub Actions workflows
+**Branch**: `main`
+
+### Summary
+
+Removed the only GitHub Actions workflow at user request; local test scripts and application behavior are preserved.
+
+### Main Changes
+
+- Deleted .github/workflows/checks.yml; confirmed no remaining workflow files.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Scoped diff and whitespace checks only; no application regression needed for CI configuration removal.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Continue local checks when changing features; prior real Telegram and fnOS acceptance remains pending.

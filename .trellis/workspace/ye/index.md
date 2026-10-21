@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
-- **Last Active**: 2026-10-20
+- **Total Sessions**: 25
+- **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~755 | Active |
+| `journal-1.md` | ~786 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-10-21 | Remove GitHub Actions workflows | - | `main` |
 | 24 | 2026-10-20 | Incident timeline and persistent diagnostic logs | - | `main` |
 | 23 | 2026-10-20 | Persistent Telegram request safety | - | `main` |
 | 22 | 2026-10-20 | Fix initial GitHub CI regression assertions | - | `main` |
