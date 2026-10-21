@@ -88,22 +88,6 @@ rules provide proxy fail-closed behavior when a child dies. A metadata read in a
 worker claim cannot atomically certify independent process/network liveness and
 must not be described as such.
 
-The network supervisor treats invalid, stale or nonincreasing desired revisions
-as revocation: install blocking egress rules and stop its child before reporting
-failure, including when the previous mode was direct. Root-written network IPC
-uses random exclusive no-follow temporary files and atomic replacement; reads
-reject nonregular/hardlinked files and changed inode identity. The fixed
-initializer mounts only private control volumes, validates nonroot UID/GID and
-uses opened no-follow directory descriptors for ownership/mode changes, never
-recursive media permission changes. Status tests must exercise actual HTTP DTOs
-for `waiting_network` and proxy `unavailable`, as well as diagnostic projection.
-
-Runtime checks fresh network acknowledgement before local dispatch/poll/notify;
-the DB claim barrier atomically blocks settings edits/migrations. Kernel routing
-rules provide proxy fail-closed behavior when a child dies. A metadata read in a
-worker claim cannot atomically certify independent process/network liveness and
-must not be described as such.
-
 ## 4. Validation & Error Matrix
 
 | Condition | Required behavior |
