@@ -1043,3 +1043,32 @@ Built app/network images, completed stopped DB/control/full-cache backups and re
 ### Status
 
 [OK] **Completed**
+
+
+## Session 35: Encrypted backups, native proxy and media workflow verification
+
+**Date**: 2026-10-21
+**Task**: Encrypted backups, native proxy and media workflow verification
+**Branch**: `main`
+
+### Summary
+
+Consolidated first-release configuration backup, native proxy, grouping, validation and honest progress documentation; completed scoped reviews, documentation build and credential audit. Local download percentage remains a discussion-only design using TDLib snapshots. Parent task remains active for device acceptance.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `46fa1ca` | (see git log) |
+
+### Testing
+
+- [OK] Docs build: 21 Markdown inputs, 93 links, 16 public pages; staged whitespace and redacted credential checks passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Discuss the proposed local read-only progress bridge before implementation; complete separate fnOS and large-file acceptance.
