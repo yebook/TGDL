@@ -5,6 +5,8 @@ import time
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramUnauthorizedError
+from aiogram.methods import GetMe
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from test_pipeline import confirm_all, message
@@ -16,6 +18,7 @@ from app.db.models import IngestUpdate, Notification, Settings
 from app.main import create_app
 from app.schemas.contracts import SettingsPatch
 from app.services.local_api import LocalApiService
+from app.services.request_safety import SafetyDeferred
 
 HASH = "a" * 32
 
@@ -123,6 +126,97 @@ async def test_logout_only_once_then_ack_start_and_verify(managed, monkeypatch):
     assert service.read()["applied_mode"] == "local"
     assert service.read()["cloud_available_at"] > time.time()
     assert identity.await_count == 2
+
+
+@pytest.mark.parametrize("failure", [
+    TimeoutError("synthetic-private-detail"),
+    TelegramNetworkError(method=GetMe(), message="synthetic-private-detail"),
+])
+async def test_local_verification_network_failure_waits_for_manual_retry_without_logout_replay(managed, monkeypatch, failure):
+    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
+         telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime = managed.app.state.runtime
+    service = runtime.local_api
+    identity = AsyncMock(side_effect=[{"id": 123, "username": "test"}, failure,
+                                     {"id": 123, "username": "test"}])
+    logout = AsyncMock(return_value=True)
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    assert await service.reconcile(runtime)
+    command = service.read()["command_id"]
+    heartbeat(service, command_id=command, state="running", generation="new")
+    assert await service.reconcile(runtime)
+    state = service.read()
+    assert state["phase"] == "failed"
+    assert state["error_code"] == "LOCAL_API_CONNECTION_FAILED"
+    assert state["logout_done"] is True and state["logout_uncertain"] is False
+    assert state["applied_mode"] == "cloud"  # Only a verified target may commit.
+    status = service.status()
+    assert status["state"] == "running" and status["can_retry"]
+    assert "进程已启动" in status["message"] and "网络或代理" in status["message"]
+    assert "synthetic-private-detail" not in status["message"]
+    events = runtime.diagnostics.export()["events"]
+    assert any(event.get("event") == "local_api_transition" and event.get("outcome") == "failed"
+               and event.get("error_code") == "NETWORK_ERROR" for event in events)
+    assert "synthetic-private-detail" not in json.dumps(events)
+
+    # Repeated reconciliation and a fresh service instance retain the failure;
+    # neither status reads nor a later tick may issue another identity request.
+    reloaded = LocalApiService(managed.app.state.settings)
+    assert await reloaded.reconcile(runtime)
+    assert await reloaded.reconcile(runtime)
+    assert runtime.bot_status["message"] == status["message"]
+    assert identity.await_count == 2
+    logout.assert_awaited_once()
+
+    reloaded.action(False)
+    assert await reloaded.reconcile(runtime)
+    heartbeat(reloaded, command_id=reloaded.read()["command_id"], state="running", generation="new")
+    assert not await reloaded.reconcile(runtime)
+    assert reloaded.read()["applied_mode"] == "local"
+    assert reloaded.read()["phase"] == "idle"
+    assert reloaded.read()["cloud_available_at"] == state["cloud_available_at"]
+    assert identity.await_count == 3
+    logout.assert_awaited_once()
+
+
+@pytest.mark.parametrize("kind", ["deferred", "rate_limit", "unauthorized", "unknown"])
+async def test_local_verification_keeps_safety_deferrals_and_unknown_errors_distinct(managed, monkeypatch, kind):
+    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
+         telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime = managed.app.state.runtime
+    service = runtime.local_api
+    identity = AsyncMock(return_value={"id": 123, "username": "test"})
+    logout = AsyncMock(return_value=True)
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    assert await service.reconcile(runtime)
+    heartbeat(service, command_id=service.read()["command_id"], state="running", generation="new")
+    failures = {
+        "deferred": SafetyDeferred("synthetic-private-detail", time.time() + 600),
+        "rate_limit": TelegramRetryAfter(method=GetMe(), message="synthetic-private-detail", retry_after=600),
+        "unauthorized": TelegramUnauthorizedError(method=GetMe(), message="synthetic-private-detail"),
+        "unknown": RuntimeError("synthetic-private-detail"),
+    }
+    if kind == "unauthorized":
+        runtime.safety.observe("123:abc", None, unauthorized=True)
+    identity.side_effect = failures[kind]
+    assert await service.reconcile(runtime)
+    state = service.read()
+    assert state["logout_done"] is True and state["logout_uncertain"] is False
+    assert state["applied_mode"] == "cloud"
+    assert state.get("error_code") != "LOCAL_API_CONNECTION_FAILED"
+    if kind in {"deferred", "rate_limit"}:
+        assert state["phase"] == "verifying"  # Wait under the existing operation barrier.
+    else:
+        assert state["phase"] == "failed"
+    if kind == "unknown":
+        assert state["error_code"] == "LOCAL_API_OPERATION_FAILED"
+        assert "进程已启动" not in service.status()["message"]
+    assert "synthetic-private-detail" not in service.status()["message"]
+    assert "synthetic-private-detail" not in json.dumps(runtime.diagnostics.export()["events"])
+    assert identity.await_count == 2
+    logout.assert_awaited_once()
 
 
 async def test_ambiguous_logout_never_replays_or_cloud_reconnects(managed, monkeypatch):

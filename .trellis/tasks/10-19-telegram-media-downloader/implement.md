@@ -373,3 +373,12 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 
 - [x] Reorganized root README for first-time visitors: project/workflow/features, visible live docs, cloud/local comparison, three-step source-build deployment, documentation/contribution/security/MIT.
 - [x] README-only editorial change checked against Compose/environment/deployment sources and independent review. docs:check passed 20 Markdown files and 97 relative links; no application tests/build/container changes needed.
+
+## 40. Local API target-verification diagnostics
+
+- [x] Read-only deployment diagnosis found known successful cloud logout, matching running supervisor command, and local identity network failures. User confirmed system/browser proxy only. After user enabled host TUN, a single guarded existing retry completed local identity verification in 933 ms at 2026-10-21 06:22:13 UTC; applied mode local, phase idle, with no second cloud logout. No credentials were changed. This verifies mode/identity recovery, not large-file download, fnOS or the bundled proxy stack. Working containers were not rebuilt for the message-only patch.
+
+- [x] Classify recognized network failures only during local-target identity verification as LOCAL_API_CONNECTION_FAILED. Distinguish a running process from a verified Bot, preserve the safe actionable message on later paused reconciliation ticks, and include the existing NETWORK_ERROR classification in transition diagnostics without raw upstream text.
+- [x] Parameterized timeout/SDK network regressions cover retained successful logout, unchanged cloud cooldown/applied mode, no automatic identity retry after failure or service recreation, sanitized status/events, and a successful explicitly requested retry without replaying cloud logout.
+- [x] Scoped local API and diagnostic tests: 51 passed, 3 POSIX-only skipped on Windows. Ruff backend/tests/tools/scripts/deploy and mypy 29 application files passed using the existing virtual environment (uv cache access unavailable). No Docker or Telegram calls were made by this implementation check; actual connection recovery remains a deployment/network validation task.
+- [x] Independent review added negative classification cases for protection deferral, 429, 401 and unknown exceptions; six affected cases passed with Ruff/mypy and diff checks. Documentation link validation passed 20 Markdown files / 97 links. Parent acceptance remains open for actual large-file downloads, fnOS and bundled TUN deployment.

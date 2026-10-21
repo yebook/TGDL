@@ -79,6 +79,7 @@ keeps externally administered APIs compatible and disables process actions.
 | Unknown logout result | Persistent logout_uncertain; generic retry refused |
 | Cloud cooldown | Visible deadline; no early probe/connection |
 | Child crash | Sanitized state, bounded recovery; manual restart available |
+| Local target identity network failure | Persist LOCAL_API_CONNECTION_FAILED and actionable sanitized message; process running is not Bot readiness; preserve successful logout and request protection |
 | External deployment | No managed process command; explicit compatibility status |
 
 ## 5. Good / Base / Bad Cases

@@ -16,6 +16,7 @@ from app.core.errors import AppError
 from app.core.security import Secrets, private_file
 from app.db.models import LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
+from app.services.diagnostics import classify_error
 from app.services.request_safety import SafetyDeferred
 
 BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
@@ -28,6 +29,7 @@ ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保
                   "LOCAL_API_PROXY": "本地代理尚未生效，请检查代理与部署方式后重试",
                   "LOCAL_API_START_FAILED": "本地 API 进程启动失败，请检查凭据和网络后重试",
                   "LOCAL_API_COMMAND_TIMEOUT": "本地 API 操作等待超时，请检查服务状态后重试",
+                  "LOCAL_API_CONNECTION_FAILED": "本地 API 进程已启动，但 Bot 连接验证失败；请检查应用与本地 API 之间的连接，以及本地 API 的 Telegram 网络或代理。进程运行不代表 Bot 已就绪，排查后可手动重试",
                   "LOCAL_API_ACTIVATION_REQUIRED": "已保留原本地 API 设置；请点击重试操作确认启用 WebUI 管理，之后才会执行云端退出和连接",
                   "LOCAL_API_PREFLIGHT_FAILED": "云端 Bot 预检查失败，请检查 Token 和云端代理后重试"}
 
@@ -141,7 +143,8 @@ class LocalApiService:
             values = dict(row.values)
         if self.diagnostics and "phase" in updates:
             self.diagnostics.emit("local_api_transition", dedupe=True, level="info",
-                                  outcome=updates["phase"], mode=values.get("target_mode"))
+                                  outcome=updates["phase"], mode=values.get("target_mode"),
+                                  error_code="NETWORK_ERROR" if updates.get("error_code") == "LOCAL_API_CONNECTION_FAILED" else None)
         return values
 
     def applied(self) -> dict[str, Any]:
@@ -327,7 +330,8 @@ class LocalApiService:
                 return True
             return False
         if state.get("phase") in {"failed", "blocked", "logout_uncertain"}:
-            runtime.bot_status = {"state": "error", "username": "", "message": MESSAGES[state["phase"]]}
+            runtime.bot_status = {"state": "error", "username": "", "message":
+                                  ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES[state["phase"]])}
             return True
         try:
             values = UserSettings.model_validate_json(self.settings.secrets.decrypt(state["snapshot"])) if state.get("snapshot") else current
@@ -434,6 +438,10 @@ class LocalApiService:
                     try:
                         identity = await client.identity()
                         await asyncio.to_thread(runtime.remember_identity, identity)
+                    except Exception as exc:
+                        if target == "local" and classify_error(exc)[0] == "NETWORK_ERROR":
+                            raise AppError("LOCAL_API_CONNECTION_FAILED", ERROR_MESSAGES["LOCAL_API_CONNECTION_FAILED"]) from exc
+                        raise
                     finally:
                         await client.close()
                 await asyncio.to_thread(self.update, applied_mode=target, phase="idle", operation_id=None,
