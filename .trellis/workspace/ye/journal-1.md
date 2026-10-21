@@ -917,3 +917,37 @@ User accepted existing email/internal notes. Committed prior log feature separat
 ### Next Steps
 
 - https://yebook.github.io/TGDL/ is live. Future main docs changes auto-publish. Parent task remains open for real Telegram/fnOS/proxy acceptance; no app/NAS container update.
+
+
+## Session 30: Update local Docker application after docs publication
+
+**Date**: 2026-10-21
+**Task**: Update local Docker application after docs publication
+**Branch**: `main`
+
+### Summary
+
+Rebuilt and updated only local app container; stopped backup and independent read-only deployment acceptance passed. Supervisor and media preserved.
+
+### Main Changes
+
+- App inspected image502e1b147880 to f14161d7c848; rollback image and stopped backup .runtime/local-docker/backups/before-update-20261021T035213Z retained.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b66889f` | (see git log) |
+
+### Testing
+
+- [OK] HTTP live/ready200, initializedtrue, migration0007, effective/default retention7 and production clear UI/status DTO fields verified.
+- [OK] Independent mount/media hash preservation and backup database integrity/foreign-key checks passed; no actual log clear or Telegram probe.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- WebUI http://127.0.0.1:8000 now serves current app. Parent task remains in progress for real Telegram/fnOS/proxy acceptance.

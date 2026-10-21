@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 29
+- **Total Sessions**: 30
 - **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~919 | Active |
+| `journal-1.md` | ~953 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 30 | 2026-10-21 | Update local Docker application after docs publication | `b66889f` | `main` |
 | 29 | 2026-10-21 | Publish documentation to GitHub Pages | `76ea00a`, `59b4718`, `85fdb40` | `main` |
 | 28 | 2026-10-21 | Docs-only Pages automation and remote privacy review | - | `main` |
 | 27 | 2026-10-21 | Diagnostic retention and public documentation | - | `main` |
