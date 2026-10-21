@@ -134,6 +134,17 @@ and keep existing task/job snapshots across upgrades and retries.
 
 ## Local UI-only startup boundary
 
+Deployment update verification: compare mounts as a mapping keyed by container
+Destination rather than Docker's non-stable array order. Preserve the old image
+using the running container's inspected Image identifier, not an intermediate
+build digest. For private named control volumes on Windows, use a stopped,
+read-only volume helper and stream the backup archive to the host if host bind
+write permissions reject the helper; never loosen control-volume permissions.
+Back up before starting a version with age-based log maintenance, and verify
+database integrity and a private media hash manifest without printing secrets
+or media filenames. Do not use Telegram probes or manual log clearing as an
+application deployment smoke test.
+
 - Scope: Windows Docker preview before API credentials exist; see `docs/local-run.md`.
 - Command: `docker compose --env-file .runtime/local-docker/.env -f .runtime/local-docker/compose.web.yaml up -d --no-build` after building `tgd-app:0.1.0`.
 - Contract: bind loopback only; isolated Docker data/download/cache roots; API base remains `http://bot-api:8081`. Missing API credentials must never be replaced with fake values. Keep the Docker roots when switching to full Compose; do not reuse native Windows storage identity markers.

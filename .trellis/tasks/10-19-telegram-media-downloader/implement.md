@@ -362,3 +362,9 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 - [x] Committed log retention separately (76ea00a), then documentation/Pages (59b4718), and pushed to origin/main.
 - [x] GitHub run 39539596903 build/deploy succeeded. Live homepage, operations page and JS resource return HTTP 200 under https://yebook.github.io/TGDL/.
 - [x] Independent live browser checks passed: home, Chinese search to operations anchor, mobile navigation to deployment and no horizontal overflow. Final journal records publication; parent task remains open for real Telegram/fnOS/proxy acceptance. No running app/NAS deployment.
+
+## 38. Update local application container after Pages publication
+
+- [x] Recorded images/mounts and private media manifest; stopped consistent backup at .runtime/local-docker/backups/before-update-20261021T035213Z/ includes app data/config/control volume and rollback image metadata. Backup database integrity/foreign-key checks passed. Windows helper bind-write failure was corrected by streaming a read-only control-volume archive; original services were restored before retry.
+- [x] Built current source and recreated only app: inspected image 502e1b147880 to f14161d7c848. Supervisor original container/image/mounts and unrelated containers preserved; app mounts normalized by Destination and download counts/sizes/SHA256 unchanged.
+- [x] Independent read-only acceptance passed: live/ready 200, initialized true, migration 0007, effective/default retention 7, new status DTO fields and production JS clear action. No actual log clearing, administrator session or Telegram probe; current Bot connectivity not established by application health. Recorded session and preserved parent task for real-device acceptance.
