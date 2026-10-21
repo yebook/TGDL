@@ -2,11 +2,15 @@
 import { onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { errorMessage, request } from '../api/client'
-import { bytes, dateTime } from '../api/format'
+import { bytes } from '../api/format'
 import { downloadDiagnosticLog } from '../api/diagnosticLog'
 import type { DiagnosticLogExport, DiagnosticLogStatus } from '../api/types'
 
 const props = defineProps<{ status?: DiagnosticLogStatus; stale?: boolean }>()
+function cleanupDateTime(value: string | null) {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('zh-CN', { timeZone: props.status?.timezone, hour12: false })
+}
 const emit = defineEmits<{ changed: [status: DiagnosticLogStatus] }>()
 const busy = ref<'export' | 'clear' | null>(null)
 let confirming = false
@@ -53,12 +57,13 @@ async function clearLogs() {
     <div class="diagnostic-title"><h3>诊断日志</h3><el-tag :type="status.state === 'ready' ? 'success' : 'danger'" round>{{ status.state === 'ready' ? '记录中' : '记录异常' }}</el-tag></div>
     <p :class="status.state === 'error' ? 'warning-text' : 'field-hint'">{{ status.message }}</p>
     <p class="field-hint">单文件上限 {{ bytes(status.max_file_bytes) }}，保留 {{ status.backup_count }} 个归档。导出为 JSONL，不包含凭据和媒体正文。</p>
-    <p class="field-hint">{{ status.retention_days === 0 ? '已关闭按天清理' : `自动清理超过 ${status.retention_days} 天的记录` }}；容量轮转始终有效。可在设置页修改保留天数。</p>
-    <dl class="small-meta"><div><dt>上次清理</dt><dd>{{ dateTime(status.last_cleanup_at) }}</dd></div><div><dt>下次自动清理</dt><dd>{{ status.retention_days === 0 ? '已关闭' : dateTime(status.next_cleanup_at) }}</dd></div></dl>
+    <p class="field-hint">{{ status.retention_days === 0 ? '已关闭按天清理' : `每天 ${status.cleanup_time}（${status.timezone}）清理超过 ${status.retention_days} 天的记录` }}；容量轮转始终有效。可在设置页修改。</p>
+    <dl class="small-meta"><div><dt>当前日志占用</dt><dd>{{ bytes(status.total_bytes) }} · {{ status.file_count }} 个文件</dd></div><div><dt>上次清理</dt><dd>{{ cleanupDateTime(status.last_cleanup_at) }}</dd></div><div><dt>下次自动清理</dt><dd>{{ status.retention_days === 0 ? '已关闭' : cleanupDateTime(status.next_cleanup_at) }}</dd></div></dl>
     <div class="diagnostic-log-actions"><el-button :loading="busy === 'export'" :disabled="stale || !!busy" @click="exportLogs">导出诊断日志</el-button><el-button type="danger" plain :loading="busy === 'clear'" :disabled="stale || !!busy" @click="clearLogs">清理诊断日志</el-button></div>
   </div>
 </template>
 <style scoped>
+.small-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
 .diagnostic-log-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .diagnostic-log-actions .el-button { margin-left: 0; }
 </style>

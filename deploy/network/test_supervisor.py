@@ -1,5 +1,6 @@
 """Isolated control-plane tests; these do not claim Linux/TUN verification."""
 
+import importlib.util
 import json
 import os
 import tempfile
@@ -25,6 +26,90 @@ def payload(**changes):
 
 
 class ContractTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX link semantics")
+    def test_desired_rejects_links_and_nonregular_files_without_blocking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.write_bytes(payload())
+            for name in ("hardlink", "symlink", "fifo"):
+                target = root / name
+                if name == "hardlink":
+                    os.link(source, target)
+                elif name == "symlink":
+                    target.symlink_to(source)
+                else:
+                    os.mkfifo(target)
+                with self.subTest(name=name), self.assertRaises((OSError, subject.ConfigError)):
+                    subject.read_desired(target)
+
+    @unittest.skipIf(os.name == "nt", "POSIX link semantics")
+    def test_atomic_status_does_not_truncate_attacker_linked_temporary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.write_text("preserve")
+            os.link(outside, root / "applied.tmp")
+            (root / "applied.json").symlink_to(outside)
+            subject.atomic_json(root / "applied.json", {"state": "pending"}, 0o640)
+            self.assertEqual(outside.read_text(), "preserve")
+            self.assertFalse((root / "applied.json").is_symlink())
+            self.assertEqual(json.loads((root / "applied.json").read_text()), {"state": "pending"})
+
+    @unittest.skipIf(os.name == "nt", "POSIX directory permissions")
+    def test_private_volume_init_only_changes_roots_and_rejects_symlink(self):
+        spec = importlib.util.spec_from_file_location("volume_initializer", Path(__file__).with_name("init-volumes.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            control, network = root / "control", root / "network"
+            control.mkdir()
+            network.mkdir()
+            child = control / "existing"
+            child.write_text("preserve")
+            child.chmod(0o600)
+            roots = {"/run/tgd-api-control": control, "/run/tgd-network": network}
+            with patch.object(module, "Path", side_effect=lambda name: roots[name]):
+                module.initialize(os.getuid() or 1000, os.getgid() or 1000)
+            self.assertEqual(control.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(network.stat().st_mode & 0o777, 0o770)
+            self.assertEqual(child.read_text(), "preserve")
+            self.assertEqual(child.stat().st_mode & 0o777, 0o600)
+            link = root / "link"
+            link.symlink_to(network, target_is_directory=True)
+            roots["/run/tgd-api-control"] = link
+            with patch.object(module, "Path", side_effect=lambda name: roots[name]), self.assertRaises(ValueError):
+                module.initialize(1000, 1000)
+
+    def test_nonincreasing_intent_revokes_previous_direct_before_failed_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            handlers = {}
+            waits = []
+            events = []
+            def sleep(_):
+                waits.append(True)
+                if len(waits) == 2:
+                    handlers[subject.signal.SIGTERM](None, None)
+            supervisor = subject.Supervisor(root, root, "172.30.88.0/24", 1000)
+            supervisor.status = lambda revision, state, message: events.append(("status", state))
+            supervisor.stop_process = Mock()
+            with (
+                patch.object(subject, "SHARED", root), patch.object(subject, "PRIVATE", root),
+                patch.object(subject.os, "chown", create=True),
+                patch.object(subject.signal, "signal", side_effect=lambda sig, handler: handlers.update({sig: handler})),
+                patch.object(subject, "Supervisor", return_value=supervisor),
+                patch.object(subject, "read_desired", side_effect=[payload(revision=2, enabled=False), payload(revision=1)]),
+                patch.object(subject, "install_firewall", side_effect=lambda *args, **kwargs: events.append(("firewall", kwargs.get("direct", False)))),
+                patch.object(subject.time, "sleep", side_effect=sleep),
+            ):
+                subject.main()
+            failed_index = events.index(("status", "failed"))
+            self.assertEqual(events[failed_index - 1], ("firewall", False))
+            self.assertIn(("firewall", True), events[:failed_index])
+            self.assertIsNone(supervisor.applied_revision)
+
     def test_rejects_commands_urls_and_extra_fields(self):
         for value in (
             payload(command="echo unsafe"),
@@ -139,18 +224,18 @@ class ApplyTests(unittest.TestCase):
     @patch.object(subject, "run_quiet")
     @patch.object(subject, "install_firewall")
     @patch.object(subject, "resolve_proxy", return_value="192.168.1.3")
-    def test_failed_candidate_restores_previous_revision(self, resolve, firewall, run):
+    def test_failed_candidate_stays_blocked_without_previous_config_fallback(self, resolve, firewall, run):
         self.supervisor.active_config = {"old": "validated"}
         self.supervisor.active_endpoint = ("192.168.1.2", 1080)
         self.supervisor.applied_revision = 1
-        self.supervisor.verify = Mock(side_effect=[False, True])
+        self.supervisor.verify = Mock(return_value=False)
         self.supervisor.apply(subject.decode(payload(revision=2)))
-        self.assertEqual(self.supervisor.applied_revision, 1)
+        self.assertIsNone(self.supervisor.applied_revision)
         self.assertEqual(
-            self.supervisor.start_process.call_args.args, ({"old": "validated"},)
+            self.supervisor.start_process.call_count, 1
         )
         self.assertEqual(
-            firewall.call_args.args, ("172.30.88.0/24", ("192.168.1.2", 1080))
+            firewall.call_args.args, ("172.30.88.0/24", None)
         )
         self.assertEqual(
             self.supervisor.status.call_args.args,
@@ -171,13 +256,29 @@ class ApplyTests(unittest.TestCase):
             (3, "applied", "proxy_live_check_passed"),
         )
 
-    def test_disabling_requires_explicit_redeployment(self):
+    @patch.object(subject, "install_firewall")
+    def test_disabling_acknowledges_direct_without_redeployment(self, firewall):
         self.supervisor.apply(subject.decode(payload(enabled=False, host="")))
         self.supervisor.start_process.assert_not_called()
         self.assertEqual(
             self.supervisor.status.call_args.args,
-            (1, "restart_required", "redeploy_direct_stack"),
+            (1, "disabled", "direct_ready"),
         )
+        self.assertEqual(self.supervisor.applied_revision, 1)
+        self.assertTrue(firewall.call_args.kwargs["direct"])
+
+    @patch.object(subject, "install_firewall")
+    @patch.object(subject, "resolve_proxy", side_effect=subject.ConfigError("fail"))
+    def test_enabling_blocks_previous_direct_before_resolution(self, resolve, firewall):
+        self.supervisor.apply(subject.decode(payload(enabled=False)))
+        events = []
+        firewall.side_effect = lambda *args, **kwargs: events.append("firewall")
+        resolve.side_effect = lambda *args: events.append("resolve") or (_ for _ in ()).throw(subject.ConfigError("fail"))
+        self.supervisor.apply(subject.decode(payload(revision=2)))
+        self.assertEqual(events, ["firewall", "resolve"])
+        self.assertIsNone(self.supervisor.applied_revision)
+        self.assertNotIn("direct", firewall.call_args.kwargs)
+        self.assertEqual(self.supervisor.status.call_args.args[1], "failed")
 
     def test_ack_contains_no_credentials(self):
         self.supervisor.status = subject.Supervisor.status.__get__(self.supervisor)
@@ -185,7 +286,7 @@ class ApplyTests(unittest.TestCase):
             self.supervisor.status(1, "failed", "proxy_validation_failed")
         value = json.loads((self.supervisor.shared / "applied.json").read_text())
         self.assertEqual(
-            set(value), {"desired_revision", "applied_revision", "state", "message"}
+            set(value), {"desired_revision", "applied_revision", "state", "message", "heartbeat_at"}
         )
         self.assertNotIn("secret", json.dumps(value))
 

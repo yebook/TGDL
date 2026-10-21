@@ -31,7 +31,10 @@ class Runtime:
     def __init__(self, db: Database, config: Config, settings: SettingsService,
                  tasks: TaskService, storage: StorageManager) -> None:
         self.db, self.config, self.settings, self.tasks, self.storage = db, config, settings, tasks, storage
-        self.diagnostics = DiagnosticLog(config.data_dir, retention_days=settings.read()[1].diagnostic_log_retention_days)
+        log_settings = settings.read()[1]
+        self.diagnostics = DiagnosticLog(config.data_dir, retention_days=log_settings.diagnostic_log_retention_days,
+                                         cleanup_time=log_settings.diagnostic_log_cleanup_time,
+                                         timezone=log_settings.timezone)
         self.safety = RequestSafetyService(db)
         self.safety.diagnostics = self.diagnostics
         tasks.diagnostics = self.diagnostics
@@ -72,7 +75,9 @@ class Runtime:
 
     def maintain_diagnostics(self) -> None:
         _, configured, _ = self.settings.read()
-        self.diagnostics.maintain(configured.diagnostic_log_retention_days)
+        self.diagnostics.maintain(configured.diagnostic_log_retention_days,
+                                  cleanup_time=configured.diagnostic_log_cleanup_time,
+                                  timezone=configured.timezone)
 
     async def diagnostic_loop(self) -> None:
         # Separate from Bot scheduling: migration, outages and missing tokens cannot skip cleanup.
@@ -87,7 +92,7 @@ class Runtime:
                 raise
             except Exception:
                 self.diagnostics.cleanup_error = True
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
 
     def recover_generation(self, initial: bool = False) -> None:
         generation_path = self.config.bot_api_root / ".tgd-api-generation"
@@ -129,7 +134,12 @@ class Runtime:
             await self.client.close()
 
     async def ensure_client(self) -> None:
-        _, settings, _ = await asyncio.to_thread(self.settings.read)
+        revision, settings, _ = await asyncio.to_thread(self.settings.read)
+        if settings.bot_api_mode == "local":
+            proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
+            if proxy["state"] != ("active" if settings.proxy.enabled else "disabled"):
+                self.bot_status.update(state="connecting", message=proxy["message"])
+                return
         generation = ""
         if self.config.managed_local_api:
             state = await asyncio.to_thread(self.local_api.read)
@@ -264,7 +274,8 @@ class Runtime:
                 # Pending proxy updates are handed over only after current acquisition/copy slots drain.
                 if active == 0 and self.config.proxy_capable and settings.bot_api_mode == "local":
                     try:
-                        await asyncio.to_thread(self.settings.write_proxy_desired)
+                        async with self.poll_lock, self.notify_lock:
+                            await asyncio.to_thread(self.settings.write_proxy_desired)
                         self.network_write_error = False
                     except OSError:
                         self.network_write_error = True
@@ -273,7 +284,7 @@ class Runtime:
                                 and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
                                 and self.safety.status(settings.bot_token)["state"] == "ready"
                                 and not blocked and (settings.bot_api_mode == "cloud" or not self.network_write_error)
-                                and (not settings.proxy.enabled or proxy["state"] == "active"))
+                                and (proxy["state"] == ("active" if settings.proxy.enabled else "disabled")))
                 if self.config.managed_local_api and settings.bot_api_mode == "local":
                     applied = await asyncio.to_thread(self.local_api.applied)
                     can_dispatch = can_dispatch and applied.get("state") == "running" and applied.get("generation") == self.client_generation
@@ -357,7 +368,12 @@ class Runtime:
                     if not client or bot_id is None:
                         await asyncio.sleep(1)
                         continue
-                    _, configured, _ = await asyncio.to_thread(self.settings.read)
+                    revision, configured, _ = await asyncio.to_thread(self.settings.read)
+                    if configured.bot_api_mode == "local":
+                        network = await asyncio.to_thread(self.settings.proxy_status, revision, configured)
+                        if network["state"] != ("active" if configured.proxy.enabled else "disabled"):
+                            await asyncio.sleep(0.5)
+                            continue
                     if self.client_signature != self.settings.client_signature(configured):
                         await asyncio.sleep(0.5)
                         continue

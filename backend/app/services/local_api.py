@@ -19,14 +19,15 @@ from app.schemas.contracts import UserSettings
 from app.services.diagnostics import classify_error
 from app.services.request_safety import SafetyDeferred
 
-BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
+BUSY_PHASES = {"draining", "waiting_network", "logging_out", "starting", "verifying", "cooldown"}
 MESSAGES = {"idle": "", "draining": "等待当前下载和消息处理完成", "logging_out": "正在退出云端 Bot API",
             "starting": "正在应用本地 API 服务配置", "verifying": "正在验证 Bot 连接", "cooldown": "等待 Telegram 云端冷却结束",
             "blocked": "存在恢复待处理任务，请先重启本地 API 恢复", "logout_uncertain": "云端退出结果不确定；请核实退出后明确确认继续，系统不会自动重试退出或回连云端",
             "failed": "操作未完成，请检查凭据、网络或代理后重试"}
+MESSAGES["waiting_network"] = "正在应用网络配置，等待直连或代理就绪"
 ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保存配置",
                   "LOCAL_API_UNAVAILABLE": "本地 API 管理组件未连接，请检查部署",
-                  "LOCAL_API_PROXY": "本地代理尚未生效，请检查代理与部署方式后重试",
+                  "LOCAL_API_PROXY": "网络配置尚未生效，请检查网络服务、代理地址和端口后重试；无需更换部署文件",
                   "LOCAL_API_START_FAILED": "本地 API 进程启动失败，请检查凭据和网络后重试",
                   "LOCAL_API_COMMAND_TIMEOUT": "本地 API 操作等待超时，请检查服务状态后重试",
                   "LOCAL_API_CONNECTION_FAILED": "本地 API 进程已启动，但 Bot 连接验证失败；请检查应用与本地 API 之间的连接，以及本地 API 的 Telegram 网络或代理。进程运行不代表 Bot 已就绪，排查后可手动重试",
@@ -59,7 +60,8 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
         raise AppError("LOCAL_API_BUSY", "请先完成当前 Bot 的本地连接，再更换 Bot Token", 409)
     if state.get("phase", "idle") in BUSY_PHASES | {"logout_uncertain"} and (changed or connection_changed):
         raise AppError("LOCAL_API_BUSY", "本地 API 操作尚未完成，请完成或重试当前操作后修改连接配置", 409)
-    if changed or connection_changed and state.get("phase") in {"failed", "blocked"} or token_changed and candidate.bot_token and state.get("applied_mode") == "local":
+    network_changed = candidate.proxy.model_dump() != old_proxy and candidate.bot_api_mode == "local"
+    if changed or network_changed or connection_changed and state.get("phase") in {"failed", "blocked"} or token_changed and candidate.bot_token and state.get("applied_mode") == "local":
         old_token = os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", ""))) or candidate.bot_token
         cloud_snapshot = candidate.model_copy(update={"bot_token": old_token, "proxy": UserSettings.model_validate(
             {"proxy": json.loads(os.environ["TGD_PROXY"]) if "TGD_PROXY" in os.environ else old_proxy}).proxy,
@@ -68,6 +70,9 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
                      snapshot=crypto.encrypt(candidate.model_dump_json()), command_id=None,
                      credential_revision=settings.revision + 1, error_code="",
                      cloud_snapshot=crypto.encrypt(cloud_snapshot.model_dump_json()))
+        if network_changed and not changed and not token_changed and state.get("applied_mode") == "local" and not state.get("logout_uncertain"):
+            state["action"] = "network"
+        state.update(network_wait_started_at=None, network_retry=False)
         if token_changed and candidate.bot_token:
             # A corrected/replaced credential must preflight and log out that
             # target Bot, rather than repeatedly retry a rejected old token.
@@ -203,7 +208,7 @@ class LocalApiService:
                 raise AppError("LOCAL_API_LOGOUT_UNCERTAIN", MESSAGES["logout_uncertain"], 409)
             if not restart and state.get("phase") == "idle":
                 return status
-            state.update(phase="draining", command_id=None, error_code="")
+            state.update(phase="draining", command_id=None, error_code="", network_retry=True, network_wait_started_at=None)
             if restart:
                 state.update(action="recover_restart" if status["desired_mode"] == "cloud" else "restart",
                              operation_id=uid(), target_mode=status["desired_mode"])
@@ -223,6 +228,9 @@ class LocalApiService:
             if any(getattr(candidate, field) != getattr(saved, field) for field in (
                     "bot_token", "telegram_api_id", "telegram_api_hash")):
                 raise AppError("LOCAL_API_BUSY", "请先保存连接配置并完成切换，再校验本地 Bot", 409)
+            revision = self.settings.read()[0]
+            if candidate.proxy != saved.proxy or self.settings.proxy_status(revision, candidate)["state"] not in {"active", "disabled"}:
+                raise AppError("LOCAL_API_PROXY", "请先保存代理配置并等待网络生效，再校验 Bot", 409)
         if candidate.bot_api_mode == "cloud" and state.get("cloud_available_at", 0) > time.time():
             raise AppError("LOCAL_API_COOLDOWN", "Telegram 云端仍在冷却中", 409)
 
@@ -249,7 +257,8 @@ class LocalApiService:
             applied = self.applied()
             if (state.get("logout_done") and state.get("target_mode") == "local" and saved.bot_api_mode == "local"
                     and state.get("command_id") and applied.get("command_id") == state["command_id"]
-                    and applied.get("state") == "running" and state.get("snapshot")):
+                    and applied.get("state") == "running" and state.get("snapshot")
+                    and self.settings.proxy_status(self.settings.read()[0], saved)["state"] == ("active" if saved.proxy.enabled else "disabled")):
                 target = UserSettings.model_validate_json(self.settings.secrets.decrypt(state["snapshot"]))
                 if all(getattr(saved, field) == getattr(target, field) for field in (
                         "bot_token", "telegram_api_id", "telegram_api_hash")):
@@ -356,12 +365,20 @@ class LocalApiService:
                     raise AppError("LOCAL_API_UNAVAILABLE", "管理组件未连接")
                 if (target == "local" or restart) and (not values.telegram_api_id or not values.telegram_api_hash):
                     raise AppError("LOCAL_API_CREDENTIALS", "请填写 API ID 和 API Hash")
-                if target == "local" and values.proxy.enabled:
-                    await asyncio.to_thread(self.settings.write_proxy_desired)
-                    proxy = await asyncio.to_thread(self.settings.proxy_status, revision, values)
+                if target == "local" and (self.config.proxy_capable or values.proxy.enabled):
+                    frozen_revision = state.get("credential_revision", revision)
+                    await asyncio.to_thread(self.settings.write_proxy_desired, frozen_revision, values,
+                                            force=bool(state.get("network_retry")))
+                    if state.get("network_retry"):
+                        state = await asyncio.to_thread(self.update, network_retry=False)
+                    proxy = await asyncio.to_thread(self.settings.proxy_status, frozen_revision, values)
                     if proxy["state"] in {"pending", "applying"}:
+                        if not state.get("network_wait_started_at"):
+                            await asyncio.to_thread(self.update, phase="waiting_network", network_wait_started_at=time.time())
+                        elif time.time() - state["network_wait_started_at"] > 90:
+                            raise AppError("LOCAL_API_PROXY", "网络组件未确认配置，请检查服务后重试")
                         return True
-                    if proxy["state"] != "active":
+                    if proxy["state"] != ("active" if values.proxy.enabled else "disabled"):
                         raise AppError("LOCAL_API_PROXY", "等待本地代理配置生效")
                 if target == "local" and not state.get("command_id"):
                     await asyncio.to_thread(self.preflight_control)
@@ -398,7 +415,12 @@ class LocalApiService:
                     await asyncio.to_thread(self.update, phase="cooldown")
                     return True
                 action = "restart" if restart else "start" if target == "local" else "stop"
-                if not state.get("command_id"):
+                if state.get("action") == "network":
+                    # Network-only edits keep the child/generation; never log out or restart it.
+                    command_id = applied.get("command_id")
+                    if applied.get("state") != "running" or not command_id:
+                        raise AppError("LOCAL_API_START_FAILED", "本地 API 服务未运行，请手动重启")
+                elif not state.get("command_id"):
                     await asyncio.to_thread(self.update, phase="starting")
                     command_id = await asyncio.to_thread(self.command, action, values, state)
                     state = await asyncio.to_thread(self.read)

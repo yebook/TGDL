@@ -42,6 +42,7 @@ class UserSettings(BaseModel):
     download_concurrency: int = Field(default=3, ge=1, le=16)
     max_auto_retries: int = Field(default=3, ge=0, le=10)
     diagnostic_log_retention_days: int = Field(default=7, ge=0, le=3650, strict=True)
+    diagnostic_log_cleanup_time: str = Field(default="08:00", pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
     allowed_user_ids: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list, max_length=100)
     download_root_id: str = Field(default="default", min_length=1, max_length=80)
     timezone: str = "Asia/Shanghai"
@@ -95,6 +96,7 @@ class SettingsPatch(BaseModel):
     download_concurrency: int | None = None
     max_auto_retries: int | None = None
     diagnostic_log_retention_days: int | None = Field(default=None, ge=0, le=3650, strict=True)
+    diagnostic_log_cleanup_time: str | None = Field(default=None, pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
     allowed_user_ids: list[int] | None = None
     download_root_id: str | None = None
     timezone: str | None = None

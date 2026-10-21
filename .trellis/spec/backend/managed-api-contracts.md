@@ -63,9 +63,46 @@ Only verified target identity permits applied-mode commit and resumption.
 
 Manual restart drains owners and uses a new command; the app and container keep
 running. Supervisor/container failure itself may require host restart policy or
-deployment intervention and must be displayed honestly. Direct/TUN topology is
-chosen at deployment time, not switched by process controls. Managed=false
-keeps externally administered APIs compatible and disables process actions.
+deployment intervention and must be displayed honestly. Standard Compose always
+includes a network supervisor. Direct and proxy commands use the same topology
+and are switched from WebUI; fresh matching heartbeat/revision acknowledgement
+is required for either. Commands use the frozen operation snapshot before cloud
+logout. `waiting_network` has a bounded deadline and appears in DTOs/diagnostics.
+Proxy-only changes drain consumers without replaying logout. Enabled proxy
+failure never falls back to direct or an obsolete configuration. Managed=false
+disables process actions for independently administered APIs.
+
+The network supervisor treats invalid, stale or nonincreasing desired revisions
+as revocation: install blocking egress rules and stop its child before reporting
+failure, including when the previous mode was direct. Root-written network IPC
+uses random exclusive no-follow temporary files and atomic replacement; reads
+reject nonregular/hardlinked files and changed inode identity. The fixed
+initializer mounts only private control volumes, validates nonroot UID/GID and
+uses opened no-follow directory descriptors for ownership/mode changes, never
+recursive media permission changes. Status tests must exercise actual HTTP DTOs
+for `waiting_network` and proxy `unavailable`, as well as diagnostic projection.
+
+Runtime checks fresh network acknowledgement before local dispatch/poll/notify;
+the DB claim barrier atomically blocks settings edits/migrations. Kernel routing
+rules provide proxy fail-closed behavior when a child dies. A metadata read in a
+worker claim cannot atomically certify independent process/network liveness and
+must not be described as such.
+
+The network supervisor treats invalid, stale or nonincreasing desired revisions
+as revocation: install blocking egress rules and stop its child before reporting
+failure, including when the previous mode was direct. Root-written network IPC
+uses random exclusive no-follow temporary files and atomic replacement; reads
+reject nonregular/hardlinked files and changed inode identity. The fixed
+initializer mounts only private control volumes, validates nonroot UID/GID and
+uses opened no-follow directory descriptors for ownership/mode changes, never
+recursive media permission changes. Status tests must exercise actual HTTP DTOs
+for `waiting_network` and proxy `unavailable`, as well as diagnostic projection.
+
+Runtime checks fresh network acknowledgement before local dispatch/poll/notify;
+the DB claim barrier atomically blocks settings edits/migrations. Kernel routing
+rules provide proxy fail-closed behavior when a child dies. A metadata read in a
+worker claim cannot atomically certify independent process/network liveness and
+must not be described as such.
 
 ## 4. Validation & Error Matrix
 

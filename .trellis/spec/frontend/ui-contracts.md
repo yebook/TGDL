@@ -101,7 +101,7 @@ stable over at least two automatic refreshes on desktop and mobile.
 | Invalid user IDs | Identify invalid input before request |
 | Poll failure | Error without late overwrite |
 | Unsaved navigation | Discard confirmation |
-| Saved proxy without ACK | Pending/failure/redeploy status, not active |
+| Saved proxy without fresh matching ACK | Pending/failure/unavailable status, not active; same Compose for direct and proxy |
 
 ## 5. Good / Base / Bad Cases
 Good: PATCH followed by an older poll preserves the saved revision. Base: empty tasks explain forwarding media to Bot. Bad: unmounted poll overwrites a new view, or blank input erases an existing secret.
@@ -137,8 +137,14 @@ JSONL; it cannot establish a historical ban reason when evidence is absent.
 
 Diagnostic retention uses the ordinary settings form/revision: default 7 days,
 integer range 0–3650; zero disables age cleanup while capacity rotation remains.
-Show applied policy and cleanup timestamps in system diagnostics. Manual clear
-requires explicit confirmation explaining that only diagnostic logs are removed,
+Show applied policy, cleanup timestamps, readable `total_bytes` and `file_count`
+for fixed log files in system diagnostics. Settings
+expose `diagnostic_log_cleanup_time` as labelled `HH:MM`, default `08:00`, using
+the application's timezone. Explain daily execution from the next future
+scheduled time; never promise immediate/hourly scans on save. Render log schedule
+timestamps in that configured timezone. A status refresh must preserve edits.
+
+Manual clear requires explicit confirmation explaining that only diagnostic logs are removed,
 and that recording continues. Export/clear are mutually busy and use existing
 session, stale and unmount guards; cancellation sends no DELETE. Operation
 feedback is transient; status polling must not reset unsaved settings.

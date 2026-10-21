@@ -19,6 +19,7 @@ const form = reactive<SettingsValues>({
   bot_token: '', allowed_user_ids: [], confirmation_timeout_seconds: 1800, download_concurrency: 3,
   max_auto_retries: 3, download_root_id: 'default', timezone: 'Asia/Shanghai',
   diagnostic_log_retention_days: 7,
+  diagnostic_log_cleanup_time: '08:00',
   proxy: { enabled: false, scheme: 'socks5', host: '', port: 1080, username: '', password: '' },
 })
 const userIds = ref('')
@@ -42,8 +43,8 @@ const proxyStatus = computed(() => {
   // A diagnostic request started before PATCH may resolve after it. Never show its older revision as current.
   return live && (live.desired_revision ?? 0) >= (saved?.desired_revision ?? 0) ? live : saved
 })
-const proxyLabels: Record<string, string> = { disabled: '未启用', pending: '等待应用', applying: '正在应用', active: '已应用', failed: '应用失败', restart_required: '需要重启网络组件' }
-const proxyMessages: Record<string, string> = { disabled: '当前未启用代理。', pending: '代理变更等待后台确认，尚未生效。', applying: '正在应用代理配置，请稍候。', active: '代理配置已应用。', failed: '代理配置应用失败，请检查连接与部署状态。', restart_required: '请按部署指南重启或重建网络组件。' }
+const proxyLabels: Record<string, string> = { disabled: '未启用', pending: '等待应用', applying: '正在应用', active: '已应用', failed: '应用失败', unavailable: '网络组件未连接' }
+const proxyMessages: Record<string, string> = { disabled: '当前未启用代理。', pending: '代理变更等待后台确认，尚未生效。', applying: '正在应用代理配置，请稍候。', active: '代理配置已应用。', failed: '代理配置应用失败，请检查代理地址、认证和可用性。', unavailable: '网络组件未连接，请在系统状态页查看详情。' }
 const current = computed(() => JSON.stringify({ form, userIds: userIds.value, clearBotToken: clearBotToken.value, clearProxyPassword: clearProxyPassword.value, clearApiHash: clearApiHash.value }))
 const dirty = computed(() => !!snapshot.value && snapshot.value !== current.value)
 const examples = computed(() => templateExamples(form.confirmation_template, form.filename_template, form.confirmation_timeout_seconds))
@@ -77,6 +78,7 @@ async function load() {
   finally { loading.value = false }
 }
 function payload() {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.diagnostic_log_cleanup_time)) throw new Error('日志自动清理时间须为 00:00–23:59。')
   if (!Number.isInteger(form.diagnostic_log_retention_days) || form.diagnostic_log_retention_days < 0 || form.diagnostic_log_retention_days > 3650) throw new Error('诊断日志保留天数须为 0–3650 的整数。')
   if (examples.value.confirmationError || examples.value.fileError) throw new Error(examples.value.confirmationError || examples.value.fileError)
   if (form.telegram_api_id && !/^[1-9]\d*$/.test(form.telegram_api_id)) throw new Error('API ID 请填写正整数，或留空。')
@@ -170,7 +172,7 @@ onMounted(load)
           </div>
           <LocalApiPanel :status="liveSystem?.local_api" :bot="liveSystem?.bot" :disabled="busy || dirty || conflict" :stale="!!statusError" @changed="localApiChanged" />
           <p v-if="dirty" class="field-hint">请先保存或放弃修改，再进行服务操作。</p>
-          <details class="settings-details"><summary>连接与切换须知</summary><div class="details-content"><p>保存与连接校验分开；已保存选择与实际使用可能暂时不同，请查看服务状态。切换期间 Bot 会暂停接收，已排队任务会保留。</p><p v-if="liveSystem?.local_api?.managed">后台等待下载安全结束后协调切换；云端退出后回切需等待至少 10 分钟。应用与 WebUI 持续运行；其他程序须停止使用同一个 Bot。</p><p v-else>当前为外部管理模式，需按部署指南启动本地服务、执行云端退出。WebUI 不创建或重启容器。</p><p>更换 Bot 身份前，请结束原 Bot 的活动和待确认请求。本地代理仍需部署配套 TUN 网络组件。</p></div></details>
+          <details class="settings-details"><summary>连接与切换须知</summary><div class="details-content"><p>保存与连接校验分开；已保存选择与实际使用可能暂时不同，请查看服务状态。切换期间 Bot 会暂停接收，已排队任务会保留。</p><p v-if="liveSystem?.local_api?.managed">填写本地 API 凭据、按需设置下方代理并保存，后台等待网络就绪和下载安全结束后切换。云端退出后回切需等待至少 10 分钟，WebUI 持续可用。</p><p v-else>当前为外部管理模式，请按部署指南配置本地服务。</p><p>其他程序须停止使用同一个 Bot。更换 Bot 身份前，请结束原 Bot 的活动和待确认请求。</p></div></details>
         </section>
         <section class="panel settings-section">
           <div class="section-heading"><span class="section-number">02</span><div><h2>下载与保存</h2><p class="muted">后续任务使用新设置，已有任务保留保存位置。</p></div></div>
@@ -183,7 +185,7 @@ onMounted(load)
             <el-form-item label="归档时区" label-for="timezone">
               <template #label><span class="setting-label">归档时区<SettingsSource :source="settings.sources.timezone" :editable="editable('timezone')" /></span></template>
               <el-input id="timezone" aria-label="归档时区" v-model="form.timezone" :disabled="!editable('timezone')" placeholder="Asia/Shanghai" />
-              <p class="field-hint">用于归档日期与文件名时间，例如 Asia/Shanghai。</p>
+              <p class="field-hint">用于归档日期、文件名时间和每日日志清理，例如 Asia/Shanghai。</p>
             </el-form-item>
             <el-form-item label="确认有效期（分钟）" label-for="confirmation-timeout">
               <template #label><span class="setting-label">确认有效期（分钟）<SettingsSource :source="settings.sources.confirmation_timeout_seconds" :editable="editable('confirmation_timeout_seconds')" /></span></template>
@@ -238,17 +240,22 @@ onMounted(load)
             <el-switch id="proxy-enabled" aria-label="启用代理" v-model="form.proxy.enabled" :disabled="!editable('proxy')" /><span class="switch-label">{{ form.proxy.enabled ? '已开启（当前表单）' : '已关闭（当前表单）' }}</span>
           </el-form-item>
           <div v-if="form.proxy.enabled" class="form-grid"><el-form-item label="协议" label-for="proxy-scheme"><el-select id="proxy-scheme" v-model="form.proxy.scheme" :disabled="!editable('proxy')"><el-option label="SOCKS5" value="socks5" /><el-option label="HTTP CONNECT" value="http" /></el-select></el-form-item><el-form-item label="代理地址" label-for="proxy-host"><el-input id="proxy-host" v-model="form.proxy.host" :disabled="!editable('proxy')" placeholder="代理服务的 IP 或域名" /></el-form-item><el-form-item label="端口" label-for="proxy-port"><el-input-number id="proxy-port" v-model="form.proxy.port" :min="1" :max="65535" :disabled="!editable('proxy')" /></el-form-item><el-form-item label="用户名（可选）" label-for="proxy-username"><el-input id="proxy-username" v-model="form.proxy.username" :disabled="!editable('proxy')" autocomplete="off" /></el-form-item><el-form-item label="密码（可选）" label-for="proxy-password"><el-input id="proxy-password" v-model="form.proxy.password" type="password" show-password autocomplete="new-password" :disabled="!editable('proxy') || clearProxyPassword" :placeholder="settings.configured.proxy_password ? '已配置 · 留空保持不变' : '无认证可留空'" /><p class="field-hint">已保存的密码留空不变。</p><el-checkbox v-if="settings.configured.proxy_password && editable('proxy')" v-model="clearProxyPassword">清除已保存的代理密码</el-checkbox></el-form-item></div>
-          <p class="field-hint proxy-mode-hint">{{ form.bot_api_mode === 'cloud' ? '启用后，云端由应用直接使用代理，无需 TUN。保存后请等待连接确认。' : '本地模式需配套 TUN 网络组件；仅填写代理不会改变 Docker 网络。' }}</p>
-          <div class="proxy-saved-state"><div class="proxy-state-heading"><strong>已保存配置</strong><span class="proxy-state-label">{{ proxyLabels[proxyStatus?.state ?? ''] || proxyStatus?.state || '等待确认' }}</span></div><el-alert :title="proxyStatus?.message || proxyMessages[proxyStatus?.state ?? ''] || '代理状态等待后台确认。'" :type="proxyStatus?.state === 'active' ? 'success' : proxyStatus?.state === 'failed' ? 'error' : proxyStatus?.state === 'restart_required' ? 'warning' : 'info'" :closable="false" show-icon /><details class="settings-details"><summary>查看应用版本与状态说明</summary><div class="details-content"><p>期望版本 {{ proxyStatus?.desired_revision ?? '—' }} / 已应用版本 {{ proxyStatus?.applied_revision ?? '—' }}</p><p>以上为已保存配置的后台状态，不包含尚未保存的修改；已应用也不代表 Bot 已连接。</p></div></details></div>
+          <p class="field-hint proxy-mode-hint">{{ form.bot_api_mode === 'cloud' ? '云端连接由应用直接使用代理。' : '本地 API 由内置网络组件应用代理。' }}保存后自动生效，无需额外 Compose 文件。请填写容器可访问的地址，127.0.0.1 指向容器自身。</p>
+          <div class="proxy-saved-state"><div class="proxy-state-heading"><strong>代理生效状态</strong><span class="proxy-state-label">{{ proxyLabels[proxyStatus?.state ?? ''] || proxyStatus?.state || '等待确认' }}</span></div><el-alert :title="proxyStatus?.message || proxyMessages[proxyStatus?.state ?? ''] || '代理状态等待后台确认。'" :type="proxyStatus?.state === 'active' ? 'success' : ['failed', 'unavailable'].includes(proxyStatus?.state ?? '') ? 'error' : 'info'" :closable="false" show-icon /><details class="settings-details"><summary>查看配置详情</summary><div class="details-content"><p>已保存版本 {{ proxyStatus?.desired_revision ?? '—' }} / 已应用版本 {{ proxyStatus?.applied_revision ?? '—' }}</p><p>状态对应已保存配置；Bot 是否连接请查看上方服务状态。</p></div></details></div>
         </section>
         <section class="panel settings-section">
           <div class="section-heading"><span class="section-number">05</span><div><h2>诊断日志</h2><p class="muted">自动清理过期记录，保留空间上限。</p></div></div>
-          <el-form-item label="日志保留天数" label-for="log-retention-days">
+          <div class="form-grid"><el-form-item label="日志保留天数" label-for="log-retention-days">
             <template #label><span class="setting-label">日志保留天数<SettingsSource :source="settings.sources.diagnostic_log_retention_days" :editable="editable('diagnostic_log_retention_days')" /></span></template>
             <el-input-number id="log-retention-days" aria-label="日志保留天数" v-model="form.diagnostic_log_retention_days" :min="0" :max="3650" :step="1" :disabled="!editable('diagnostic_log_retention_days')" />
-            <p class="field-hint">默认 7 天，0 关闭按天清理。容量轮转始终有效，记录可能提前移除；保存后最迟一小时内清理过期记录。</p>
+            <p class="field-hint">默认 7 天，0 关闭按天清理。容量轮转始终有效，记录可能提前移除。</p>
           </el-form-item>
-          <p class="field-hint">在系统状态页可导出或手动清理诊断日志，不影响任务、媒体文件或连接配置。</p>
+          <el-form-item label="每日自动清理时间" label-for="log-cleanup-time">
+            <template #label><span class="setting-label">每日自动清理时间<SettingsSource :source="settings.sources.diagnostic_log_cleanup_time" :editable="editable('diagnostic_log_cleanup_time')" /></span></template>
+            <el-input id="log-cleanup-time" aria-label="每日自动清理时间" type="time" v-model="form.diagnostic_log_cleanup_time" :disabled="!editable('diagnostic_log_cleanup_time')" />
+            <p class="field-hint">默认 08:00，每日执行一次，使用归档时区 {{ form.timezone }}。保存后从下一个计划时间执行。</p>
+          </el-form-item></div>
+          <p class="field-hint">在系统状态页可查看日志占用、导出或手动清理，不影响任务、媒体文件或连接配置。</p>
         </section>
       </el-form>
     </div>

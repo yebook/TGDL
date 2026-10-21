@@ -21,7 +21,7 @@ class CurrentUser(BaseModel):
 
 
 class ProxyStatus(BaseModel):
-    state: Literal["disabled", "pending", "applying", "active", "failed", "restart_required"]
+    state: Literal["disabled", "pending", "applying", "active", "failed", "unavailable"]
     desired_revision: int
     applied_revision: int | None
     message: str
@@ -147,7 +147,7 @@ class LocalApiStatus(BaseModel):
     desired_mode: Literal["cloud", "local"]
     applied_mode: Literal["cloud", "local"] | None
     operation_id: str | None
-    phase: Literal["idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain", "failed"]
+    phase: Literal["idle", "draining", "waiting_network", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain", "failed"]
     message: str
     generation: str | None
     last_heartbeat_at: str | None
@@ -162,6 +162,10 @@ class DiagnosticLogStatus(BaseModel):
     max_file_bytes: int
     backup_count: int
     retention_days: int
+    cleanup_time: str
+    timezone: str
+    total_bytes: int
+    file_count: int
     last_cleanup_at: str | None
     next_cleanup_at: str | None
 

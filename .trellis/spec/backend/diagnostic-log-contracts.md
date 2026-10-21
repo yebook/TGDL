@@ -78,8 +78,14 @@ the existing settings revision/source/editability contracts. Zero disables age
 cleanup only; capacity rotation remains enabled. Saving this policy does not
 validate Telegram or reconnect a client. No database migration is required.
 
-Run maintenance on startup and at least hourly independently of Bot connectivity
-and migration pauses. Expire records using each event's UTC timestamp, preserving
+`diagnostic_log_cleanup_time` is a validated `HH:MM` setting, default `08:00`.
+Use the configured application timezone. Startup or policy/timezone changes
+schedule the next future local occurrence without an immediate scan. Check due
+time once per minute independently of Bot connectivity and migration pauses.
+Run at most one due cleanup and schedule the next future occurrence, never a
+catch-up burst; the first DST-fold occurrence is used and nonexistent times skip
+to the next day. Manual clearing does not reschedule daily maintenance.
+Expire records using each event's UTC timestamp, preserving
 newer records in mixed-age files. Never rewrite from export(), whose 1000-event
 window is intentionally incomplete. Bound processing and serialize maintenance,
 write, rotation and export. Validate fixed log and maintenance paths against
@@ -90,8 +96,13 @@ Origin/CSRF mutation checks. It accepts no paths and clears diagnostic logs only
 including repetition/recovery caches, then records the fixed `logs_cleared` event.
 Tasks, downloaded media, credentials and request protection state remain intact.
 Age cleanup must also prevent expired cached summaries from reappearing.
-Status additionally exposes `retention_days`, `last_cleanup_at` and
-`next_cleanup_at` (UTC ISO or null). Report partial failures accurately.
+Status additionally exposes `retention_days`, `cleanup_time`, `timezone`,
+`last_cleanup_at` and `next_cleanup_at` (UTC ISO or null), plus `total_bytes` and
+`file_count`. Sum only validated fixed active/archive files using bounded metadata
+reads, not an export/history scan. Reject symlinks/hardlinks/nonregular files and
+report failure accurately. Usage excludes application DB, media, cache and Docker
+logs. Missing files count as zero. Daily timing and usage changes must preserve
+the authentication, source/editability and unsaved-form contracts.
 
 Tests use isolated temporary logs: boundaries/mixed ages, disabled policy,
 concurrent write/export/clear, malformed records, safe paths, failure isolation,

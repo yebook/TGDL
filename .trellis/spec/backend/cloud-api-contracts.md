@@ -45,18 +45,16 @@ Recovery follows each job's recorded mode: cloud interrupted streams do not wait
 for local API generation; uncertain local acquisitions retain their slots.
 Existing Bot identity, queued-job and notification ownership guards still apply.
 
-Root `compose.yaml` starts only app by default; `--profile local-api` also starts
-the local API component, whose entrypoint requires API ID/Hash. WebUI does not
-operate Docker or automatically call Telegram logOut. Official migration and
-cooldown requirements are documented in `docs/telegram-api.md` and linked from
-`docs/deployment.md`. Migration instructions must keep the local API stopped
-while saving local mode offline, then stop the app and other cloud consumers
-before calling cloud `logOut`. Only after successful logout may the local API
-and app start. This prevents a saved mode's runtime reconnect from logging in
-locally before cloud logout. Local login is immediate after successful logout;
-the 10-minute restriction applies to returning to the cloud, so wait for it
-before saving or validating cloud mode on a running app. Never automate
-logout on restart or discard pending updates as part of migration.
+Root `compose.yaml` is the single standard deployment, including app, managed
+API and network supervisor plus a bounded private-volume initializer. No proxy
+Compose variant or deployment profile is required. Cloud HTTP proxy remains
+in the application SDK; local direct/proxy routing uses explicit acknowledged
+network commands. WebUI never operates Docker. API migration is coordinated by
+the managed service's durable barriers and logout rules. Official migration and
+cooldown requirements are documented in `docs/telegram-api.md`. Local login is
+immediate after successful cloud logout; the 10-minute restriction applies to
+returning to cloud. Never replay logout on restart, bypass uncertain outcomes,
+silently fall back to direct when proxy is enabled, or discard pending updates.
 
 ## 4. Validation & Error Matrix
 

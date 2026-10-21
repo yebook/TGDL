@@ -1,5 +1,9 @@
 import json
+import math
 import os
+import stat
+import time
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -11,6 +15,21 @@ from app.core.templates import DEFAULT_CONFIRMATION_TEMPLATE, LEGACY_CONFIRMATIO
 from app.db.models import Job, Settings
 from app.db.session import Database
 from app.schemas.contracts import SettingsPatch, UserSettings
+
+
+def network_json(path: Path) -> dict[str, Any]:
+    """Bounded regular-file IPC read; status may be owned by the network service."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        named = path.lstat()
+        if (not stat.S_ISREG(named.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino) or info.st_size > 8192):
+            raise ValueError("Invalid network file")
+        value = json.loads(stream.read(8193))
+    if not isinstance(value, dict):
+        raise ValueError("Invalid network file")
+    return value
 
 
 class SettingsService:
@@ -80,25 +99,33 @@ class SettingsService:
             return {"state": "disabled" if not values.proxy.enabled else "active" if active else "pending",
                     "desired_revision": revision, "applied_revision": revision if active else None,
                     "message": "" if active or not values.proxy.enabled else "等待云端 Bot 通过代理连接成功"}
-        if not values.proxy.enabled:
-            if self.config.proxy_capable:
-                return {"state": "restart_required", "desired_revision": revision, "applied_revision": None,
-                        "message": "禁用代理需切换到直连 Compose 并重建服务"}
+        if not values.proxy.enabled and not self.config.proxy_capable:
             return {"state": "disabled", "desired_revision": revision, "applied_revision": None, "message": ""}
         if not self.config.proxy_capable:
-            return {"state": "restart_required", "desired_revision": revision, "applied_revision": None,
-                    "message": "请使用代理版 Compose 重建应用和 Bot API"}
+            return {"state": "unavailable", "desired_revision": revision, "applied_revision": None,
+                    "message": "网络管理组件未启用，请使用标准部署配置"}
+        desired = self.proxy_payload(revision, values)["revision"]
         try:
-            data = json.loads((self.config.network_dir / "applied.json").read_text())
+            data = network_json(self.config.network_dir / "applied.json")
+            heartbeat = data.get("heartbeat_at")
+            if (not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool) or not math.isfinite(heartbeat)
+                    or not -5 <= time.time() - heartbeat <= 15):
+                raise ValueError("Stale network status")
             applied = data.get("applied_revision")
-            desired = self.proxy_payload(revision, values)["revision"]
-            state = "active" if data.get("state") == "applied" and applied == desired else (
-                "pending" if data.get("state") == "applied" else data.get("state", "pending"))
+            if type(applied) is not int or not 1 <= applied <= 2**53 - 1:
+                applied = None
+            ready = "applied" if values.proxy.enabled else "disabled"
+            state = ("active" if values.proxy.enabled else "disabled") if (
+                data.get("state") == ready and type(applied) is int and applied == desired
+                and type(data.get("desired_revision")) is int and data.get("desired_revision") == desired) else (
+                "failed" if data.get("state") == "failed" and data.get("desired_revision") == desired else "pending")
+            messages = {"active": "代理已生效", "disabled": "直连已就绪", "pending": "正在应用网络配置，请稍候",
+                        "failed": "网络配置未生效，请检查代理地址、端口及容器网络；可修正后保存或重试操作"}
             return {"state": state, "desired_revision": desired, "applied_revision": applied,
-                    "message": str(data.get("message", ""))[:100]}
-        except (OSError, ValueError, KeyError):
-            return {"state": "pending", "desired_revision": revision, "applied_revision": None,
-                    "message": "等待网络组件应用配置"}
+                    "message": messages[state]}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
+            return {"state": "pending", "desired_revision": desired, "applied_revision": None,
+                    "message": "等待网络组件响应，请检查服务状态"}
 
     def public(self) -> dict[str, Any]:
         revision, values, sources = self.read()
@@ -174,7 +201,7 @@ class SettingsService:
         """Keep the network revision stable until actual proxy settings change."""
         proxy = values.proxy.model_dump()
         try:
-            previous = json.loads((self.config.network_dir / "desired.json").read_text())
+            previous = network_json(self.config.network_dir / "desired.json")
             previous_revision = previous.pop("revision")
             if type(previous_revision) is int and 1 <= previous_revision < 2**53 - 1:
                 if previous == proxy:
@@ -184,15 +211,18 @@ class SettingsService:
             pass
         return {"revision": revision, **proxy}
 
-    def write_proxy_desired(self) -> None:
-        revision, values, _ = self.read()
+    def write_proxy_desired(self, revision: int | None = None, values: UserSettings | None = None, *, force: bool = False) -> None:
+        if revision is None or values is None:
+            revision, values, _ = self.read()
         if values.bot_api_mode == "cloud" or not self.config.proxy_capable:
             return
         self.config.network_dir.mkdir(parents=True, exist_ok=True)
         payload = self.proxy_payload(revision, values)
+        if force:
+            payload["revision"] += 1
         desired_path = self.config.network_dir / "desired.json"
         try:
-            if json.loads(desired_path.read_text()) == payload:
+            if network_json(desired_path) == payload:
                 return
         except (OSError, ValueError):
             pass

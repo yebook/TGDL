@@ -6,6 +6,7 @@ export const localApiStates: Record<LocalApiStatus['state'], string> = {
   running: '进程运行中', stopping: '正在停止', failed: '进程异常',
 }
 export const localApiPhases: Record<LocalApiStatus['phase'], string> = {
+  waiting_network: '等待网络配置就绪',
   idle: '无进行中的操作', draining: '等待下载与连接安全结束', logging_out: '正在退出云端', starting: '正在启动本地 API',
   verifying: '正在验证 Bot 连接', cooldown: '等待云端冷却', blocked: '操作受阻', logout_uncertain: '云端退出结果待确认', failed: '操作失败',
 }

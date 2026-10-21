@@ -9,9 +9,10 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import (
     TelegramBadRequest,
@@ -33,7 +34,7 @@ METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "ans
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
             "cancelling", "fetching", "saving", "partial_success", "expired", "awaiting_confirmation", "collecting",
-            "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
+            "idle", "draining", "waiting_network", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST", "NETWORK_ERROR",
           "SERVER_ERROR", "UNKNOWN_ERROR", "BOT_REQUEST_PAUSED", "CANCELLED", "INTERRUPTED",
           "ACQUISITION_UNCERTAIN", "SIZE_MISMATCH", "CLOUD_FILE_TOO_LARGE", "CLOUD_DOWNLOAD_FAILED",
@@ -95,7 +96,7 @@ def classify_error(error: BaseException) -> tuple[str, int | None]:
 class DiagnosticLog:
     def __init__(self, data_dir: Path, *, max_file_bytes: int = 10 * 1024 * 1024,
                  backup_count: int = 3, clock: Callable[[], float] = time.time,
-                 retention_days: int = 7, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 retention_days: int = 7, cleanup_time: str = "08:00", timezone: str = "Asia/Shanghai") -> None:
         self.directory = data_dir / "logs"
         self.max_file_bytes, self.backup_count, self.clock = max_file_bytes, backup_count, clock
         self.lock = threading.RLock()
@@ -103,8 +104,8 @@ class DiagnosticLog:
         self.error = False
         self.repeated: dict[tuple[str, ...], tuple[float, int, dict[str, Scalar]]] = {}
         self.retention_days = retention_days
-        self.monotonic = monotonic
-        self.cleanup_due = monotonic()
+        self.cleanup_time, self.timezone = cleanup_time, timezone
+        self.cleanup_due = self._next_cleanup()
         self.last_cleanup_at: str | None = None
         self.cleanup_error = False
 
@@ -228,21 +229,58 @@ class DiagnosticLog:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
+            total_bytes = file_count = 0
+            try:
+                # Four fixed lstat calls only; never read history or enumerate the directory.
+                if self.directory.is_symlink():
+                    raise OSError(errno.EPERM, "Unsafe diagnostic directory")
+                if self.directory.exists() and not stat.S_ISDIR(self.directory.lstat().st_mode):
+                    raise OSError(errno.EPERM, "Unsafe diagnostic directory")
+                for index in range(self.backup_count + 1):
+                    try:
+                        info = self._path(index).lstat()
+                    except FileNotFoundError:
+                        continue
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise OSError(errno.EPERM, "Unsafe diagnostic file")
+                    total_bytes += info.st_size
+                    file_count += 1
+            except OSError:
+                self.error = True
+                total_bytes = file_count = 0
             failed = self.error or self.cleanup_error
-            next_at = datetime.fromtimestamp(self.clock() + max(0, self.cleanup_due - self.monotonic()), UTC).isoformat() if self.retention_days else None
+            next_at = datetime.fromtimestamp(self.cleanup_due, UTC).isoformat() if self.retention_days else None
             return {"state": "error" if failed else "ready", "message": "诊断日志不可用，请检查数据卷权限或空间" if failed else "诊断日志已启用",
                     "max_file_bytes": self.max_file_bytes, "backup_count": self.backup_count,
                     "retention_days": self.retention_days, "last_cleanup_at": self.last_cleanup_at,
-                    "next_cleanup_at": next_at}
+                    "next_cleanup_at": next_at, "cleanup_time": self.cleanup_time, "timezone": self.timezone,
+                    "total_bytes": total_bytes, "file_count": file_count}
 
-    def maintain(self, retention_days: int, *, force: bool = False) -> None:
+    def _next_cleanup(self) -> float:
+        now = self.clock()
+        zone = ZoneInfo(self.timezone)
+        date = datetime.fromtimestamp(now, zone).date()
+        hour, minute = map(int, self.cleanup_time.split(":"))
+        for offset in range(4):
+            local = datetime.combine(date + timedelta(days=offset), datetime.min.time()).replace(hour=hour, minute=minute)
+            candidate = local.replace(tzinfo=zone, fold=0)
+            # Skip nonexistent spring-forward times. The first fall-back occurrence runs once.
+            if candidate.astimezone(UTC).astimezone(zone).replace(tzinfo=None) == local and candidate.timestamp() > now:
+                return candidate.timestamp()
+        raise ValueError("No future diagnostic cleanup time")
+
+    def maintain(self, retention_days: int, *, cleanup_time: str = "08:00",
+                 timezone: str = "Asia/Shanghai", force: bool = False) -> None:
         """Apply saved policy offline; bounded maintenance failures never roll back settings."""
         with self.lock:
-            changed = retention_days != self.retention_days
+            changed = (retention_days, cleanup_time, timezone) != (self.retention_days, self.cleanup_time, self.timezone)
             self.retention_days = retention_days
+            self.cleanup_time, self.timezone = cleanup_time, timezone
+            if changed:
+                self.cleanup_due = self._next_cleanup()
             if not retention_days:
                 return
-            if not (force or changed or self.monotonic() >= self.cleanup_due):
+            if not (force or self.clock() >= self.cleanup_due):
                 return
             try:
                 self._check()
@@ -260,8 +298,7 @@ class DiagnosticLog:
             except Exception:
                 self.cleanup_error = True
             finally:
-                # Monotonic scheduling survives backwards wall-clock adjustments.
-                self.cleanup_due = self.monotonic() + 3600
+                self.cleanup_due = self._next_cleanup()
 
     def _prune_file(self, path: Path, cutoff: float) -> None:
         temporary = self.directory / "events.jsonl.cleanup"
@@ -325,7 +362,6 @@ class DiagnosticLog:
                 self._write(project_event({"event": "logs_cleared", "level": "info",
                                            "timestamp": datetime.fromtimestamp(self.clock(), UTC).isoformat()}))
                 self.last_cleanup_at = datetime.fromtimestamp(self.clock(), UTC).isoformat()
-                self.cleanup_due = self.monotonic() + 3600
                 self.cleanup_error = False
                 return self.status()
             except Exception:

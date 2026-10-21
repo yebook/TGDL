@@ -6,6 +6,14 @@
 
 ## Requirements
 
+### First-release simplification increment (2026-10-21)
+
+- User requests configurable daily diagnostic cleanup time, default 08:00 in the application's configured timezone; keep seven-day retention and capacity rotation. Show current diagnostic-log disk usage and file count. Daily cleanup is independent of Bot availability; schedule the next future daily occurrence at startup or policy change rather than repeatedly scanning on restart/status reads. Manual clearing remains available.
+- Use one standard compose.yaml for direct and proxied operation. Proxy enable/disable and cloud/local API switching belong in WebUI; remove the separate compose.proxy.yaml deployment path. Keep truthful desired/applied state, progress, safe manual recovery, existing downloads and request protection. Local proxy must cover the official API's Telegram transport, without silent direct fallback while proxy is enabled.
+- Automate private control-volume setup where possible; do not require users to prepare Linux permissions by hand on Docker Desktop. Explain unavoidable Linux-container/TUN host prerequisites clearly.
+- User explicitly waived pre-release version compatibility. Simplify obsolete deployment paths and compatibility branches affected by this change; do not reset test data, credentials, download ownership, logout uncertainty or durable safety state. Compatibility policy will be reconsidered after a formal release.
+- Acceptance: configurable HH:MM time saved offline; no scheduled age cleanup before next daily time; one run when due; safe fixed-file byte usage updates after rotation/manual clear. One Compose parses with blank Telegram credentials; direct/proxy selection works through explicit acknowledged network commands; local API activates only after target network and Bot verification. Targeted automated backend/frontend/network/deployment checks, with real fnOS/TUN/download limitations recorded separately.
+
 权威文档：[需求与实施准备文档](../../../docs/project-requirements.md)。
 
 - 已确认需求见第 2 节，首版范围及排除项见第 3 节。

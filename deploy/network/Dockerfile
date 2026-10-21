@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends iptables iprout
 COPY --from=build /out/sing-box /usr/local/bin/sing-box
 COPY --from=build /src/LICENSE /usr/share/licenses/sing-box/LICENSE
 COPY deploy/network/supervisor.py /opt/tgd/supervisor.py
+COPY deploy/network/init-volumes.py /opt/tgd/init-volumes.py
 ARG SING_BOX_REV=bc35aca01704497c179da1a03e45ad8e32f1a51b
 LABEL org.opencontainers.image.source="https://github.com/SagerNet/sing-box" org.opencontainers.image.revision=$SING_BOX_REV
 ENTRYPOINT ["python", "/opt/tgd/supervisor.py"]

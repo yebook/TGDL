@@ -309,7 +309,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             identity = await validate_bot(candidate)
         warnings = []
         if candidate.bot_api_mode == "local" and candidate.proxy.enabled and not cfg.proxy_capable:
-            warnings.append("代理已配置后仍需使用代理版 Compose 重建服务")
+            warnings.append("本地网络管理组件不可用，请检查标准部署的组件状态和 TUN 支持")
         try:
             await asyncio.to_thread(storage.get(candidate.download_root_id).check)
         except (OSError, AppError):

@@ -12,3 +12,4 @@
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/public-docs-plan.md", "reason": "Review independent static build, curated output, MIT, portable links and accurate Pages deployment limits."}
 {"file": ".trellis/spec/frontend/documentation-contracts.md", "reason": "Verify public site source/output links, exclusion, independent dependencies and hosting claims."}
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/remote-privacy-audit.md", "reason": "Pre-public reachable-history audit scope, redacted email/internal-note findings and publication limitations."}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/unified-proxy-plan.md", "reason": "Review daily logs and unified routing against network barriers and fail-closed requirements"}

@@ -177,7 +177,7 @@ def run(origin: str, timeout: float, username: str | None = None, password: str 
                 require(isinstance(bot.get("state"), str)
                         and bot["state"] in {"unconfigured", "connecting", "online", "error"})
                 require(isinstance(proxy.get("state"), str)
-                        and proxy["state"] in {"disabled", "pending", "applying", "active", "failed", "restart_required"})
+                        and proxy["state"] in {"disabled", "pending", "applying", "active", "failed", "unavailable"})
                 roots = storage.get("roots")
                 require(isinstance(roots, list) and all(isinstance(r, dict) and type(r.get("available")) is bool for r in roots))
                 require(integer(recovery.get("blocked_jobs")) and integer(queue.get("active"))

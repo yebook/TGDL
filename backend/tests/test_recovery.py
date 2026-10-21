@@ -119,13 +119,48 @@ def test_proxy_handshake_pending_failed_and_active(client: TestClient, config: C
     payload = json.loads((config.network_dir / "desired.json").read_text())
     assert set(payload) == {"revision", "enabled", "scheme", "host", "port", "username", "password"}
     assert state.settings.public()["proxy_status"]["state"] == "pending"
-    (config.network_dir / "applied.json").write_text(json.dumps({"desired_revision": 2, "applied_revision": 2, "state": "applied", "message": "proxy_live_check_passed"}))
+    (config.network_dir / "applied.json").write_text(json.dumps({"desired_revision": 2, "applied_revision": 2, "state": "applied", "message": "proxy_live_check_passed", "heartbeat_at": time.time()}))
     assert state.settings.public()["proxy_status"]["state"] == "active"
     state.settings.save(SettingsPatch(revision=2), candidate)
     assert state.settings.public()["proxy_status"]["state"] == "active"
     disabled = candidate.model_copy(update={"proxy": candidate.proxy.model_copy(update={"enabled": False})})
     state.settings.save(SettingsPatch(revision=3), disabled)
-    assert state.settings.public()["proxy_status"]["state"] == "restart_required"
+    assert state.settings.public()["proxy_status"]["state"] == "pending"
+    state.settings.write_proxy_desired()
+    revision = state.settings.proxy_payload(4, disabled)["revision"]
+    (config.network_dir / "applied.json").write_text(json.dumps({"desired_revision": revision, "applied_revision": revision,
+        "state": "disabled", "heartbeat_at": time.time()}))
+    assert state.settings.public()["proxy_status"]["state"] == "disabled"
+    (config.network_dir / "applied.json").write_text(json.dumps({"desired_revision": revision, "applied_revision": revision,
+        "state": "disabled", "heartbeat_at": time.time() - 60}))
+    assert state.settings.public()["proxy_status"]["state"] == "pending"
+
+
+@pytest.mark.parametrize("invalid", ["stale", "future", "nan", "wrong_revision", "array", "oversized", "hardlink"])
+def test_network_ack_never_accepts_stale_or_malformed_files(client: TestClient, config: Config, invalid: str) -> None:
+    import json
+    import os
+
+    service = client.app.state.settings
+    config.proxy_capable = True
+    candidate = service.candidate(SettingsPatch(bot_api_mode="local"))
+    service.save(SettingsPatch(revision=1), candidate)
+    service.write_proxy_desired()
+    revision = service.proxy_payload(2, candidate)["revision"]
+    data = {"desired_revision": revision, "applied_revision": revision, "state": "disabled", "heartbeat_at": time.time()}
+    if invalid == "stale":
+        data["heartbeat_at"] = time.time() - 30
+    elif invalid == "future":
+        data["heartbeat_at"] = time.time() + 30
+    elif invalid == "nan":
+        data["heartbeat_at"] = float("nan")
+    elif invalid == "wrong_revision":
+        data["applied_revision"] = revision + 1
+    path = config.network_dir / "applied.json"
+    path.write_text("[]" if invalid == "array" else " " * 8193 if invalid == "oversized" else json.dumps(data))
+    if invalid == "hardlink":
+        os.link(path, config.network_dir / "linked.json")
+    assert service.public()["proxy_status"]["state"] == "pending"
 
 
 def test_group_scheduler_shares_global_slots(client: TestClient) -> None:

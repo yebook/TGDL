@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { cooldownText, modeLabel } from '../src/api/localApi'
+import { cooldownText, localApiPhases, modeLabel } from '../src/api/localApi'
 
 describe('managed API diagnostics', () => {
+  it('explains the network preparation phase before a mode switch', () => {
+    expect(localApiPhases.waiting_network).toBe('等待网络配置就绪')
+  })
   it('does not present an unknown applied mode as a successful switch', () => {
     expect(modeLabel(null)).toBe('尚未确认')
   })

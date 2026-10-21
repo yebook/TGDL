@@ -9,6 +9,7 @@ export interface SettingsValues {
   confirmation_template: string; filename_template: string
   confirmation_timeout_seconds: number; download_concurrency: number; max_auto_retries: number
   diagnostic_log_retention_days: number
+  diagnostic_log_cleanup_time: string
   allowed_user_ids: number[]; download_root_id: string; timezone: string; bot_token: string; proxy: ProxyConfig
 }
 export interface Settings {
@@ -37,7 +38,7 @@ export interface LocalApiStatus {
   state: 'unavailable' | 'waiting_credentials' | 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
   desired_mode: 'cloud' | 'local'; applied_mode: 'cloud' | 'local' | null
   operation_id: string | null
-  phase: 'idle' | 'draining' | 'logging_out' | 'starting' | 'verifying' | 'cooldown' | 'blocked' | 'logout_uncertain' | 'failed'
+  phase: 'idle' | 'draining' | 'waiting_network' | 'logging_out' | 'starting' | 'verifying' | 'cooldown' | 'blocked' | 'logout_uncertain' | 'failed'
   message: string; generation: string | null; last_heartbeat_at: string | null
   cloud_available_at: string | null; can_restart: boolean; can_retry: boolean
 }
@@ -56,6 +57,7 @@ export interface SystemStatus {
 export interface DiagnosticLogStatus {
   state: 'ready' | 'error'; message: string; max_file_bytes: number; backup_count: number
   retention_days: number; last_cleanup_at: string | null; next_cleanup_at: string | null
+  cleanup_time: string; timezone: string; total_bytes: number; file_count: number
 }
 export interface DiagnosticLogExport {
   events: Array<Record<string, string | number | boolean | null>>; truncated: boolean

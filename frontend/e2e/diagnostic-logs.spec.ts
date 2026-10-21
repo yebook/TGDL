@@ -7,7 +7,7 @@ for (const width of [1440, 390]) {
     await page.route('**/api/v1/system/status', async route => {
       const response = await route.fetch()
       const status = await response.json()
-      await route.fulfill({ json: { ...status, diagnostic_log: { state: width === 390 ? 'error' : 'ready', message: width === 390 ? '日志写入异常，可尝试导出已有记录。' : '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 7, last_cleanup_at: null, next_cleanup_at: '2030-01-01T11:00:00Z' } } })
+      await route.fulfill({ json: { ...status, diagnostic_log: { state: width === 390 ? 'error' : 'ready', message: width === 390 ? '日志写入异常，可尝试导出已有记录。' : '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 7, cleanup_time: '08:00', timezone: 'Asia/Shanghai', total_bytes: 1572864, file_count: 2, last_cleanup_at: null, next_cleanup_at: '2030-01-02T00:00:00Z' } } })
     })
     let exports = 0
     const event = { timestamp: '2030-01-01T10:00:00Z', event: 'telegram_request', outcome: 'success', duration_ms: 17 }
@@ -24,6 +24,8 @@ for (const width of [1440, 390]) {
     const panel = page.getByTestId('diagnostic-log-panel')
     await expect(panel).toContainText(width === 390 ? '记录异常' : '记录中')
     await expect(panel).toContainText('10.0 MB')
+    await expect(panel).toContainText('1.5 MB · 2 个文件')
+    await expect(panel).toContainText('每天 08:00（Asia/Shanghai）')
     await page.waitForResponse(response => response.url().endsWith('/system/status'))
     expect(exports).toBe(0)
     await panel.scrollIntoViewIfNeeded()
@@ -50,7 +52,7 @@ for (const width of [1440, 390]) {
     let cleared = false
     let clears = 0
     let exports = 0
-    const status = () => ({ state: 'ready', message: '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 0, last_cleanup_at: cleared ? '2030-01-01T10:00:00Z' : null, next_cleanup_at: null })
+    const status = () => ({ state: 'ready', message: '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 0, cleanup_time: '08:00', timezone: 'Asia/Shanghai', total_bytes: cleared ? 120 : 1572864, file_count: cleared ? 1 : 2, last_cleanup_at: cleared ? '2030-01-01T10:00:00Z' : null, next_cleanup_at: null })
     await page.route('**/api/v1/system/status', async route => {
       const response = await route.fetch()
       await route.fulfill({ json: { ...await response.json(), diagnostic_log: status() } })
@@ -88,7 +90,8 @@ for (const width of [1440, 390]) {
     await clear.click()
     await dialog.getByRole('button', { name: '确认清理', exact: true }).click()
     await expect(page.getByText('已有诊断日志已清理，继续记录新事件。', { exact: true })).toBeVisible()
-    await expect(panel.locator('dd').first()).not.toHaveText('—')
+    await expect(panel).toContainText('120 B · 1 个文件')
+    await expect(panel.locator('dd').nth(1)).not.toHaveText('—')
     expect(clears).toBe(2)
     expect(exports).toBe(0)
     await panel.scrollIntoViewIfNeeded()
@@ -106,7 +109,13 @@ for (const width of [1440, 390]) {
     await page.getByRole('button', { name: '登录', exact: true }).click()
     await page.getByRole('link', { name: '设置', exact: true }).click()
     const input = page.getByRole('spinbutton', { name: '日志保留天数', exact: true })
+    const time = page.getByLabel('每日自动清理时间', { exact: true })
     await expect(input).toHaveValue('7')
+    await expect(time).toHaveValue('08:00')
+    await time.fill('')
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.getByText('日志自动清理时间须为 00:00–23:59。', { exact: true })).toBeVisible()
+    await time.fill('09:30')
     await input.fill('0')
     await input.press('Tab')
     const patch = page.waitForResponse(response => response.url().endsWith('/settings') && response.request().method() === 'PATCH')
@@ -115,6 +124,8 @@ for (const width of [1440, 390]) {
     await expect(page.getByText('设置已保存，请查看各项生效状态。', { exact: true })).toBeVisible()
     await page.reload()
     await expect(input).toHaveValue('0')
+    await expect(time).toHaveValue('09:30')
+    await time.fill('08:00')
     await input.fill('7')
     await input.press('Tab')
     await page.getByRole('button', { name: '保存设置', exact: true }).click()

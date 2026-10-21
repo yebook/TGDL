@@ -19,6 +19,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -81,9 +82,11 @@ def decode(raw: bytes) -> Desired:
 
 
 def read_desired(path: Path) -> bytes:
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as source:
-        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+        info, current = os.fstat(source.fileno()), path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
             raise ConfigError("invalid_config")
         return source.read(MAX_CONFIG_BYTES + 1)
 
@@ -91,20 +94,25 @@ def read_desired(path: Path) -> bytes:
 def atomic_json(
     path: Path, value: dict[str, Any], mode: int, gid: int | None = None
 ) -> None:
-    temporary = path.with_suffix(".tmp")
+    if not stat.S_ISDIR(path.parent.lstat().st_mode):
+        raise ConfigError("invalid_config")
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     fd = os.open(
         temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
         mode,
     )
-    with os.fdopen(fd, "w", encoding="utf-8") as target:
-        os.fchmod(target.fileno(), mode)
-        if gid is not None:
-            os.fchown(target.fileno(), -1, gid)
-        json.dump(value, target, separators=(",", ":"))
-        target.flush()
-        os.fsync(target.fileno())
-    os.replace(temporary, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            os.fchmod(target.fileno(), mode)
+            if gid is not None:
+                os.fchown(target.fileno(), -1, gid)
+            json.dump(value, target, separators=(",", ":"))
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def resolve_proxy(host: str) -> str:
@@ -162,7 +170,7 @@ def sing_config(desired: Desired, proxy_ip: str, subnet: str) -> dict[str, Any]:
     }
 
 
-def firewall_rules(subnet: str, proxy: tuple[str, int] | None) -> str:
+def firewall_rules(subnet: str, proxy: tuple[str, int] | None, *, direct: bool = False) -> str:
     network = str(ipaddress.IPv4Network(subnet))
     rules = [
         "*filter",
@@ -171,6 +179,9 @@ def firewall_rules(subnet: str, proxy: tuple[str, int] | None) -> str:
         ":OUTPUT DROP [0:0]",
         "-F OUTPUT",
     ]
+    if direct:
+        # Explicit acknowledged direct mode, never a failure fallback. IPv6 stays blocked.
+        return "\n".join([*rules, "-A OUTPUT -j ACCEPT", "COMMIT", ""])
     # DROP remains the default, including on a missing TUN or dead supervisor.
     rules += [
         "-A OUTPUT -o lo -p udp --dport 53 -m owner --uid-owner 0 -j ACCEPT",
@@ -204,10 +215,10 @@ def run_quiet(
     )
 
 
-def install_firewall(subnet: str, proxy: tuple[str, int] | None) -> None:
+def install_firewall(subnet: str, proxy: tuple[str, int] | None, *, direct: bool = False) -> None:
     # Rule batches commit atomically. Never temporarily reset OUTPUT to ACCEPT.
     run_quiet(
-        ["iptables-restore", "--noflush"], input_text=firewall_rules(subnet, proxy)
+        ["iptables-restore", "--noflush"], input_text=firewall_rules(subnet, proxy, direct=direct)
     )
     run_quiet(
         ["ip6tables-restore", "--noflush"],
@@ -235,8 +246,10 @@ class Supervisor:
         self.applied_revision: int | None = None
         self.active_config: dict[str, Any] | None = None
         self.active_endpoint: tuple[str, int] | None = None
+        self.last_status: tuple[int, str, str] = (0, "pending", "waiting_for_configuration")
 
     def status(self, revision: int, state: str, message: str) -> None:
+        self.last_status = revision, state, message
         atomic_json(
             self.shared / "applied.json",
             {
@@ -244,6 +257,7 @@ class Supervisor:
                 "applied_revision": self.applied_revision,
                 "state": state,
                 "message": message,
+                "heartbeat_at": time.time(),
             },
             0o640,
             self.gid,
@@ -278,11 +292,18 @@ class Supervisor:
         return False
 
     def apply(self, desired: Desired) -> None:
-        if not desired.enabled:
-            self.status(desired.revision, "restart_required", "redeploy_direct_stack")
-            return
-        self.status(desired.revision, "pending", "applying_proxy")
+        self.status(desired.revision, "pending", "applying_network")
         try:
+            # Revoke direct and established egress BEFORE validation or DNS.
+            install_firewall(self.subnet, None)
+            self.stop_process()
+            self.applied_revision = None
+            self.active_config, self.active_endpoint = None, None
+            if not desired.enabled:
+                install_firewall(self.subnet, None, direct=True)
+                self.applied_revision = desired.revision
+                self.status(desired.revision, "disabled", "direct_ready")
+                return
             proxy_ip = resolve_proxy(desired.host)
             endpoint = (proxy_ip, desired.port)
             config = sing_config(desired, proxy_ip, self.subnet)
@@ -291,7 +312,6 @@ class Supervisor:
         except (ConfigError, OSError, subprocess.SubprocessError):
             self.status(desired.revision, "failed", "proxy_validation_failed")
             return
-        self.stop_process()
         try:
             install_firewall(self.subnet, endpoint)
             self.start_process(config)
@@ -299,18 +319,7 @@ class Supervisor:
                 raise ConfigError("proxy_live_check_failed")
         except (ConfigError, OSError, subprocess.SubprocessError):
             self.stop_process()
-            # Roll back the *validated previous* config; default-deny always
-            # stays in force even if rollback itself cannot start or connect.
-            try:
-                install_firewall(self.subnet, self.active_endpoint)
-                if self.active_config is not None:
-                    self.start_process(self.active_config)
-                    if not self.verify():
-                        self.stop_process()
-                        self.applied_revision = None
-            except (OSError, subprocess.SubprocessError):
-                self.stop_process()
-                self.applied_revision = None
+            install_firewall(self.subnet, None)
             self.status(desired.revision, "failed", "proxy_live_check_failed")
             return
         self.active_config, self.active_endpoint = config, endpoint
@@ -351,6 +360,9 @@ def main() -> None:
                 last_hash = content_hash
                 desired = decode(raw)
                 if desired.revision <= highest_revision:
+                    install_firewall(subnet, None)
+                    supervisor.stop_process()
+                    supervisor.applied_revision = None
                     supervisor.status(
                         desired.revision, "failed", "revision_not_increasing"
                     )
@@ -360,13 +372,26 @@ def main() -> None:
             if supervisor.process is not None and supervisor.process.poll() is not None:
                 supervisor.process = None
                 supervisor.applied_revision = None
+                install_firewall(subnet, None)
                 supervisor.status(highest_revision, "failed", "proxy_process_exited")
+            supervisor.status(*supervisor.last_status)
         except FileNotFoundError:
-            pass
+            if last_hash is not None:
+                install_firewall(subnet, None)
+                supervisor.stop_process()
+                supervisor.applied_revision = None
+                last_hash = None
+                supervisor.status(highest_revision, "failed", "configuration_missing")
+            else:
+                supervisor.status(*supervisor.last_status)
         except (ConfigError, OSError, ValueError):
+            install_firewall(subnet, None)
+            supervisor.stop_process()
+            supervisor.applied_revision = None
             supervisor.status(highest_revision, "failed", "invalid_config")
         time.sleep(1)
     supervisor.stop_process()
+    install_firewall(subnet, None)
     # Do not remove DROP policies; API may outlive this process.
 
 

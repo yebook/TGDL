@@ -6,6 +6,33 @@
 
 ## 1. 技术选择
 
+### 2026-10-21 superseding deployment/log design
+
+This first release uses one Compose topology: app, managed official API, and a
+network supervisor sharing the API network namespace. A bounded one-shot init
+prepares independent private named control volumes; no Docker socket or full app
+data access is granted to supervisors. Direct operation is an explicit acknowledged
+network command, and enabling a proxy uses default-deny until the selected proxy
+is applied. Failure cannot silently reuse direct routing. Network heartbeat,
+revision acknowledgement, migration snapshots and durable ownership barriers must
+agree before target API activation. The host must support Linux containers and
+TUN; actual fnOS and bundled proxy acceptance remain separate gates.
+
+Diagnostic settings add `diagnostic_log_cleanup_time` (`HH:MM`, default `08:00`),
+using the configured application timezone. Startup and policy changes schedule
+the next future local occurrence without an immediate age scan. A once-per-minute
+lightweight timer executes a single due cleanup, then schedules the next future
+occurrence; no catch-up bursts. Retention zero disables age scans; capacity
+rotation stays enabled. Manual clearing does not move the daily deadline.
+`DiagnosticLogStatus` additionally returns `cleanup_time`, `timezone`,
+`total_bytes`, and `file_count`; usage is a bounded stat of fixed active/archive
+files, never a content scan or arbitrary directory traversal.
+
+No compatibility promise applies to pre-release implementations. Remove affected
+obsolete deployment paths rather than retain two workflows; preserve actual test
+data, credential privacy, ownership, cooldown and uncertain logout state. Future
+formal releases will define migration/version compatibility separately.
+
 | 部分 | 方案 | 取舍 |
 | --- | --- | --- |
 | 后端 | Python 3.12、uv、FastAPI、Pydantic 2 | 异步 Telegram 处理和统一管理接口。 |

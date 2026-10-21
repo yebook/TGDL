@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,7 +30,7 @@ def test_age_filters_events_not_mtime_and_preserves_export_overflow(tmp_path: Pa
     for index in range(4):
         log._path(index).write_text(record(cutoff - 1) + record(cutoff) + record(now) * 300)
         os.utime(log._path(index), (1, 1))
-    log.maintain(7)
+    log.maintain(7, force=True)
     lines = [line for index in range(4) for line in log._path(index).read_text().splitlines()]
     assert len(lines) == 1204  # Retention must not use the 1000-event export window.
     assert all(datetime.fromisoformat(json.loads(line)["timestamp"]).timestamp() >= cutoff for line in lines)
@@ -37,27 +38,74 @@ def test_age_filters_events_not_mtime_and_preserves_export_overflow(tmp_path: Pa
     assert log.status()["last_cleanup_at"] is not None
 
 
-def test_zero_disables_age_only_and_schedule_uses_monotonic(tmp_path: Path) -> None:
-    wall, steady = [2_000_000.0], [0.0]
-    log = DiagnosticLog(tmp_path, clock=lambda: wall[0], monotonic=lambda: steady[0], max_file_bytes=250)
+def test_daily_schedule_restart_changes_disabled_and_manual_clear(tmp_path: Path) -> None:
+    wall = [datetime(2026, 10, 21, 7, 59, tzinfo=UTC).timestamp()]
+    log = DiagnosticLog(tmp_path, clock=lambda: wall[0], timezone="UTC")
     log.emit("service_started")
-    log.maintain(0)
-    wall[0] += 86400 * 100
-    log.maintain(0, force=True)
-    assert len(log.export()["events"]) == 1
+    log._path().write_text(record(1))
+    log.maintain(7, timezone="UTC")
+    assert log.status()["last_cleanup_at"] is None
+    assert log.status()["next_cleanup_at"] == "2026-10-21T08:00:00+00:00"
+    wall[0] += 60
+    log.maintain(7, timezone="UTC")
+    assert not log.export()["events"]
+    assert log.status()["next_cleanup_at"] == "2026-10-22T08:00:00+00:00"
+    restarted = DiagnosticLog(tmp_path, clock=lambda: wall[0], timezone="UTC")
+    assert restarted.status()["last_cleanup_at"] is None
+    assert restarted.status()["next_cleanup_at"] == log.status()["next_cleanup_at"]
+    log.maintain(2, cleanup_time="09:30", timezone="UTC")
+    due = log.status()["next_cleanup_at"]
+    assert due == "2026-10-21T09:30:00+00:00"
+    log.clear()
+    assert log.status()["next_cleanup_at"] == due
+    log.maintain(0, timezone="UTC")
     assert log.status()["next_cleanup_at"] is None
+    log.maintain(7, timezone="Asia/Shanghai")
+    assert log.status()["next_cleanup_at"] == "2026-10-22T00:00:00+00:00"
+    # Missed days produce one bounded cleanup, not catch-up loops.
+    wall[0] += 4 * 86400
+    log.maintain(7, timezone="Asia/Shanghai")
+    assert log.status()["next_cleanup_at"] == "2026-10-26T00:00:00+00:00"
+
+
+def test_disabled_age_keeps_capacity_rotation(tmp_path: Path) -> None:
+    log = DiagnosticLog(tmp_path, max_file_bytes=250, retention_days=0)
     for _ in range(30):
         log.emit("service_started")
-    assert len(list(log.directory.iterdir())) == 4
-    log.maintain(7)
-    last = log.status()["last_cleanup_at"]
-    wall[0] -= 86400
-    steady[0] += 3599
-    log.maintain(7)
-    assert log.status()["last_cleanup_at"] == last
-    steady[0] += 1
-    log.maintain(7)
-    assert log.status()["last_cleanup_at"] != last
+    assert log.status()["file_count"] == 4
+    assert log.status()["total_bytes"] <= 1000
+
+
+@pytest.mark.parametrize(("now", "expected"), [
+    ("2026-03-08T06:00:00+00:00", "2026-03-09T06:30:00+00:00"),
+    ("2026-11-01T04:00:00+00:00", "2026-11-01T07:30:00+00:00"),
+])
+def test_daily_schedule_dst_gap(tmp_path: Path, now: str, expected: str) -> None:
+    log = DiagnosticLog(tmp_path, clock=lambda: datetime.fromisoformat(now).timestamp(),
+                        cleanup_time="02:30", timezone="America/New_York")
+    assert log.status()["next_cleanup_at"] == expected
+
+
+def test_daily_schedule_dst_fold_runs_once(tmp_path: Path) -> None:
+    wall = [datetime.fromisoformat("2026-11-01T05:29:00+00:00").timestamp()]
+    log = DiagnosticLog(tmp_path, clock=lambda: wall[0], cleanup_time="01:30", timezone="America/New_York")
+    assert log.status()["next_cleanup_at"] == "2026-11-01T05:30:00+00:00"
+    wall[0] += 60
+    log.maintain(7, cleanup_time="01:30", timezone="America/New_York")
+    assert log.status()["next_cleanup_at"] == "2026-11-02T06:30:00+00:00"
+
+
+def test_storage_totals_rotation_clear_and_missing(tmp_path: Path) -> None:
+    log = DiagnosticLog(tmp_path, max_file_bytes=250)
+    assert log.status()["total_bytes"] == 0 and log.status()["file_count"] == 0
+    for _ in range(30):
+        log.emit("service_started")
+    (log.directory / "unrelated.log").write_bytes(b"unrelated" * 100)
+    assert log.status()["total_bytes"] == sum(log._path(i).stat().st_size for i in range(4))
+    assert log.status()["file_count"] == 4
+    cleared = log.clear()
+    assert cleared["file_count"] == 1 and cleared["total_bytes"] == log._path().stat().st_size
+    assert cleared["total_bytes"] < 250
 
 
 def test_clear_resets_summaries_only_fixed_paths_and_continues(tmp_path: Path) -> None:
@@ -86,7 +134,7 @@ def test_cleanup_discards_old_pending_and_reprojects_corrupt_records(tmp_path: P
     with log._path().open("a") as stream:
         stream.write("x" * 9000 + "\nnot json\n")
         stream.write(json.dumps({"event": "service_started", "timestamp": datetime.fromtimestamp(clock[0], UTC).isoformat(), "secret": "NO"}) + "\n")
-    log.maintain(7)
+    log.maintain(7, force=True)
     events = log.export()["events"]
     assert len(events) == 1 and events[0]["event"] == "service_started"
     assert "NO" not in log._path().read_text()
@@ -97,7 +145,7 @@ def test_failure_visible_until_successful_maintenance(tmp_path: Path, monkeypatc
     log.emit("service_started")
     original = log._prune_file
     monkeypatch.setattr(log, "_prune_file", lambda *_: (_ for _ in ()).throw(OSError("private")))
-    log.maintain(7)
+    log.maintain(7, force=True)
     log.emit("service_started")
     assert log.status()["state"] == "error"
     assert "private" not in json.dumps(log.status())
@@ -126,7 +174,7 @@ def test_unsafe_targets_never_modify_external_files(tmp_path: Path, kind: str) -
             os.link(sentinel, target)
         else:
             target.symlink_to(sentinel)
-    log.maintain(7)
+    log.maintain(7, force=True)
     with pytest.raises(AppError):
         log.clear()
     assert log.status()["state"] == "error"
@@ -168,6 +216,28 @@ def test_invalid_retention_rejected(authenticated: TestClient, value) -> None:
     assert authenticated.patch("/api/v1/settings", json={"revision": saved["revision"], "diagnostic_log_retention_days": value}).status_code == 422
 
 
+@pytest.mark.parametrize("value", ["8:00", "24:00", "08:60", "08:00:00", " 08:00", 800, True])
+def test_invalid_cleanup_time_rejected(authenticated: TestClient, value) -> None:
+    saved = authenticated.get("/api/v1/settings").json()
+    assert authenticated.patch("/api/v1/settings", json={
+        "revision": saved["revision"], "diagnostic_log_cleanup_time": value}).status_code == 422
+
+
+def test_cleanup_time_save_environment_and_status(authenticated: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr("app.bot.client.TelegramClient.identity", AsyncMock(side_effect=AssertionError("offline")))
+    saved = authenticated.get("/api/v1/settings").json()
+    assert saved["values"]["diagnostic_log_cleanup_time"] == "08:00"
+    assert authenticated.patch("/api/v1/settings", json={
+        "revision": saved["revision"], "diagnostic_log_cleanup_time": "14:25", "timezone": "UTC"}).status_code == 200
+    status = authenticated.get("/api/v1/system/status").json()["diagnostic_log"]
+    assert status["cleanup_time"] == "14:25" and status["timezone"] == "UTC"
+    assert status["last_cleanup_at"] is None and status["total_bytes"] > 0 and status["file_count"] == 1
+    monkeypatch.setenv("TGD_DIAGNOSTIC_LOG_CLEANUP_TIME", "12:30")
+    settings = authenticated.get("/api/v1/settings").json()
+    assert settings["values"]["diagnostic_log_cleanup_time"] == "12:30"
+    assert not settings["editable"]["diagnostic_log_cleanup_time"]
+
+
 def test_policy_save_offline_revision_environment_and_paused_idle(authenticated: TestClient, monkeypatch) -> None:
     state = authenticated.app.state
     monkeypatch.setattr("app.bot.client.TelegramClient.identity", AsyncMock(side_effect=AssertionError("no Telegram")))
@@ -191,14 +261,15 @@ def test_policy_save_offline_revision_environment_and_paused_idle(authenticated:
         monkeypatch.setattr("app.workers.runtime.asyncio.sleep", stop)
         await state.runtime.diagnostic_loop()
     asyncio.run(idle())
-    assert log.retention_days == 3 and log.export()["events"] == []
+    assert log.retention_days == 3
+    assert len(log.export()["events"]) == 1  # Saving policy / startup only schedules, never scans.
 
 
 def test_sweep_preserves_recent_recovery_and_oversize_is_bounded(tmp_path: Path) -> None:
     now = 2_000_000.0
     log = DiagnosticLog(tmp_path, clock=lambda: now, max_file_bytes=1000)
     log.request("cloud", "getMe", error=TelegramNetworkError(method=GetMe(), message="private"))
-    log.maintain(7)
+    log.maintain(7, force=True)
     log.request("cloud", "getMe")
     assert log.export()["events"][-1]["event"] == "telegram_recovered"
     log._path().write_text("x" * 10000 + "\n" + record(now) * 3)
@@ -248,7 +319,7 @@ def test_retention_save_preserves_local_proxy_handoff(authenticated: TestClient)
     network_revision = json.loads(original)["revision"]
     (desired.parent / "applied.json").write_text(json.dumps({
         "desired_revision": network_revision, "applied_revision": network_revision,
-        "state": "applied", "message": "proxy_live_check_passed"}))
+        "state": "applied", "message": "proxy_live_check_passed", "heartbeat_at": time.time()}))
     assert authenticated.patch("/api/v1/settings", json={
         "revision": saved["revision"], "diagnostic_log_retention_days": 2}).status_code == 200
     state.settings.write_proxy_desired()
