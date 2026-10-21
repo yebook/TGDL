@@ -1022,3 +1022,24 @@ Implemented configurable daily08:00 log cleanup and safe fixed-file usage displa
 ### Status
 
 [OK] **Completed**
+
+
+## Session 34: Update local containers to unified deployment
+
+**Date**: 2026-10-21
+**Task**: Update local containers to unified deployment
+**Branch**: `main`
+
+### Summary
+
+Built app/network images, completed stopped DB/control/full-cache backups and recreated app/API with unified network/init topology. Independent acceptance verified mounts/container media hashes, unchanged DB/admin/jobs/pgvector, health200 and deployed daily08:00/7day log features. Local Bot getMe succeeded after update, no logout replay. Rollback retained under before-unified-20261021T070659Z. No product/credential changes; real bundled-proxy/fnOS/large-file gates remain open.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `62cd5ff` | (see git log) |
+
+### Status
+
+[OK] **Completed**
