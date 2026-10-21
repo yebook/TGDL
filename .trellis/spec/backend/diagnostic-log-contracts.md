@@ -11,7 +11,9 @@ supports incident timelines, not a diagnosis of Telegram moderation decisions.
 GET /api/v1/system/logs is an administrator-only read operation returning
 {events: Array<Record<string, string|number|boolean|null>>, truncated: boolean}.
 SystemStatus.diagnostic_log is {state: ready|error, message: string,
-max_file_bytes: number, backup_count: number}. Storage is a fixed JSONL file and
+max_file_bytes: number, backup_count: number, retention_days: number,
+last_cleanup_at: string|null, next_cleanup_at: string|null}. DELETE on the same
+route clears diagnostic logs and returns that status. Storage is a fixed JSONL file and
 three archives below data_dir/logs, not a database table or arbitrary file API.
 
 ## 3. Contracts
@@ -55,7 +57,7 @@ failures to the existing shared request backoff.
 ### HTTP and UI contracts
 
 SystemStatus.diagnostic_log exposes state ready|error, sanitized message,
-max_file_bytes and backup_count. GET /api/v1/system/logs requires administrator
+max_file_bytes, backup_count and retention/cleanup fields. GET /api/v1/system/logs requires administrator
 authentication and returns {events: [...], truncated: boolean}: at most 1000
 recent events, oldest first within the returned window. No caller-supplied
 paths. Project parsed data through the same field/value rules again; corrupted
@@ -68,6 +70,32 @@ release object URLs, and show normal transient empty/error/truncation feedback.
 Status polling does not reset page inputs or trigger a download.
 
 ## 4. Validation & Error Matrix
+
+### Retention and manual clearing
+
+`diagnostic_log_retention_days` defaults to 7, accepts integers 0–3650, and uses
+the existing settings revision/source/editability contracts. Zero disables age
+cleanup only; capacity rotation remains enabled. Saving this policy does not
+validate Telegram or reconnect a client. No database migration is required.
+
+Run maintenance on startup and at least hourly independently of Bot connectivity
+and migration pauses. Expire records using each event's UTC timestamp, preserving
+newer records in mixed-age files. Never rewrite from export(), whose 1000-event
+window is intentionally incomplete. Bound processing and serialize maintenance,
+write, rotation and export. Validate fixed log and maintenance paths against
+symlinks/hardlinks; an error must not remove business data or be reported as success.
+
+`DELETE /api/v1/system/logs` requires administrator authentication and existing
+Origin/CSRF mutation checks. It accepts no paths and clears diagnostic logs only,
+including repetition/recovery caches, then records the fixed `logs_cleared` event.
+Tasks, downloaded media, credentials and request protection state remain intact.
+Age cleanup must also prevent expired cached summaries from reappearing.
+Status additionally exposes `retention_days`, `last_cleanup_at` and
+`next_cleanup_at` (UTC ISO or null). Report partial failures accurately.
+
+Tests use isolated temporary logs: boundaries/mixed ages, disabled policy,
+concurrent write/export/clear, malformed records, safe paths, failure isolation,
+authentication/CSRF and settings persistence without Telegram calls.
 
 | Condition | Required behavior |
 | --- | --- |

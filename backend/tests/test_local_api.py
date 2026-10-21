@@ -69,6 +69,22 @@ def test_stale_status(managed):
     assert exc.value.status == 503
 
 
+def test_retention_changes_preserve_operation_and_connected_client(managed):
+    save(managed, bot_token="123456:synthetic-never-real-token", allowed_user_ids=[42])
+    runtime = managed.app.state.runtime
+    runtime.local_api.update(phase="idle", applied_mode="cloud")
+    _, configured, _ = runtime.settings.read()
+    client = Mock(close=AsyncMock())
+    runtime.client = client
+    runtime.client_signature = runtime.settings.client_signature(configured)
+    original_operation = runtime.local_api.read()
+    save(managed, diagnostic_log_retention_days=2)
+    assert runtime.local_api.read() == original_operation
+    asyncio.run(runtime.ensure_client())
+    assert runtime.client is client
+    client.close.assert_not_awaited()
+
+
 def test_external_compatibility(client):
     assert client.app.state.runtime.local_api.status()["managed"] is False
 

@@ -31,7 +31,7 @@ class Runtime:
     def __init__(self, db: Database, config: Config, settings: SettingsService,
                  tasks: TaskService, storage: StorageManager) -> None:
         self.db, self.config, self.settings, self.tasks, self.storage = db, config, settings, tasks, storage
-        self.diagnostics = DiagnosticLog(config.data_dir)
+        self.diagnostics = DiagnosticLog(config.data_dir, retention_days=settings.read()[1].diagnostic_log_retention_days)
         self.safety = RequestSafetyService(db)
         self.safety.diagnostics = self.diagnostics
         tasks.diagnostics = self.diagnostics
@@ -56,6 +56,7 @@ class Runtime:
         self.connection_lock = asyncio.Lock()
 
     async def start(self) -> None:
+        await asyncio.to_thread(self.maintain_diagnostics)
         if self.config.managed_local_api:
             # Persist the initial desired/applied barrier before any consumer starts.
             await self.local_api.reconcile(self)
@@ -67,7 +68,26 @@ class Runtime:
             except OSError:
                 self.network_write_error = True
         self.loops = [asyncio.create_task(self.poll_loop()), asyncio.create_task(self.tick_loop()),
-                      asyncio.create_task(self.notify_loop())]
+                      asyncio.create_task(self.notify_loop()), asyncio.create_task(self.diagnostic_loop())]
+
+    def maintain_diagnostics(self) -> None:
+        _, configured, _ = self.settings.read()
+        self.diagnostics.maintain(configured.diagnostic_log_retention_days)
+
+    async def diagnostic_loop(self) -> None:
+        # Separate from Bot scheduling: migration, outages and missing tokens cannot skip cleanup.
+        while not self.stopping:
+            maintenance = asyncio.create_task(asyncio.to_thread(self.maintain_diagnostics))
+            try:
+                await asyncio.shield(maintenance)
+            except asyncio.CancelledError:
+                # Cancellation cannot stop filesystem work already running in a thread.
+                # Join it before shutdown emits/flushing logs or releases instance.lock.
+                await maintenance
+                raise
+            except Exception:
+                self.diagnostics.cleanup_error = True
+            await asyncio.sleep(30)
 
     def recover_generation(self, initial: bool = False) -> None:
         generation_path = self.config.bot_api_root / ".tgd-api-generation"

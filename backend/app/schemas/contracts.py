@@ -41,6 +41,7 @@ class UserSettings(BaseModel):
     confirmation_timeout_seconds: int = Field(default=1800, ge=30, le=86400)
     download_concurrency: int = Field(default=3, ge=1, le=16)
     max_auto_retries: int = Field(default=3, ge=0, le=10)
+    diagnostic_log_retention_days: int = Field(default=7, ge=0, le=3650, strict=True)
     allowed_user_ids: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list, max_length=100)
     download_root_id: str = Field(default="default", min_length=1, max_length=80)
     timezone: str = "Asia/Shanghai"
@@ -93,6 +94,7 @@ class SettingsPatch(BaseModel):
     confirmation_timeout_seconds: int | None = None
     download_concurrency: int | None = None
     max_auto_retries: int | None = None
+    diagnostic_log_retention_days: int | None = Field(default=None, ge=0, le=3650, strict=True)
     allowed_user_ids: list[int] | None = None
     download_root_id: str | None = None
     timezone: str | None = None

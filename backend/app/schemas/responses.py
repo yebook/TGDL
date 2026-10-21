@@ -161,6 +161,9 @@ class DiagnosticLogStatus(BaseModel):
     message: str
     max_file_bytes: int
     backup_count: int
+    retention_days: int
+    last_cleanup_at: str | None
+    next_cleanup_at: str | None
 
 
 class SystemStatus(BaseModel):

@@ -55,6 +55,8 @@ mobile; variable help stays compact and readable with text at least 12px.
 Saved proxy state remains distinct from candidate input, with failed state shown
 as an error and detailed revisions still available. Preserve accurate offline
 save/manual candidate-validation language when shortening feedback.
+Local TUN proxy revisions describe network configuration and can differ from the
+global settings revision; unrelated settings changes must preserve active status.
 
 Keep source and Chinese UI copy in UTF-8. On Windows, prefer the patch tool for
 non-ASCII source edits; do not send Chinese through a PowerShell-to-Python stdin
@@ -132,6 +134,14 @@ session handling, busy/stale/unmount protection and a released object URL.
 Do not poll event content, navigate to arbitrary paths or send logs externally.
 Empty/truncated/error feedback is transient. Exported content is server-filtered
 JSONL; it cannot establish a historical ban reason when evidence is absent.
+
+Diagnostic retention uses the ordinary settings form/revision: default 7 days,
+integer range 0–3650; zero disables age cleanup while capacity rotation remains.
+Show applied policy and cleanup timestamps in system diagnostics. Manual clear
+requires explicit confirmation explaining that only diagnostic logs are removed,
+and that recording continues. Export/clear are mutually busy and use existing
+session, stale and unmount guards; cancellation sends no DELETE. Operation
+feedback is transient; status polling must not reset unsaved settings.
 
 Wrong: present desired proxy settings as applied or discard unsaved settings on409. Correct: render supervisor acknowledgement, compare revisions before applying diagnostics, and retain user input on conflicts.
 

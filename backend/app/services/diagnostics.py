@@ -27,7 +27,7 @@ from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.errors import AppError
 
-EVENTS = {"service_started", "service_stopped", "telegram_request", "telegram_recovered",
+EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
           "request_deferred", "task_result", "local_api_transition", "event_summary", "request_protection"}
 METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut"}
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
@@ -94,13 +94,19 @@ def classify_error(error: BaseException) -> tuple[str, int | None]:
 
 class DiagnosticLog:
     def __init__(self, data_dir: Path, *, max_file_bytes: int = 10 * 1024 * 1024,
-                 backup_count: int = 3, clock: Callable[[], float] = time.time) -> None:
+                 backup_count: int = 3, clock: Callable[[], float] = time.time,
+                 retention_days: int = 7, monotonic: Callable[[], float] = time.monotonic) -> None:
         self.directory = data_dir / "logs"
         self.max_file_bytes, self.backup_count, self.clock = max_file_bytes, backup_count, clock
         self.lock = threading.RLock()
-        self.failures: set[tuple[str, str, str]] = set()
+        self.failures: dict[tuple[str, str, str], float] = {}
         self.error = False
         self.repeated: dict[tuple[str, ...], tuple[float, int, dict[str, Scalar]]] = {}
+        self.retention_days = retention_days
+        self.monotonic = monotonic
+        self.cleanup_due = monotonic()
+        self.last_cleanup_at: str | None = None
+        self.cleanup_error = False
 
     def request(self, mode: str, method: str, *, error: BaseException | None = None,
                 duration_ms: int = 0, empty: bool = False, scope: str = "",
@@ -116,13 +122,13 @@ class DiagnosticLog:
                     code = "SERVER_ERROR"
                 if len(self.failures) >= 256:
                     self.failures.clear()
-                self.failures.add(key)
+                self.failures[key] = self.clock()
                 self.emit("request_deferred" if code == "BOT_REQUEST_PAUSED" else "telegram_request",
                           dedupe=True, mode=mode, method=method, outcome="deferred" if code == "BOT_REQUEST_PAUSED" else "cancelled" if code == "CANCELLED" else "failed",
                           error_code=code, http_status=status, level="warning", duration_ms=duration_ms)
             else:
                 recovered = key in self.failures
-                self.failures.discard(key)
+                self.failures.pop(key, None)
                 if recovered:
                     self.flush()
                 if recovered or not empty:
@@ -148,6 +154,10 @@ class DiagnosticLog:
                 continue
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise OSError(errno.EPERM, "Unsafe diagnostic file")
+        temporary = self.directory / "events.jsonl.cleanup"
+        if temporary.is_symlink() or temporary.exists() and (
+                not stat.S_ISREG(temporary.lstat().st_mode) or temporary.lstat().st_nlink != 1):
+            raise OSError(errno.EPERM, "Unsafe diagnostic temporary file")
 
     def _open(self, path: Path, flags: int) -> int:
         fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
@@ -193,7 +203,7 @@ class DiagnosticLog:
                     if prior and self.clock() - prior[0] < 60:
                         self.repeated[key] = (prior[0], min(prior[1] + 1, 1_000_000_000), payload)
                         return
-                    if prior and prior[1]:
+                    if prior and prior[1] and (not self.retention_days or prior[0] >= self.clock() - self.retention_days * 86400):
                         self._write(prior[2] | {"event": "event_summary", "suppressed_count": prior[1], "timestamp": payload["timestamp"]})
                     if len(self.repeated) >= 256 and key not in self.repeated:
                         self._flush()
@@ -203,8 +213,8 @@ class DiagnosticLog:
             self.error = True
 
     def _flush(self) -> None:
-        for _, count, payload in self.repeated.values():
-            if count:
+        for observed, count, payload in self.repeated.values():
+            if count and (not self.retention_days or observed >= self.clock() - self.retention_days * 86400):
                 self._write(payload | {"event": "event_summary", "suppressed_count": count,
                                        "timestamp": datetime.fromtimestamp(self.clock(), UTC).isoformat()})
         self.repeated.clear()
@@ -217,8 +227,110 @@ class DiagnosticLog:
             self.error = True
 
     def status(self) -> dict[str, Any]:
-        return {"state": "error" if self.error else "ready", "message": "诊断日志不可用，请检查数据卷权限或空间" if self.error else "诊断日志已启用",
-                "max_file_bytes": self.max_file_bytes, "backup_count": self.backup_count}
+        with self.lock:
+            failed = self.error or self.cleanup_error
+            next_at = datetime.fromtimestamp(self.clock() + max(0, self.cleanup_due - self.monotonic()), UTC).isoformat() if self.retention_days else None
+            return {"state": "error" if failed else "ready", "message": "诊断日志不可用，请检查数据卷权限或空间" if failed else "诊断日志已启用",
+                    "max_file_bytes": self.max_file_bytes, "backup_count": self.backup_count,
+                    "retention_days": self.retention_days, "last_cleanup_at": self.last_cleanup_at,
+                    "next_cleanup_at": next_at}
+
+    def maintain(self, retention_days: int, *, force: bool = False) -> None:
+        """Apply saved policy offline; bounded maintenance failures never roll back settings."""
+        with self.lock:
+            changed = retention_days != self.retention_days
+            self.retention_days = retention_days
+            if not retention_days:
+                return
+            if not (force or changed or self.monotonic() >= self.cleanup_due):
+                return
+            try:
+                self._check()
+                cutoff = self.clock() - retention_days * 86400
+                # Pending aggregates must not resurrect old observations with a new timestamp.
+                self.repeated = {key: prior for key, prior in self.repeated.items() if prior[0] >= cutoff}
+                self.failures = {key: observed for key, observed in self.failures.items() if observed >= cutoff}
+                for index in range(self.backup_count + 1):
+                    path = self._path(index)
+                    if not path.exists():
+                        continue
+                    self._prune_file(path, cutoff)
+                self.last_cleanup_at = datetime.fromtimestamp(self.clock(), UTC).isoformat()
+                self.cleanup_error = False
+            except Exception:
+                self.cleanup_error = True
+            finally:
+                # Monotonic scheduling survives backwards wall-clock adjustments.
+                self.cleanup_due = self.monotonic() + 3600
+
+    def _prune_file(self, path: Path, cutoff: float) -> None:
+        temporary = self.directory / "events.jsonl.cleanup"
+        # A stale safe temporary file from an interrupted sweep has no authoritative data.
+        temporary.unlink(missing_ok=True)
+        source_fd = self._open(path, os.O_RDONLY)
+        try:
+            target_fd = self._open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except BaseException:
+            os.close(source_fd)
+            raise
+        try:
+            with os.fdopen(source_fd, "rb") as source, os.fdopen(target_fd, "wb") as target:
+                size = os.fstat(source.fileno()).st_size
+                if size > self.max_file_bytes:
+                    source.seek(size - self.max_file_bytes)
+                    # Discard a possible partial line; all scanning remains bounded.
+                    remaining = self.max_file_bytes
+                    while remaining > 0:
+                        fragment = source.readline(min(4097, remaining))
+                        remaining -= len(fragment)
+                        if not fragment or fragment.endswith(b"\n"):
+                            break
+                consumed = written = 0
+                while consumed < self.max_file_bytes:
+                    line = source.readline(min(4097, self.max_file_bytes - consumed))
+                    if not line:
+                        break
+                    consumed += len(line)
+                    if len(line) > 4096 or not line.endswith(b"\n"):
+                        while line and not line.endswith(b"\n") and consumed < self.max_file_bytes:
+                            line = source.readline(min(4097, self.max_file_bytes - consumed))
+                            consumed += len(line)
+                        continue
+                    try:
+                        event = project_event(json.loads(line))
+                    except (ValueError, UnicodeError, TypeError, RecursionError):
+                        continue
+                    if not event or datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00")).timestamp() < cutoff:
+                        continue
+                    payload = (json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
+                    if written + len(payload) <= self.max_file_bytes:
+                        target.write(payload)
+                        written += len(payload)
+                target.flush()
+                os.fsync(target.fileno())
+            self._check()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def clear(self) -> dict[str, Any]:
+        with self.lock:
+            try:
+                self._check()  # Validate every target before the first mutation.
+                self.repeated.clear()
+                self.failures.clear()
+                for index in range(self.backup_count + 1):
+                    self._path(index).unlink(missing_ok=True)
+                (self.directory / "events.jsonl.cleanup").unlink(missing_ok=True)
+                self._write(project_event({"event": "logs_cleared", "level": "info",
+                                           "timestamp": datetime.fromtimestamp(self.clock(), UTC).isoformat()}))
+                self.last_cleanup_at = datetime.fromtimestamp(self.clock(), UTC).isoformat()
+                self.cleanup_due = self.monotonic() + 3600
+                self.cleanup_error = False
+                return self.status()
+            except Exception:
+                self.cleanup_error = True
+                raise AppError("DIAGNOSTIC_LOG_UNAVAILABLE", "诊断日志未能全部清理，请检查数据卷权限或空间", 503) from None
 
     def export(self) -> dict[str, Any]:
         self.flush()

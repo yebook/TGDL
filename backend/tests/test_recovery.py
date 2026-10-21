@@ -122,7 +122,7 @@ def test_proxy_handshake_pending_failed_and_active(client: TestClient, config: C
     (config.network_dir / "applied.json").write_text(json.dumps({"desired_revision": 2, "applied_revision": 2, "state": "applied", "message": "proxy_live_check_passed"}))
     assert state.settings.public()["proxy_status"]["state"] == "active"
     state.settings.save(SettingsPatch(revision=2), candidate)
-    assert state.settings.public()["proxy_status"]["state"] == "pending"
+    assert state.settings.public()["proxy_status"]["state"] == "active"
     disabled = candidate.model_copy(update={"proxy": candidate.proxy.model_copy(update={"enabled": False})})
     state.settings.save(SettingsPatch(revision=3), disabled)
     assert state.settings.public()["proxy_status"]["state"] == "restart_required"

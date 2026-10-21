@@ -68,7 +68,8 @@ class SettingsService:
             env = os.getenv("TGD_" + key.upper())
             if env is not None:
                 values[key] = json.loads(env) if key in {
-                    "confirmation_timeout_seconds", "download_concurrency", "max_auto_retries", "allowed_user_ids", "proxy"
+                    "confirmation_timeout_seconds", "download_concurrency", "max_auto_retries", "allowed_user_ids", "proxy",
+                    "diagnostic_log_retention_days"
                 } else env
                 sources[key] = "environment"
         return revision, UserSettings.model_validate(values), sources
@@ -90,7 +91,7 @@ class SettingsService:
         try:
             data = json.loads((self.config.network_dir / "applied.json").read_text())
             applied = data.get("applied_revision")
-            desired = revision
+            desired = self.proxy_payload(revision, values)["revision"]
             state = "active" if data.get("state") == "applied" and applied == desired else (
                 "pending" if data.get("state") == "applied" else data.get("state", "pending"))
             return {"state": state, "desired_revision": desired, "applied_revision": applied,
@@ -169,12 +170,26 @@ class SettingsService:
         # Runtime drains active slots before handing new network configuration to the supervisor.
         return self.public()
 
+    def proxy_payload(self, revision: int, values: UserSettings) -> dict[str, Any]:
+        """Keep the network revision stable until actual proxy settings change."""
+        proxy = values.proxy.model_dump()
+        try:
+            previous = json.loads((self.config.network_dir / "desired.json").read_text())
+            previous_revision = previous.pop("revision")
+            if type(previous_revision) is int and 1 <= previous_revision < 2**53 - 1:
+                if previous == proxy:
+                    return {"revision": previous_revision, **proxy}
+                revision = max(revision, previous_revision + 1)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+        return {"revision": revision, **proxy}
+
     def write_proxy_desired(self) -> None:
         revision, values, _ = self.read()
         if values.bot_api_mode == "cloud" or not self.config.proxy_capable:
             return
         self.config.network_dir.mkdir(parents=True, exist_ok=True)
-        payload = {"revision": revision, **values.proxy.model_dump()}
+        payload = self.proxy_payload(revision, values)
         desired_path = self.config.network_dir / "desired.json"
         try:
             if json.loads(desired_path.read_text()) == payload:

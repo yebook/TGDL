@@ -119,6 +119,14 @@ contracts/assets remain unchanged.
 ## 7. Wrong vs Correct
 Wrong: release the global slot as soon as an HTTP await is cancelled, or show proxy active immediately after writing desired.json. Correct: retain uncertain upstream ownership until reconciliation; show activation only from the supervisor acknowledgement matching the desired revision.
 
+Local TUN proxy desired/applied revisions identify network configuration, not
+every settings save. Preserve the existing desired payload and revision when
+proxy values match; changing log retention or templates must not reload sing-box
+or repeat connectivity probes. Proxy status compares the network acknowledgement
+against the effective proxy payload revision, which may differ from global
+settings revision. Actual proxy changes advance the network revision; verify
+unchanged-file/active-ack behavior and actual-change pending behavior in tests.
+
 Wrong: rebuild an existing task name/path from current settings, or use a caption
 as a relative directory path. Correct: persist the bounded caption summary,
 freeze the shared title and sanitized date-first destination before confirmation,

@@ -38,6 +38,7 @@ from app.schemas.contracts import (
 )
 from app.schemas.responses import (
     CurrentUser,
+    DiagnosticLogStatus,
     ErrorResponse,
     LocalApiStatus,
     RequestSafetyStatus,
@@ -98,6 +99,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             application.state.tasks, application.state.runtime = tasks, runtime
             application.state.storage = storage
             application.state.ready = True
+            await asyncio.to_thread(runtime.maintain_diagnostics)
             runtime.diagnostics.emit("service_started", level="info")
             if cfg.run_background:
                 await runtime.start()
@@ -321,6 +323,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         # before activation; explicit /validate probes never save this candidate.
         async with runtime.connection_lock:
             result = await asyncio.to_thread(settings.save, payload, candidate)
+        await asyncio.to_thread(runtime.maintain_diagnostics)
         return result
 
     @application.post("/api/v1/system/local-api/restart", dependencies=[Depends(auth)], response_model=LocalApiStatus, status_code=202)
@@ -336,6 +339,10 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.get("/api/v1/system/logs", dependencies=[Depends(auth)])
     def export_logs() -> dict[str, Any]:
         return runtime.diagnostics.export()
+
+    @application.delete("/api/v1/system/logs", dependencies=[Depends(auth)], response_model=DiagnosticLogStatus)
+    def clear_logs() -> dict[str, Any]:
+        return runtime.diagnostics.clear()
 
     @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
     def system_status() -> dict[str, Any]:

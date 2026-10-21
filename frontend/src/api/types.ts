@@ -8,6 +8,7 @@ export interface SettingsValues {
   telegram_api_id: string; telegram_api_hash: string
   confirmation_template: string; filename_template: string
   confirmation_timeout_seconds: number; download_concurrency: number; max_auto_retries: number
+  diagnostic_log_retention_days: number
   allowed_user_ids: number[]; download_root_id: string; timezone: string; bot_token: string; proxy: ProxyConfig
 }
 export interface Settings {
@@ -54,6 +55,7 @@ export interface SystemStatus {
 }
 export interface DiagnosticLogStatus {
   state: 'ready' | 'error'; message: string; max_file_bytes: number; backup_count: number
+  retention_days: number; last_cleanup_at: string | null; next_cleanup_at: string | null
 }
 export interface DiagnosticLogExport {
   events: Array<Record<string, string | number | boolean | null>>; truncated: boolean

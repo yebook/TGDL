@@ -18,6 +18,7 @@ const form = reactive<SettingsValues>({
   confirmation_template: defaultConfirmationTemplate, filename_template: defaultFilenameTemplate,
   bot_token: '', allowed_user_ids: [], confirmation_timeout_seconds: 1800, download_concurrency: 3,
   max_auto_retries: 3, download_root_id: 'default', timezone: 'Asia/Shanghai',
+  diagnostic_log_retention_days: 7,
   proxy: { enabled: false, scheme: 'socks5', host: '', port: 1080, username: '', password: '' },
 })
 const userIds = ref('')
@@ -76,6 +77,7 @@ async function load() {
   finally { loading.value = false }
 }
 function payload() {
+  if (!Number.isInteger(form.diagnostic_log_retention_days) || form.diagnostic_log_retention_days < 0 || form.diagnostic_log_retention_days > 3650) throw new Error('诊断日志保留天数须为 0–3650 的整数。')
   if (examples.value.confirmationError || examples.value.fileError) throw new Error(examples.value.confirmationError || examples.value.fileError)
   if (form.telegram_api_id && !/^[1-9]\d*$/.test(form.telegram_api_id)) throw new Error('API ID 请填写正整数，或留空。')
   const values = { ...form, allowed_user_ids: parseUserIds(userIds.value), proxy: { ...form.proxy } }
@@ -238,6 +240,15 @@ onMounted(load)
           <div v-if="form.proxy.enabled" class="form-grid"><el-form-item label="协议" label-for="proxy-scheme"><el-select id="proxy-scheme" v-model="form.proxy.scheme" :disabled="!editable('proxy')"><el-option label="SOCKS5" value="socks5" /><el-option label="HTTP CONNECT" value="http" /></el-select></el-form-item><el-form-item label="代理地址" label-for="proxy-host"><el-input id="proxy-host" v-model="form.proxy.host" :disabled="!editable('proxy')" placeholder="代理服务的 IP 或域名" /></el-form-item><el-form-item label="端口" label-for="proxy-port"><el-input-number id="proxy-port" v-model="form.proxy.port" :min="1" :max="65535" :disabled="!editable('proxy')" /></el-form-item><el-form-item label="用户名（可选）" label-for="proxy-username"><el-input id="proxy-username" v-model="form.proxy.username" :disabled="!editable('proxy')" autocomplete="off" /></el-form-item><el-form-item label="密码（可选）" label-for="proxy-password"><el-input id="proxy-password" v-model="form.proxy.password" type="password" show-password autocomplete="new-password" :disabled="!editable('proxy') || clearProxyPassword" :placeholder="settings.configured.proxy_password ? '已配置 · 留空保持不变' : '无认证可留空'" /><p class="field-hint">已保存的密码留空不变。</p><el-checkbox v-if="settings.configured.proxy_password && editable('proxy')" v-model="clearProxyPassword">清除已保存的代理密码</el-checkbox></el-form-item></div>
           <p class="field-hint proxy-mode-hint">{{ form.bot_api_mode === 'cloud' ? '启用后，云端由应用直接使用代理，无需 TUN。保存后请等待连接确认。' : '本地模式需配套 TUN 网络组件；仅填写代理不会改变 Docker 网络。' }}</p>
           <div class="proxy-saved-state"><div class="proxy-state-heading"><strong>已保存配置</strong><span class="proxy-state-label">{{ proxyLabels[proxyStatus?.state ?? ''] || proxyStatus?.state || '等待确认' }}</span></div><el-alert :title="proxyStatus?.message || proxyMessages[proxyStatus?.state ?? ''] || '代理状态等待后台确认。'" :type="proxyStatus?.state === 'active' ? 'success' : proxyStatus?.state === 'failed' ? 'error' : proxyStatus?.state === 'restart_required' ? 'warning' : 'info'" :closable="false" show-icon /><details class="settings-details"><summary>查看应用版本与状态说明</summary><div class="details-content"><p>期望版本 {{ proxyStatus?.desired_revision ?? '—' }} / 已应用版本 {{ proxyStatus?.applied_revision ?? '—' }}</p><p>以上为已保存配置的后台状态，不包含尚未保存的修改；已应用也不代表 Bot 已连接。</p></div></details></div>
+        </section>
+        <section class="panel settings-section">
+          <div class="section-heading"><span class="section-number">05</span><div><h2>诊断日志</h2><p class="muted">自动清理过期记录，保留空间上限。</p></div></div>
+          <el-form-item label="日志保留天数" label-for="log-retention-days">
+            <template #label><span class="setting-label">日志保留天数<SettingsSource :source="settings.sources.diagnostic_log_retention_days" :editable="editable('diagnostic_log_retention_days')" /></span></template>
+            <el-input-number id="log-retention-days" aria-label="日志保留天数" v-model="form.diagnostic_log_retention_days" :min="0" :max="3650" :step="1" :disabled="!editable('diagnostic_log_retention_days')" />
+            <p class="field-hint">默认 7 天，0 关闭按天清理。容量轮转始终有效，记录可能提前移除；保存后最迟一小时内清理过期记录。</p>
+          </el-form-item>
+          <p class="field-hint">在系统状态页可导出或手动清理诊断日志，不影响任务、媒体文件或连接配置。</p>
         </section>
       </el-form>
     </div>

@@ -7,7 +7,7 @@ for (const width of [1440, 390]) {
     await page.route('**/api/v1/system/status', async route => {
       const response = await route.fetch()
       const status = await response.json()
-      await route.fulfill({ json: { ...status, diagnostic_log: { state: width === 390 ? 'error' : 'ready', message: width === 390 ? '日志写入异常，可尝试导出已有记录。' : '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3 } } })
+      await route.fulfill({ json: { ...status, diagnostic_log: { state: width === 390 ? 'error' : 'ready', message: width === 390 ? '日志写入异常，可尝试导出已有记录。' : '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 7, last_cleanup_at: null, next_cleanup_at: '2030-01-01T11:00:00Z' } } })
     })
     let exports = 0
     const event = { timestamp: '2030-01-01T10:00:00Z', event: 'telegram_request', outcome: 'success', duration_ms: 17 }
@@ -43,5 +43,82 @@ for (const width of [1440, 390]) {
     await button.click()
     await expect(page.getByText('暂无可导出的诊断日志。', { exact: true })).toBeVisible()
     expect(exports).toBe(2)
+  })
+
+  test(`diagnostic clear requires confirmation and shares busy state at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 })
+    let cleared = false
+    let clears = 0
+    let exports = 0
+    const status = () => ({ state: 'ready', message: '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 0, last_cleanup_at: cleared ? '2030-01-01T10:00:00Z' : null, next_cleanup_at: null })
+    await page.route('**/api/v1/system/status', async route => {
+      const response = await route.fetch()
+      await route.fulfill({ json: { ...await response.json(), diagnostic_log: status() } })
+    })
+    await page.route('**/api/v1/system/logs', async route => {
+      if (route.request().method() !== 'DELETE') { exports++; await route.fulfill({ json: { events: [], truncated: false } }); return }
+      clears++
+      expect(route.request().headers()['x-csrf-token']).toBeTruthy()
+      await new Promise(resolve => setTimeout(resolve, 500))
+      if (clears === 1) {
+        await route.fulfill({ status: 503, json: { error: { code: 'DIAGNOSTIC_LOG_UNAVAILABLE', message: '日志清理失败，请检查存储权限。' } } })
+      } else { cleared = true; await route.fulfill({ json: status() }) }
+    })
+    await page.goto('/')
+    await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
+    await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await page.getByRole('link', { name: '系统状态', exact: true }).click()
+    const panel = page.getByTestId('diagnostic-log-panel')
+    await expect(panel).toContainText('已关闭按天清理')
+    const clear = panel.getByRole('button', { name: '清理诊断日志', exact: true })
+    const exportButton = panel.getByRole('button', { name: '导出诊断日志', exact: true })
+    await clear.click()
+    const dialog = page.getByRole('dialog', { name: '清理诊断日志', exact: true })
+    await expect(dialog).toContainText('任务、媒体文件、连接配置和请求保护不受影响')
+    await expect(exportButton).toBeDisabled()
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(clear).toBeEnabled()
+    expect(clears).toBe(0)
+    await clear.click()
+    await dialog.getByRole('button', { name: '确认清理', exact: true }).click()
+    await expect(exportButton).toBeDisabled()
+    await expect(page.getByText('日志清理失败，请检查存储权限。', { exact: true })).toBeVisible()
+    await expect(clear).toBeEnabled()
+    await clear.click()
+    await dialog.getByRole('button', { name: '确认清理', exact: true }).click()
+    await expect(page.getByText('已有诊断日志已清理，继续记录新事件。', { exact: true })).toBeVisible()
+    await expect(panel.locator('dd').first()).not.toHaveText('—')
+    expect(clears).toBe(2)
+    expect(exports).toBe(0)
+    await panel.scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.screenshot({ path: `../.runtime/diagnostic-logs/clear-${width}.png`, fullPage: true })
+  })
+
+  test(`retention setting saves offline and survives reload at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 })
+    let probes = 0
+    await page.route('**/api/v1/settings/validate', async route => { probes++; await route.abort() })
+    await page.goto('/')
+    await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
+    await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await page.getByRole('link', { name: '设置', exact: true }).click()
+    const input = page.getByRole('spinbutton', { name: '日志保留天数', exact: true })
+    await expect(input).toHaveValue('7')
+    await input.fill('0')
+    await input.press('Tab')
+    const patch = page.waitForResponse(response => response.url().endsWith('/settings') && response.request().method() === 'PATCH')
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    expect((await patch).ok()).toBe(true)
+    await expect(page.getByText('设置已保存，请查看各项生效状态。', { exact: true })).toBeVisible()
+    await page.reload()
+    await expect(input).toHaveValue('0')
+    await input.fill('7')
+    await input.press('Tab')
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.getByText('设置已保存，请查看各项生效状态。', { exact: true })).toBeVisible()
+    expect(probes).toBe(0)
   })
 }
