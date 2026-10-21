@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
+- **Total Sessions**: 29
 - **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~818 | Active |
+| `journal-1.md` | ~919 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,9 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-10-21 | Publish documentation to GitHub Pages | `76ea00a`, `59b4718`, `85fdb40` | `main` |
+| 28 | 2026-10-21 | Docs-only Pages automation and remote privacy review | - | `main` |
+| 27 | 2026-10-21 | Diagnostic retention and public documentation | - | `main` |
 | 26 | 2026-10-21 | Update local application containers | - | `main` |
 | 25 | 2026-10-21 | Remove GitHub Actions workflows | - | `main` |
 | 24 | 2026-10-20 | Incident timeline and persistent diagnostic logs | - | `main` |

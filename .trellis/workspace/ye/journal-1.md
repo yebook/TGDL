@@ -816,3 +816,104 @@ Rebuilt and deployed application from current source using existing Compose and 
 ### Next Steps
 
 - Inspect Bot network error in system diagnostics; deployment health does not certify real Telegram media, proxy or fnOS acceptance.
+
+
+## Session 27: Diagnostic retention and public documentation
+
+**Date**: 2026-10-21
+**Task**: Diagnostic retention and public documentation
+**Branch**: `main`
+
+### Summary
+
+Implemented seven-day configurable diagnostic retention and confirmed manual clearing, MIT licensed public guides and independent static documentation site. Deployment and Pages publication intentionally pending.
+
+### Main Changes
+
+- Retention 0-3650 days, protected clear endpoint, safe event-time maintenance and WebUI policy/actions.
+- Independent review fixed unrelated settings causing TUN proxy reload; network revisions now follow proxy content.
+
+### Git Commits
+
+(Changes remain in the working tree; this increment has not been committed.)
+
+### Testing
+
+- [OK] Backend scoped 82 passed / 8 POSIX skips; isolated Linux logs 57 passed; Ruff and mypy passed.
+- [OK] Frontend lint/type/build, 2 unit and 6 desktop/mobile browser cases passed using synthetic data.
+- [OK] Documentation production build: 20 Markdown files, 87 relative links, 15 public pages with anchors/base/exclusion/.nojekyll checks; desktop local search and mobile navigation/overflow checks passed. Read-only preview explicitly binds loopback; HTTP boundary smoke checks passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Preview available at http://127.0.0.1:18769/TGDL/ using docs:preview. Retain parent task in progress for real Telegram, fnOS and proxy acceptance. Changes uncommitted; no running deployment changes or Pages publication.
+
+
+## Session 28: Docs-only Pages automation and remote privacy review
+
+**Date**: 2026-10-21
+**Task**: Docs-only Pages automation and remote privacy review
+**Branch**: `main`
+
+### Summary
+
+Prepared path-scoped docs-only Pages workflow; audited remote history before potential repository-public action. No push, publication, visibility changes or history rewriting.
+
+### Main Changes
+
+- Docs-only main/manual workflow with independent frozen docs build, static-only artifact and minimal Pages/OIDC permissions.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Docs build passed: 20 Markdown, 89 relative links, 15 public pages; independent YAML trigger/permissions/artifact review passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Review confirmed external commit-email exposure and internal development/incident notes before making repository public; any history rewrite needs explicit authorization.
+
+
+## Session 29: Publish documentation to GitHub Pages
+
+**Date**: 2026-10-21
+**Task**: Publish documentation to GitHub Pages
+**Branch**: `main`
+
+### Summary
+
+User accepted existing email/internal notes. Committed prior log feature separately and published documentation-only Pages workflow; GitHub build and deploy succeeded and live site verified.
+
+### Main Changes
+
+- Pinned official Actions to verified SHAs, Node24 then fixed pnpm11.23, immutable docs install, docs-only artifact and serialized Pages deployment.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `76ea00a` | (see git log) |
+| `59b4718` | (see git log) |
+| `85fdb40` | (see git log) |
+
+### Testing
+
+- [OK] Local docs build20 Markdown/89 links/15 pages and independent YAML review passed; final source audit293 files found no new real credentials.
+- [OK] GitHub run39539596903 build/deploy succeeded; live home/operations/JS HTTP200, desktop Chinese search and mobile navigation/nooverflow verified.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- https://yebook.github.io/TGDL/ is live. Future main docs changes auto-publish. Parent task remains open for real Telegram/fnOS/proxy acceptance; no app/NAS container update.
