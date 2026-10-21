@@ -784,3 +784,35 @@ Removed the only GitHub Actions workflow at user request; local test scripts and
 ### Next Steps
 
 - Continue local checks when changing features; prior real Telegram and fnOS acceptance remains pending.
+
+
+## Session 26: Update local application containers
+
+**Date**: 2026-10-21
+**Task**: Update local application containers
+**Branch**: `main`
+
+### Summary
+
+Rebuilt and deployed application from current source using existing Compose and mounts; preserved data, admin state and download inventory.
+
+### Main Changes
+
+- Backed up stopped data and tagged previous app image; recreated app only and started original API supervisor container.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] Production image build, live/ready, setup state, migration 0007, unchanged mounts/download inventory and persistent log creation passed.
+- [OK] Independent anonymous verification passed: logs require authentication; production assets contain log export and manual Bot recovery.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Inspect Bot network error in system diagnostics; deployment health does not certify real Telegram media, proxy or fnOS acceptance.
