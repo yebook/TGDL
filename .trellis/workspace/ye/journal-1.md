@@ -1001,3 +1001,24 @@ Diagnosed successful logout followed by local getMe network failure. User enable
 ### Status
 
 [OK] **Completed**
+
+
+## Session 33: Daily log maintenance and unified proxy deployment
+
+**Date**: 2026-10-21
+**Task**: Daily log maintenance and unified proxy deployment
+**Branch**: `main`
+
+### Summary
+
+Implemented configurable daily08:00 log cleanup and safe fixed-file usage display; unified Compose with private-volume init and WebUI direct/proxy/API routing. Independent review fixed stale network revisions and root IPC/link safety. Scoped backend/frontend/browser/Linux and docs checks passed. Updated public guides and first-release compatibility policy. Existing runtime containers/credentials unchanged; real bundled TUN/fnOS/large-file acceptance remains pending, parent task stays active.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9c2e74c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
