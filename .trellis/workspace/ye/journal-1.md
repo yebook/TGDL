@@ -951,3 +951,32 @@ Rebuilt and updated only local app container; stopped backup and independent rea
 ### Next Steps
 
 - WebUI http://127.0.0.1:8000 now serves current app. Parent task remains in progress for real Telegram/fnOS/proxy acceptance.
+
+
+## Session 31: Organize open-source README homepage
+
+**Date**: 2026-10-21
+**Task**: Organize open-source README homepage
+**Branch**: `main`
+
+### Summary
+
+Reorganized root README around first-time users: purpose, live docs, workflow/features, API modes, source deployment and contribution/license. No application or container changes.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d745378` | (see git log) |
+
+### Testing
+
+- [OK] Documentation link check passed 20 Markdown files/97 relative links; independent source-based editorial review and diff check passed. No application regression needed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Keep parent task open for real Telegram/fnOS/proxy acceptance; README changes use the existing docs-only Pages workflow.
