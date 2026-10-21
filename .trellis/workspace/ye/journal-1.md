@@ -980,3 +980,24 @@ Reorganized root README around first-time users: purpose, live docs, workflow/fe
 ### Next Steps
 
 - Keep parent task open for real Telegram/fnOS/proxy acceptance; README changes use the existing docs-only Pages workflow.
+
+
+## Session 32: Recover cloud to local API switch with host TUN
+
+**Date**: 2026-10-21
+**Task**: Recover cloud to local API switch with host TUN
+**Branch**: `main`
+
+### Summary
+
+Diagnosed successful logout followed by local getMe network failure. User enabled host TUN; one guarded retry completed applied-local identity validation without replaying logout. Added safe connection failure messages, scoped regressions, specs and troubleshooting docs. Review and checks pass; working containers unchanged; large-file/fnOS/bundled proxy acceptance remains pending.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `21ea948` | (see git log) |
+
+### Status
+
+[OK] **Completed**

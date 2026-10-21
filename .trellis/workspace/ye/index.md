@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 31
+- **Total Sessions**: 32
 - **Last Active**: 2026-10-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~982 | Active |
+| `journal-1.md` | ~1003 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 32 | 2026-10-21 | Recover cloud to local API switch with host TUN | `21ea948` | `main` |
 | 31 | 2026-10-21 | Organize open-source README homepage | `d745378` | `main` |
 | 30 | 2026-10-21 | Update local Docker application after docs publication | `b66889f` | `main` |
 | 29 | 2026-10-21 | Publish documentation to GitHub Pages | `76ea00a`, `59b4718`, `85fdb40` | `main` |
