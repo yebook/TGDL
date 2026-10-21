@@ -9,20 +9,18 @@ src/api/client.ts centralizes request<T> and ApiError. src/api/types.ts is the m
 ## 3. Contracts
 API base /api/v1, same-origin credentials, X-CSRF-Token for mutations. Never persist credentials in localStorage or display existing secrets. Settings revision, editable, sources, configured and proxy_status are distinct. Blank secrets preserve values, explicit clear flags erase. Keep entered values on409; end session on401. An older diagnostic poll cannot replace a newer desired_revision after PATCH.
 
-Administrator setup and password change validate and display the same inclusive 6–20 character range as the API. Reject lengths 5 and 21 before submission; allow 6 and 20. Do not apply the new creation limits to existing-password login. Existing passwords and rejected input must never appear in diagnostics.
+Administrator setup, login and password change validate and display the same inclusive 6–20 character range as the API. Reject lengths 5 and 21 before submission; allow 6 and 20. Passwords and rejected input must never appear in diagnostics.
 
 Confirmation duration controls use minutes and show the new 30-minute default.
 The DTO still carries integer `confirmation_timeout_seconds`; convert explicitly
-without rounding existing values on load or unrelated saves. Preserve old
-sub-minute and non-minute values (including 31 seconds), environment read-only
-rules, existing saved durations and previously issued cards. Default template
-examples use `{expires_in_minutes}`; retain `{expires_in}` seconds as a clearly
-marked legacy option rather than silently changing custom-template meaning.
+at the form boundary. Preserve environment read-only rules, current saved
+durations and previously issued cards. Template examples use only
+`{expires_in_minutes}`; unsupported variables are rejected.
 
 The settings form uses `novalidate`: native step validation with a 0.5-minute
-minimum and a one-minute step can block valid integer minutes and legacy values.
+minimum and a one-minute step can block valid integer minutes.
 Keep explicit frontend and API range validation. Browser tests must submit the
-form and verify the persisted seconds, including unrelated saves with 31 seconds.
+form and verify that the edited minutes persist as seconds.
 
 Saving settings does not require online Bot validation. Keep local ID/format checks and explicit manual validation; manual validation must use current form values without saving them. Show save and validation outcomes as ordinary short-lived ElementPlus messages, including errors and warnings; distinguish saving from successful connectivity validation. Do not reserve a permanent bottom feedback area or retain success/validation alerts after an operation. Preserve unsaved input after errors, with actionable revision-conflict guidance, blocked conflicting save and a visible reload action. Messages are plain text, accessible, visible on desktop/mobile without scrolling and never expose secrets. Use one predictable content scroll area; controls must not hide fields or focused elements.
 
@@ -32,7 +30,7 @@ deployed service and official migration prerequisites. Preserve the existing
 bottom action row and offline-save/manual-validation split. On `API_MODE_BUSY`
 (409), keep unsaved input and explain that downloading/recovery must finish first.
 Do not imply that selecting a mode starts Docker or verifies connectivity. New
-data defaults cloud; legacy data stays local until the user changes it.
+data and schema defaults are consistently cloud.
 
 Settings `confirmation_template` and `filename_template` follow the variable,
 validation, default and snapshot contracts in
@@ -55,8 +53,17 @@ mobile; variable help stays compact and readable with text at least 12px.
 Saved proxy state remains distinct from candidate input, with failed state shown
 as an error and detailed revisions still available. Preserve accurate offline
 save/manual candidate-validation language when shortening feedback.
-Local TUN proxy revisions describe network configuration and can differ from the
-global settings revision; unrelated settings changes must preserve active status.
+Local proxy status comes from the current acknowledged API process configuration
+and fresh supervisor heartbeat; unrelated settings changes preserve active status.
+Enabled proxy applies to cloud and local, disabled uses container default route;
+do not imply automatic inheritance of host system/browser proxy. No host TUN needed.
+
+Settings configuration backup follows
+[config-backup-contracts.md](../backend/config-backup-contracts.md): encrypted
+saved settings only, redacted preview and explicit overwrite confirmation.
+Explain exclusions, require independent password, preserve edits on409 and clear
+passwords when dialogs close. Imported secrets are never displayed or persisted
+in browser storage.
 
 Keep source and Chinese UI copy in UTF-8. On Windows, prefer the patch tool for
 non-ASCII source edits; do not send Chinese through a PowerShell-to-Python stdin
@@ -64,6 +71,20 @@ pipeline with an unverified console encoding. Lint can pass corrupted `??` text,
 so verify the actual source and rendered screenshots before shipping copy edits.
 
 Unknown progress stays unknown. Never invent percentages or demo tasks. Task can_cancel/can_retry are backend decisions; notification failure is separate from media failure. Vite must preserve Host with changeOrigin:false for backend Origin validation. Production assets have no external font/CDN dependency.
+
+Media stage presentation uses shared `mediaState(item)` and
+`mediaProgress(item)` from `api/mediaProgress.ts`. Label `fetching` as “下载中”;
+no percent is available for this API-wait phase. In `saving`, use each file's
+`acquisition_mode` snapshot: cloud stream bytes are download progress (“已下载”),
+local cache-copy bytes are saving progress (“已保存”). Unknown totals keep real
+byte counts without percentage. Unknown-mode items must not claim verified
+remote download progress. Group summaries use completed-file counts rather than
+inventing a combined download percentage. Indeterminate progress has no
+`aria-valuenow` and respects reduced-motion preferences. Scoped tests cover the
+local/cloud distinction, missing mode/total and no fabricated zero percent.
+At overall task/filter level, `saving` is the neutral “处理中” because that state
+can include cloud downloading or local saving; file-level labels remain precise.
+Cancellation labels take priority over an older acquisition phase.
 
 Render task titles from the API without independently deriving caption names.
 Show the full request identifier in the task list's secondary text, wrapping on
@@ -119,6 +140,23 @@ scroll or conflicts. Hash input is write-only, blank-preserving with explicit
 clear. Disable unavailable/concurrent controls; process restart is not container
 restart. Logout uncertainty needs a distinct explanatory acknowledgement, never
 an implicit ordinary retry. External mode honestly reports no process control.
+
+For `local_api.applied_mode === 'local'`, render Bot `online`/`connected` as
+“本地 API 可用” in both the system card and local API panel, using the shared
+`botConnectionLabel` helper. Explain that local request success does not verify
+Telegram message reception: TDLib can serve cached identity and empty polls
+while upstream networking is unavailable. Preserve cloud connection labels and
+all error/protection states; do not infer offline status from an empty poll.
+Scoped label tests cover both local success values, cloud success and errors.
+
+Use shared `validationBlockReason(localApiStatus, savedProxyStatus)` to disable
+configuration validation while a managed local API phase is non-idle, with a
+visible reason beside the action. Terminal failure/blocked/uncertain phases
+direct users to service controls rather than indefinite waiting. A saved local
+proxy's pending status must also block immediately after PATCH, before refreshed
+system status arrives. Keep offline saving available; never auto-retry or restore
+an earlier proxy choice. Cover both the terminal failure and stale-idle/PATCH
+window in scoped helper tests.
 
 Bot request protection follows ../backend/request-safety-contracts.md. Show
 server cooldown, network backoff and credential pause as distinct Chinese

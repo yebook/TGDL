@@ -1,4 +1,20 @@
-import type { LocalApiStatus } from './types'
+import type { LocalApiStatus, Settings } from './types'
+
+export function validationBlockReason(status: LocalApiStatus | undefined, proxy: Settings['proxy_status'] | undefined): string {
+  if (!status?.managed) return ''
+  if (status.phase !== 'idle') {
+    if (['failed', 'blocked', 'logout_uncertain'].includes(status.phase)) return (status.message || localApiPhases[status.phase]) + '；请在上方本地 API 服务状态中处理后再校验。'
+    return '正在应用 API 或代理配置：' + localApiPhases[status.phase] + '。操作完成后可校验。'
+  }
+  if (status.desired_mode === 'local' && proxy && !['active', 'disabled'].includes(proxy.state)) return '正在等待本地 API 应用网络配置，请查看上方服务状态。'
+  return ''
+}
+
+export const localBotConnectionHint = '本地 API 可响应请求；Telegram 连通性请以实际收发消息确认。若 Bot 无回应，请检查代理或网络。'
+export function botConnectionLabel(state: string, mode: 'cloud' | 'local' | null): string {
+  if (state === 'online' || state === 'connected') return mode === 'local' ? '本地 API 可用' : '已连接'
+  return ({ connecting: '正在连接', unconfigured: '尚未配置', disconnected: '未连接', error: '连接异常' } as Record<string, string>)[state] || '状态未知'
+}
 
 export const modeLabel = (mode: 'cloud' | 'local' | null) => mode === 'local' ? '本地 API' : mode === 'cloud' ? '官方云端' : '尚未确认'
 export const localApiStates: Record<LocalApiStatus['state'], string> = {
@@ -6,7 +22,6 @@ export const localApiStates: Record<LocalApiStatus['state'], string> = {
   running: '进程运行中', stopping: '正在停止', failed: '进程异常',
 }
 export const localApiPhases: Record<LocalApiStatus['phase'], string> = {
-  waiting_network: '等待网络配置就绪',
   idle: '无进行中的操作', draining: '等待下载与连接安全结束', logging_out: '正在退出云端', starting: '正在启动本地 API',
   verifying: '正在验证 Bot 连接', cooldown: '等待云端冷却', blocked: '操作受阻', logout_uncertain: '云端退出结果待确认', failed: '操作失败',
 }

@@ -1,35 +1,15 @@
 import json
-import math
 import os
-import stat
-import time
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
 from app.core.config import Config
 from app.core.errors import AppError
-from app.core.security import Secrets, private_file
-from app.core.templates import DEFAULT_CONFIRMATION_TEMPLATE, LEGACY_CONFIRMATION_TEMPLATE
+from app.core.security import Secrets
 from app.db.models import Job, Settings
 from app.db.session import Database
 from app.schemas.contracts import SettingsPatch, UserSettings
-
-
-def network_json(path: Path) -> dict[str, Any]:
-    """Bounded regular-file IPC read; status may be owned by the network service."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        named = path.lstat()
-        if (not stat.S_ISREG(named.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino) or info.st_size > 8192):
-            raise ValueError("Invalid network file")
-        value = json.loads(stream.read(8193))
-    if not isinstance(value, dict):
-        raise ValueError("Invalid network file")
-    return value
 
 
 class SettingsService:
@@ -40,17 +20,6 @@ class SettingsService:
             row = session.get(Settings, 1)
             if not row:
                 session.add(Settings(id=1, values={"bot_api_mode": "cloud"}))
-            else:
-                stored = dict(row.values)
-                if "bot_api_mode" not in stored:
-                    stored["bot_api_mode"] = "local"
-                # Upgrade only the exact old system template. Custom text and
-                # already-issued notifications/expiry timestamps stay untouched.
-                if stored.get("confirmation_template") == LEGACY_CONFIRMATION_TEMPLATE:
-                    stored["confirmation_template"] = DEFAULT_CONFIRMATION_TEMPLATE
-                    row.revision += 1
-                row.values = stored
-
     @staticmethod
     def client_signature(values: UserSettings) -> str:
         from app.core.security import digest
@@ -67,23 +36,14 @@ class SettingsService:
             stored["bot_token"] = self.secrets.decrypt(stored["bot_token"])
         if stored.get("telegram_api_hash"):
             stored["telegram_api_hash"] = self.secrets.decrypt(stored["telegram_api_hash"])
-        fallback_fields = set()
-        for key in ("telegram_api_id", "telegram_api_hash"):
-            if key not in stored:
-                fallback = os.getenv(key.upper())
-                if fallback:
-                    stored[key] = fallback
-                    fallback_fields.add(key)
         if stored.get("proxy", {}).get("password"):
             stored["proxy"] = dict(stored["proxy"])
             stored["proxy"]["password"] = self.secrets.decrypt(stored["proxy"]["password"])
         values = UserSettings().model_dump() | stored
         sources = {key: "database" if key in stored else "default" for key in values}
-        for key in fallback_fields:
-            sources[key] = "deployment_fallback"
         for key in values:
             if key in {"telegram_api_id", "telegram_api_hash"}:
-                continue  # Legacy deployment credentials are editable fallback, never an override.
+                continue  # Application credentials are managed exclusively in WebUI.
             env = os.getenv("TGD_" + key.upper())
             if env is not None:
                 values[key] = json.loads(env) if key in {
@@ -99,33 +59,30 @@ class SettingsService:
             return {"state": "disabled" if not values.proxy.enabled else "active" if active else "pending",
                     "desired_revision": revision, "applied_revision": revision if active else None,
                     "message": "" if active or not values.proxy.enabled else "等待云端 Bot 通过代理连接成功"}
-        if not values.proxy.enabled and not self.config.proxy_capable:
-            return {"state": "disabled", "desired_revision": revision, "applied_revision": None, "message": ""}
-        if not self.config.proxy_capable:
-            return {"state": "unavailable", "desired_revision": revision, "applied_revision": None,
-                    "message": "网络管理组件未启用，请使用标准部署配置"}
-        desired = self.proxy_payload(revision, values)["revision"]
-        try:
-            data = network_json(self.config.network_dir / "applied.json")
-            heartbeat = data.get("heartbeat_at")
-            if (not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool) or not math.isfinite(heartbeat)
-                    or not -5 <= time.time() - heartbeat <= 15):
-                raise ValueError("Stale network status")
-            applied = data.get("applied_revision")
-            if type(applied) is not int or not 1 <= applied <= 2**53 - 1:
-                applied = None
-            ready = "applied" if values.proxy.enabled else "disabled"
-            state = ("active" if values.proxy.enabled else "disabled") if (
-                data.get("state") == ready and type(applied) is int and applied == desired
-                and type(data.get("desired_revision")) is int and data.get("desired_revision") == desired) else (
-                "failed" if data.get("state") == "failed" and data.get("desired_revision") == desired else "pending")
-            messages = {"active": "代理已生效", "disabled": "直连已就绪", "pending": "正在应用网络配置，请稍候",
-                        "failed": "网络配置未生效，请检查代理地址、端口及容器网络；可修正后保存或重试操作"}
-            return {"state": state, "desired_revision": desired, "applied_revision": applied,
-                    "message": messages[state]}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
-            return {"state": "pending", "desired_revision": desired, "applied_revision": None,
-                    "message": "等待网络组件响应，请检查服务状态"}
+        if not self.config.managed_local_api:
+            return {"state": "unavailable" if values.proxy.enabled else "disabled", "desired_revision": revision,
+                    "applied_revision": None, "message": "代理需要标准部署中的受管本地 API" if values.proxy.enabled else ""}
+        from app.db.models import LocalApiRuntime
+        from app.services.local_api import supervisor_status
+        applied = supervisor_status(self.config)
+        with self.db.sessions() as session:
+            row = session.get(LocalApiRuntime, 1)
+            runtime_state = dict(row.values) if row else {}
+        expected_command = runtime_state.get("command_id") or runtime_state.get("applied_command_id")
+        expected_revision = runtime_state.get("credential_revision") if runtime_state.get("command_id") else runtime_state.get("applied_credential_revision")
+        signature = self.proxy_signature(values)
+        ready = (applied.get("state") == "running" and applied.get("proxy_signature") == signature
+                 and bool(applied.get("generation")) and bool(expected_command)
+                 and applied.get("command_id") == expected_command and applied.get("credential_revision") == expected_revision)
+        state = ("active" if values.proxy.enabled else "disabled") if ready else "failed" if applied.get("state") == "failed" else "pending"
+        return {"state": state, "desired_revision": revision, "applied_revision": revision if ready else None,
+                "message": "" if ready else "等待本地 API 应用网络配置；失败后请检查代理并重试"}
+
+    @staticmethod
+    def proxy_signature(values: UserSettings) -> str:
+        from app.core.security import digest
+        # Disabled is an explicit command that clears TDLib's persisted selection.
+        return digest(json.dumps(values.proxy.model_dump() if values.proxy.enabled else {"enabled": False}, sort_keys=True))
 
     def public(self) -> dict[str, Any]:
         revision, values, sources = self.read()
@@ -186,7 +143,7 @@ class SettingsService:
             assert row
             if patch.revision != row.revision:
                 raise AppError("REVISION_CONFLICT", "配置已被修改，请刷新后重试", 409)
-            current_mode = os.getenv("TGD_BOT_API_MODE", row.values.get("bot_api_mode", "local"))
+            current_mode = os.getenv("TGD_BOT_API_MODE", row.values.get("bot_api_mode", "cloud"))
             if not self.config.managed_local_api and candidate.bot_api_mode != current_mode and session.scalar(select(Job.id).where(
                     Job.state.in_(["fetching", "saving", "cancelling", "recovery_blocked"])).limit(1)):
                 raise AppError("API_MODE_BUSY", "存在下载中或恢复待处理任务，请处理完成后切换 API 模式", 409)
@@ -196,39 +153,3 @@ class SettingsService:
             row.values, row.revision = data, row.revision + 1
         # Runtime drains active slots before handing new network configuration to the supervisor.
         return self.public()
-
-    def proxy_payload(self, revision: int, values: UserSettings) -> dict[str, Any]:
-        """Keep the network revision stable until actual proxy settings change."""
-        proxy = values.proxy.model_dump()
-        try:
-            previous = network_json(self.config.network_dir / "desired.json")
-            previous_revision = previous.pop("revision")
-            if type(previous_revision) is int and 1 <= previous_revision < 2**53 - 1:
-                if previous == proxy:
-                    return {"revision": previous_revision, **proxy}
-                revision = max(revision, previous_revision + 1)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            pass
-        return {"revision": revision, **proxy}
-
-    def write_proxy_desired(self, revision: int | None = None, values: UserSettings | None = None, *, force: bool = False) -> None:
-        if revision is None or values is None:
-            revision, values, _ = self.read()
-        if values.bot_api_mode == "cloud" or not self.config.proxy_capable:
-            return
-        self.config.network_dir.mkdir(parents=True, exist_ok=True)
-        payload = self.proxy_payload(revision, values)
-        if force:
-            payload["revision"] += 1
-        desired_path = self.config.network_dir / "desired.json"
-        try:
-            if network_json(desired_path) == payload:
-                return
-        except (OSError, ValueError):
-            pass
-        temporary = self.config.network_dir / "desired.new"
-        temporary.unlink(missing_ok=True)
-        private_file(temporary, json.dumps(payload).encode())
-        # Network component shares the application's group.
-        os.chmod(temporary, 0o640)
-        os.replace(temporary, desired_path)

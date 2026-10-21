@@ -10,20 +10,17 @@ services:
     environment:
       TGD_DATA_DIR: /data
       TGD_DOWNLOAD_ROOT: /downloads
-      TGD_BOT_API_BASE: http://telegram-network:8081
+      TGD_BOT_API_BASE: http://bot-api:8081
       TGD_BOT_API_ROOT: /var/lib/telegram-bot-api
       TGD_MANAGED_LOCAL_API: "true"
       TGD_LOCAL_API_CONTROL_DIR: /run/tgd-api-control
       TGD_STATIC_DIR: /app/frontend/dist
-      TGD_NETWORK_DIR: /run/tgd-network
-      TGD_PROXY_CAPABLE: "true"
       TGD_TIMEZONE: ${TGD_TIMEZONE:-Asia/Shanghai}
     volumes:
       - ${TGD_HOST_DATA:-./data}:/data
       - ${TGD_HOST_DOWNLOADS:-./downloads}:/downloads
       - ${TGD_HOST_API_CACHE:-./bot-api}:/var/lib/telegram-bot-api:ro
       - api-control:/run/tgd-api-control
-      - network:/run/tgd-network
     extra_hosts: ["host.docker.internal:host-gateway"]
     networks: [tgd]
     depends_on:
@@ -45,56 +42,27 @@ services:
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     init: true
     restart: unless-stopped
-    network_mode: service:telegram-network
+    networks: [tgd]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
-      telegram-network: {condition: service_healthy}
       init-volumes: {condition: service_completed_successfully}
     environment:
       TGD_LOCAL_API_CONTROL_DIR: /run/tgd-api-control
     volumes:
       - ${TGD_HOST_API_CACHE:-./bot-api}:/var/lib/telegram-bot-api
       - api-control:/run/tgd-api-control
-      - ./deploy/network/resolv.conf:/etc/resolv.conf:ro
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     stop_grace_period: 90s
     logging: *logging
-  telegram-network:
-    build:
-      context: .
-      dockerfile: deploy/network/Dockerfile
-    image: tgd-network:0.1.0
-    depends_on:
-      init-volumes: {condition: service_completed_successfully}
-    restart: unless-stopped
-    # root required for TUN/firewall; Bot API must use a NON-root TGD_UID.
-    cap_drop: [ALL]
-    cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, FOWNER]
-    devices: ["/dev/net/tun:/dev/net/tun"]
-    security_opt: [no-new-privileges:true]
-    environment:
-      TGD_NETWORK_SUBNET: ${TGD_NETWORK_SUBNET:-172.30.88.0/24}
-      TGD_GID: ${TGD_GID:-1000}
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    volumes:
-      - network:/run/tgd-network
-    networks: [tgd]
-    read_only: true
-    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m", "/run/tgd-private:rw,noexec,nosuid,size=16m"]
-    healthcheck:
-      test: [CMD, python, -c, "from pathlib import Path; raise SystemExit(not Path('/run/tgd-private/firewall-ready').exists())"]
-      interval: 5s
-      timeout: 2s
-      retries: 6
-    logging: *logging
   init-volumes:
     build:
       context: .
-      dockerfile: deploy/network/Dockerfile
-    image: tgd-network:0.1.0
-    entrypoint: ["python", "/opt/tgd/init-volumes.py"]
+      dockerfile: deploy/bot-api/Dockerfile
+    image: tgd-bot-api:0.1.0
+    entrypoint: ["python3", "/usr/local/lib/tgd-init-volumes.py"]
     restart: "no"
     network_mode: none
     environment:
@@ -102,7 +70,6 @@ services:
       TGD_GID: ${TGD_GID:-1000}
     volumes:
       - api-control:/run/tgd-api-control
-      - network:/run/tgd-network
     read_only: true
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
@@ -110,8 +77,5 @@ services:
     logging: *logging
 volumes:
   api-control:
-  network:
 networks:
   tgd:
-    ipam:
-      config: [{subnet: "${TGD_NETWORK_SUBNET:-172.30.88.0/24}"}]

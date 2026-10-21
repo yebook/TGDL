@@ -14,16 +14,16 @@ for (const width of [1440, 390]) {
       const value = await response.json()
       await route.fulfill({ json: { ...value,
         proxy: { state: ready ? 'active' : 'pending', desired_revision: 9, applied_revision: ready ? 9 : null, message: '' },
-        local_api: { ...value.local_api, managed: true, state: 'running', desired_mode: 'local', applied_mode: ready ? 'local' : 'cloud', phase: ready ? 'idle' : 'waiting_network', message: '', can_restart: false, can_retry: false },
+        local_api: { ...value.local_api, managed: true, state: ready ? 'running' : 'starting', desired_mode: 'local', applied_mode: ready ? 'local' : 'cloud', phase: ready ? 'idle' : 'starting', message: '', can_restart: false, can_retry: false },
       } })
     })
     await page.goto('/')
     await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
-    await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+    await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
     await page.getByRole('button', { name: '登录', exact: true }).click()
     await page.getByRole('link', { name: '设置', exact: true }).click()
     const api = page.getByTestId('local-api-status')
-    await expect(api).toContainText('等待代理网络就绪')
+    await expect(api).toContainText('正在启动本地 API')
     await expect(api.locator('.local-api-modes').getByText('官方云端', { exact: true })).toBeVisible()
     await expect(page.locator('.proxy-saved-state')).toContainText('等待应用')
     const time = page.getByLabel('每日自动清理时间', { exact: true })

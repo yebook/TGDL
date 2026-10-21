@@ -164,7 +164,9 @@ def test_postlogout_recovery_requires_exact_running_target_and_keeps_barrier(man
     heartbeat(service, command_id="old-command", state="running", generation="old")
     with pytest.raises(AppError):
         service.recovery_candidate(saved)
-    heartbeat(service, command_id="target-start", state="running", generation="new")
+    heartbeat(service, command_id="target-start", state="running", generation="new",
+              credential_revision=service.read()["credential_revision"],
+              proxy_signature=runtime.settings.proxy_signature(saved))
     assert service.recovery_candidate(saved).bot_api_mode == "local"
     assert service.read()["phase"] == "failed" and service.read()["applied_mode"] == "cloud"
     with pytest.raises(AppError):

@@ -87,8 +87,10 @@ This single habit prevents most "forgot to update X" bugs.
 User decision (2026-10-21): this project is still developing its first release.
 Do not add compatibility branches for unpublished versions. Simplify affected
 obsolete paths when changing features, and update tests/docs to the current
-contract. This does not authorize deleting user test data, credentials, durable
-download ownership or Telegram safety state. Revisit version compatibility after
+contract. The user explicitly permits cleaning incompatible pre-release test
+data instead of supporting older versions. Identify the affected data first;
+preserve media and never bypass active download ownership or Telegram safety
+state as a repair shortcut. Revisit version compatibility after
 the first formal release.
 
 1. **Before coding**: Skim the relevant thinking guide

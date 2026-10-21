@@ -18,6 +18,15 @@ export interface Settings {
   configured: { bot_token: boolean; proxy_password: boolean; telegram_api_hash: boolean }
   proxy_status: { state: string; desired_revision: number | null; applied_revision: number | null; message: string }
 }
+export interface SettingsBackupEnvelope {
+  format: 'tgdl-settings'; version: 1; kdf: 'scrypt-16384-8-1'
+  salt: string; nonce: string; ciphertext: string
+}
+export interface SettingsBackupPreview {
+  revision: number; created_at: string; included_fields: string[]; skipped_fields: string[]; warnings: string[]
+  configured: Settings['configured']
+  summary: { bot_api_mode: 'cloud' | 'local'; download_root_id: string; download_concurrency: number; allowed_user_count: number }
+}
 export interface Task {
   id: string; title: string; kind: 'single' | 'group'; status: string; created_at: string; updated_at: string
   item_count: number; completed_count: number; total_bytes: number | null; completed_bytes: number
@@ -27,6 +36,7 @@ export interface Attempt { sequence: number; started_at: string; finished_at: st
 export interface MediaItem {
   id: string; job_id: string | null; media_type: string; original_name: string | null; size_bytes: number | null
   duration_seconds: number | null; status: string; phase: string | null; completed_bytes: number; total_bytes: number | null
+  acquisition_mode: 'cloud' | 'local' | null
   speed_bps: number | null; elapsed_seconds: number | null; relative_path: string | null
   error_code: string | null; error_message: string | null; linked_job_id: string | null; attempts: Attempt[]
 }
@@ -38,7 +48,7 @@ export interface LocalApiStatus {
   state: 'unavailable' | 'waiting_credentials' | 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
   desired_mode: 'cloud' | 'local'; applied_mode: 'cloud' | 'local' | null
   operation_id: string | null
-  phase: 'idle' | 'draining' | 'waiting_network' | 'logging_out' | 'starting' | 'verifying' | 'cooldown' | 'blocked' | 'logout_uncertain' | 'failed'
+  phase: 'idle' | 'draining' | 'logging_out' | 'starting' | 'verifying' | 'cooldown' | 'blocked' | 'logout_uncertain' | 'failed'
   message: string; generation: string | null; last_heartbeat_at: string | null
   cloud_available_at: string | null; can_restart: boolean; can_retry: boolean
 }

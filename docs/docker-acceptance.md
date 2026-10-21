@@ -53,5 +53,5 @@ Web 端口由 Docker 动态分配且只绑定 `127.0.0.1`。不读取 `.env`，
 可在 Docker 管理界面核对并删除本次 `tgd-smoke-` 容器，再清理对应的
 `tgd-docker-smoke-` 系统临时目录。不会按此前缀批量删除其他运行资源。
 
-通过此检查仍不代表真实 Telegram、大于 20 MB 下载、代理 TUN、飞牛 OS
+通过此检查仍不代表真实 Telegram、大于 20 MB 下载、真实代理、飞牛 OS
 权限或 NAS 文件系统已验收；这些项目继续在[验证记录](verification.md)中单独跟踪。

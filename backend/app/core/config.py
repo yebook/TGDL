@@ -12,8 +12,6 @@ class Config:
     bot_api_root: Path = field(default_factory=lambda: Path(os.getenv("TGD_BOT_API_ROOT", "/var/lib/telegram-bot-api")))
     bot_api_base: str = field(default_factory=lambda: os.getenv("TGD_BOT_API_BASE", "http://bot-api:8081"))
     static_dir: Path = field(default_factory=lambda: Path(os.getenv("TGD_STATIC_DIR", "/app/frontend/dist")))
-    network_dir: Path = field(default_factory=lambda: Path(os.getenv("TGD_NETWORK_DIR", "/run/tgd-network")))
-    proxy_capable: bool = field(default_factory=lambda: os.getenv("TGD_PROXY_CAPABLE", "false").lower() == "true")
     cookie_secure: bool = field(default_factory=lambda: os.getenv("TGD_COOKIE_SECURE", "false").lower() == "true")
     get_file_timeout: int = field(default_factory=lambda: int(os.getenv("TGD_GET_FILE_TIMEOUT", "3600")))
     minimum_free_bytes: int = field(default_factory=lambda: int(os.getenv("TGD_MINIMUM_FREE_BYTES", "268435456")))

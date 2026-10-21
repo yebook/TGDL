@@ -95,8 +95,8 @@ def test_health_and_system_do_not_require_bot(authenticated: TestClient) -> None
 
 def test_login_throttle(client: TestClient) -> None:
     for _ in range(10):
-        assert client.post("/api/v1/auth/login", json={"username": "x", "password": "wrong"}).status_code == 401
-    assert client.post("/api/v1/auth/login", json={"username": "x", "password": "wrong"}).status_code == 429
+        assert client.post("/api/v1/auth/login", json={"username": "x", "password": "wrong-pass"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"username": "x", "password": "wrong-pass"}).status_code == 429
 
 
 def test_bot_settings_save_offline_and_manual_validation_never_saves(authenticated: TestClient, monkeypatch) -> None:

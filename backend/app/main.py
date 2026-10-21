@@ -26,6 +26,7 @@ from app.core.errors import AppError
 from app.core.security import Secrets, digest, new_token, password_hasher, private_file, verify_password
 from app.db.models import Admin, MediaRequest, Session
 from app.db.session import Database
+from app.schemas.backup import BackupExport, BackupExportResponse, BackupInput, BackupPreview, BackupRestore
 from app.schemas.contracts import (
     Credentials,
     LocalApiRetry,
@@ -50,6 +51,7 @@ from app.schemas.responses import (
     TaskPage,
     ValidationResponse,
 )
+from app.services.config_backup import MAX_BACKUP_REQUEST_BYTES, ConfigBackupService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
@@ -71,11 +73,12 @@ def create_app(config: Config | None = None) -> FastAPI:
     storage: StorageManager
     runtime: Runtime
     crypto: Secrets
+    backups: ConfigBackupService
     attempts: dict[str, deque[float]] = defaultdict(deque)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        nonlocal db, settings, tasks, storage, runtime, crypto
+        nonlocal db, settings, tasks, storage, runtime, crypto, backups
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         lock = FileLock(cfg.data_dir / "instance.lock")
         try:
@@ -87,6 +90,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             await asyncio.to_thread(migrate, db)
             crypto = Secrets(cfg.data_dir)
             settings = SettingsService(db, cfg, crypto)
+            backups = ConfigBackupService(settings)
             tasks = TaskService(db, settings)
             storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes)
             runtime = Runtime(db, cfg, settings, tasks, storage)
@@ -121,6 +125,15 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Response:
         request.state.request_id = secrets.token_hex(8)
+        if request.url.path.startswith("/api/v1/settings/backup/"):
+            size = 0
+            body = bytearray()
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_BACKUP_REQUEST_BYTES:
+                    return error_response(request, AppError("BACKUP_TOO_LARGE", "备份请求过大，最大支持 128 KiB", 413))
+                body.extend(chunk)
+            request._body = bytes(body)
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if origin:
@@ -273,9 +286,6 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.get("/api/v1/settings", dependencies=[Depends(auth)], response_model=SettingsResponse)
     def get_settings() -> dict[str, Any]:
         result = settings.public()
-        if runtime.network_write_error and result["values"]["bot_api_mode"] == "local":
-            result["proxy_status"]["state"] = "failed"
-            result["proxy_status"]["message"] = "配置已保存，但写入网络组件失败，请检查共享卷权限"
         return result
 
     async def validate_bot(candidate: UserSettings) -> dict[str, Any] | None:
@@ -308,8 +318,6 @@ def create_app(config: Config | None = None) -> FastAPI:
             await asyncio.to_thread(runtime.local_api.validate_allowed, candidate)
             identity = await validate_bot(candidate)
         warnings = []
-        if candidate.bot_api_mode == "local" and candidate.proxy.enabled and not cfg.proxy_capable:
-            warnings.append("本地网络管理组件不可用，请检查标准部署的组件状态和 TUN 支持")
         try:
             await asyncio.to_thread(storage.get(candidate.download_root_id).check)
         except (OSError, AppError):
@@ -323,6 +331,24 @@ def create_app(config: Config | None = None) -> FastAPI:
         # before activation; explicit /validate probes never save this candidate.
         async with runtime.connection_lock:
             result = await asyncio.to_thread(settings.save, payload, candidate)
+        await asyncio.to_thread(runtime.maintain_diagnostics)
+        return result
+
+    @application.post("/api/v1/settings/backup/export", dependencies=[Depends(auth)], response_model=BackupExportResponse)
+    async def export_configuration(payload: BackupExport) -> dict[str, Any]:
+        return await asyncio.to_thread(backups.export, payload.password)
+
+    @application.post("/api/v1/settings/backup/preview", dependencies=[Depends(auth)], response_model=BackupPreview)
+    async def preview_configuration(payload: BackupInput) -> dict[str, Any]:
+        decoded = await asyncio.to_thread(backups.decrypt, payload.backup, payload.password)
+        return await asyncio.to_thread(backups.preview, decoded)
+
+    @application.post("/api/v1/settings/backup/restore", dependencies=[Depends(auth)], response_model=SettingsResponse)
+    async def restore_configuration(payload: BackupRestore) -> dict[str, Any]:
+        decoded = await asyncio.to_thread(backups.decrypt, payload.backup, payload.password)
+        async with runtime.connection_lock:
+            patch, candidate, _ = await asyncio.to_thread(backups.prepare, decoded, payload.revision)
+            result = await asyncio.to_thread(settings.save, patch, candidate)
         await asyncio.to_thread(runtime.maintain_diagnostics)
         return result
 

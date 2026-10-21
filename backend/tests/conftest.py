@@ -14,7 +14,7 @@ def config(tmp_path: Path) -> Config:
         (tmp_path / name).mkdir()
     return Config(data_dir=tmp_path / "data", download_root=tmp_path / "downloads",
                   bot_api_root=tmp_path / "cache", static_dir=tmp_path / "static",
-                  network_dir=tmp_path / "network", minimum_free_bytes=1024, run_background=False)
+                  minimum_free_bytes=1024, run_background=False)
 
 
 @pytest.fixture

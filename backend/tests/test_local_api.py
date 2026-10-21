@@ -16,11 +16,27 @@ from app.core.config import Config
 from app.core.errors import AppError
 from app.db.models import IngestUpdate, Notification, Settings
 from app.main import create_app
-from app.schemas.contracts import SettingsPatch
+from app.schemas.contracts import ProxySettings, SettingsPatch
 from app.services.local_api import LocalApiService
 from app.services.request_safety import SafetyDeferred
 
 HASH = "a" * 32
+
+
+@pytest.mark.parametrize('password', ['x' * 255, '中' * 85])
+def test_socks5_password_byte_boundary(password):
+    from pydantic import ValidationError
+    assert ProxySettings(enabled=True, host='proxy.lan', password=password).password == password
+    with pytest.raises(ValidationError, match='255'):
+        ProxySettings(enabled=True, host='proxy.lan', password=password + 'x')
+    assert ProxySettings(enabled=True, scheme='http', host='proxy.lan', password=password + 'x')
+
+
+def test_socks5_username_unicode_byte_boundary():
+    from pydantic import ValidationError
+    assert ProxySettings(enabled=True, host='proxy.lan', username='中' * 85)
+    with pytest.raises(ValidationError, match='255'):
+        ProxySettings(enabled=True, host='proxy.lan', username='中' * 85 + 'x')
 
 
 @pytest.fixture
@@ -35,6 +51,9 @@ def managed(config: Config):
 
 def heartbeat(service, **updates):
     directory = service.config.local_api_control_dir
+    desired_path = directory / "desired.json"
+    desired = json.loads(desired_path.read_text()) if desired_path.exists() else {}
+    updates = {"credential_revision": desired.get("credential_revision", 0), "proxy_signature": desired.get("proxy_signature"), **updates}
     directory.mkdir(exist_ok=True, mode=0o700)
     path = directory / "applied.json"
     path.write_text(json.dumps({"version": 1, "command_id": None, "state": "stopped", "generation": None,
@@ -72,6 +91,30 @@ def test_stale_status(managed):
     assert exc.value.status == 503
 
 
+@pytest.mark.parametrize("phase,code,expected", [
+    ("starting", "", "正在应用 API 或代理配置"),
+    ("verifying", "", "正在应用 API 或代理配置"),
+    ("failed", "LOCAL_API_CONNECTION_FAILED", "Bot 连接验证失败"),
+    ("blocked", "", "存在恢复待处理任务"),
+    ("logout_uncertain", "", "云端退出结果不确定"),
+])
+def test_validation_explains_operation_without_probe_or_state_change(managed, monkeypatch, phase, code, expected):
+    service = managed.app.state.runtime.local_api
+    service.update(phase=phase, action="restart", error_code=code)
+    before = service.read()
+    identity = AsyncMock()
+    logout = AsyncMock()
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    with pytest.raises(AppError, match=expected) as error:
+        service.validate_allowed(managed.app.state.settings.read()[1])
+    assert error.value.code == "LOCAL_API_BUSY"
+    assert error.value.status == 409
+    assert service.read() == before
+    identity.assert_not_awaited()
+    logout.assert_not_awaited()
+
+
 def test_retention_changes_preserve_operation_and_connected_client(managed):
     save(managed, bot_token="123456:synthetic-never-real-token", allowed_user_ids=[42])
     runtime = managed.app.state.runtime
@@ -88,11 +131,11 @@ def test_retention_changes_preserve_operation_and_connected_client(managed):
     client.close.assert_not_awaited()
 
 
-def test_external_compatibility(client):
+def test_external_api_status(client):
     assert client.app.state.runtime.local_api.status()["managed"] is False
 
 
-def test_missing_network_component_is_serialized_as_unavailable(authenticated):
+def test_external_api_proxy_requires_managed_service(authenticated):
     saved = authenticated.get("/api/v1/settings").json()
     response = authenticated.patch("/api/v1/settings", json={
         "revision": saved["revision"], "bot_api_mode": "local", "proxy": {"enabled": True, "host": "proxy.lan"}})
@@ -101,141 +144,6 @@ def test_missing_network_component_is_serialized_as_unavailable(authenticated):
     response = authenticated.get("/api/v1/system/status")
     assert response.status_code == 200
     assert response.json()["proxy"]["state"] == "unavailable"
-
-
-def acknowledge_network(runtime, state="disabled"):
-    desired = json.loads((runtime.config.network_dir / "desired.json").read_text())
-    (runtime.config.network_dir / "applied.json").write_text(json.dumps({
-        "desired_revision": desired["revision"], "applied_revision": desired["revision"],
-        "state": state, "heartbeat_at": time.time(),
-    }))
-
-
-async def test_direct_target_waits_for_exact_network_ack_before_logout(managed, monkeypatch):
-    runtime = managed.app.state.runtime
-    runtime.config.proxy_capable = True
-    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
-         telegram_api_id="1234", telegram_api_hash=HASH)
-    identity = AsyncMock(return_value={"id": 123, "username": "test"})
-    logout = AsyncMock(return_value=True)
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    monkeypatch.setattr(TelegramClient, "logout", logout)
-    assert await runtime.local_api.reconcile(runtime)
-    assert runtime.local_api.read()["phase"] == "waiting_network"
-    logout.assert_not_awaited()
-    identity.assert_not_awaited()
-    bootstrap = (runtime.config.data_dir / "bootstrap.key").read_text()
-    assert managed.post("/api/v1/setup", json={
-        "bootstrap_secret": bootstrap, "username": "admin", "password": "123456"}).status_code == 200
-    assert managed.post("/api/v1/auth/login", json={"username": "admin", "password": "123456"}).status_code == 200
-    response = managed.get("/api/v1/system/status")
-    assert response.status_code == 200
-    assert response.json()["local_api"]["phase"] == "waiting_network"
-    exported = managed.get("/api/v1/system/logs")
-    assert exported.status_code == 200
-    assert any(event["event"] == "local_api_transition" and event.get("outcome") == "waiting_network"
-               for event in exported.json()["events"])
-    identity.assert_not_awaited()  # Status/export reads never probe Telegram.
-    acknowledge_network(runtime)
-    assert await runtime.local_api.reconcile(runtime)
-    assert logout.await_count == 1
-
-
-async def test_network_only_change_drains_and_preserves_api_child_without_logout(managed, monkeypatch):
-    runtime = managed.app.state.runtime
-    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
-         telegram_api_id="1234", telegram_api_hash=HASH)
-    runtime.local_api.update(phase="idle", applied_mode="local", logout_done=True)
-    heartbeat(runtime.local_api, command_id="existing", state="running", generation="old")
-    runtime.config.proxy_capable = True
-    save(managed, proxy={"enabled": True, "host": "proxy.lan"})
-    assert runtime.local_api.read()["action"] == "network"
-    identity = AsyncMock(return_value={"id": 123, "username": "test"})
-    logout = AsyncMock(return_value=True)
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    monkeypatch.setattr(TelegramClient, "logout", logout)
-    owner = Mock(done=Mock(return_value=False))
-    runtime.running["synthetic"] = owner
-    assert await runtime.local_api.reconcile(runtime)
-    assert not (runtime.config.network_dir / "desired.json").exists()
-    runtime.running.clear()
-    assert await runtime.local_api.reconcile(runtime)
-    acknowledge_network(runtime, "applied")
-    assert not await runtime.local_api.reconcile(runtime)
-    assert runtime.local_api.read()["phase"] == "idle"
-    assert runtime.local_api.applied()["generation"] == "old"
-    assert not (runtime.config.local_api_control_dir / "desired.json").exists()
-    logout.assert_not_awaited()
-    assert identity.await_count == 1
-
-
-async def test_proxy_preflight_uses_frozen_target_not_unrelated_current_settings(managed, monkeypatch):
-    runtime = managed.app.state.runtime
-    runtime.config.proxy_capable = True
-    save(managed, bot_token="123:abc", allowed_user_ids=[42], proxy={"enabled": True, "host": "original.lan"})
-    runtime.local_api.update(phase="idle")
-    save(managed, bot_api_mode="local", proxy={"enabled": True, "host": "target.lan"},
-         telegram_api_id="1234", telegram_api_hash=HASH)
-    snapshot = runtime.local_api.read()["snapshot"]
-    revision, frozen, sources = runtime.settings.read()
-    # Simulate an unrelated in-memory reader mutation; durable operation remains authoritative.
-    other = frozen.model_copy(update={"proxy": frozen.proxy.model_copy(update={"host": "wrong.lan"})})
-    monkeypatch.setattr(runtime.settings, "read", lambda: (revision + 1, other, sources))
-    identity = AsyncMock(return_value={"id": 123, "username": "test"})
-    logout = AsyncMock(return_value=True)
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    monkeypatch.setattr(TelegramClient, "logout", logout)
-    assert await runtime.local_api.reconcile(runtime)
-    desired = json.loads((runtime.config.network_dir / "desired.json").read_text())
-    assert desired["host"] == "target.lan"
-    assert runtime.local_api.read()["snapshot"] == snapshot
-    logout.assert_not_awaited()
-
-
-async def test_cloud_preflight_keeps_original_proxy_and_retry_advances_network_without_logout_replay(managed, monkeypatch):
-    runtime = managed.app.state.runtime
-    runtime.config.proxy_capable = True
-    save(managed, bot_token="123:abc", allowed_user_ids=[42], proxy={"enabled": True, "host": "original.lan"})
-    runtime.local_api.update(phase="idle")
-    save(managed, bot_api_mode="local", proxy={"enabled": True, "host": "target.lan"},
-         telegram_api_id="1234", telegram_api_hash=HASH)
-    seen = []
-
-    async def identity(client):
-        seen.append((client.mode, client.bot.session.proxy))
-        return {"id": 123, "username": "test"}
-
-    logout = AsyncMock(return_value=True)
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    monkeypatch.setattr(TelegramClient, "logout", logout)
-    assert await runtime.local_api.reconcile(runtime)
-    acknowledge_network(runtime, "applied")
-    assert await runtime.local_api.reconcile(runtime)
-    assert seen == [("cloud", "socks5://original.lan:1080")]
-    deadline = runtime.local_api.read()["cloud_available_at"]
-    old = json.loads((runtime.config.network_dir / "desired.json").read_text())["revision"]
-    runtime.local_api.update(phase="failed", error_code="LOCAL_API_PROXY")
-    runtime.local_api.action(False)
-    assert await runtime.local_api.reconcile(runtime)
-    new = json.loads((runtime.config.network_dir / "desired.json").read_text())["revision"]
-    assert new > old
-    logout.assert_awaited_once()
-    assert runtime.local_api.read()["logout_done"]
-    assert runtime.local_api.read()["cloud_available_at"] == deadline
-
-
-async def test_stale_direct_network_blocks_existing_client_identity_and_dispatch(managed, monkeypatch):
-    runtime = managed.app.state.runtime
-    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
-         telegram_api_id="1234", telegram_api_hash=HASH)
-    runtime.local_api.update(phase="idle", applied_mode="local", logout_done=True)
-    runtime.config.proxy_capable = True
-    heartbeat(runtime.local_api, command_id="existing", state="running", generation="old")
-    identity = AsyncMock()
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    await runtime.ensure_client()
-    identity.assert_not_awaited()
-    assert runtime.bot_status["state"] != "online"
 
 
 def test_persisted_logout_intent_and_explicit_recovery(managed):
@@ -272,6 +180,34 @@ async def test_logout_only_once_then_ack_start_and_verify(managed, monkeypatch):
     assert service.read()["applied_mode"] == "local"
     assert service.read()["cloud_available_at"] > time.time()
     assert identity.await_count == 2
+
+
+async def test_proxy_change_restarts_child_after_drain_without_logout(managed, monkeypatch):
+    runtime = managed.app.state.runtime
+    service = runtime.local_api
+    save(managed, bot_api_mode="local", telegram_api_id="1234", telegram_api_hash=HASH)
+    service.update(phase="idle", applied_mode="local", logout_done=True)
+    heartbeat(service, state="running", generation="old")
+    save(managed, proxy={"enabled": True, "host": "proxy.lan", "password": "private-proxy"})
+    assert service.read()["action"] == "restart"
+    owner = Mock(done=Mock(return_value=False))
+    runtime.running["owned"] = owner
+    assert await service.reconcile(runtime)
+    assert not (service.config.local_api_control_dir / "desired.json").exists()
+    runtime.running.clear()
+    logout = AsyncMock()
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    assert await service.reconcile(runtime)
+    desired = json.loads((service.config.local_api_control_dir / "desired.json").read_text())
+    assert desired["action"] == "restart"
+    assert "private-proxy" not in json.dumps(desired)
+    heartbeat(service, command_id=desired["command_id"], state="running", generation="new")
+    assert not await service.reconcile(runtime)
+    assert service.read()["applied_generation"] == "new"
+    logout.assert_not_awaited()
+    assert managed.app.state.settings.public()["proxy_status"]["state"] == "active"
+    heartbeat(service, command_id="stale-command", state="running", generation="new")
+    assert managed.app.state.settings.public()["proxy_status"]["state"] == "pending"
 
 
 @pytest.mark.parametrize("failure", [
@@ -436,12 +372,12 @@ async def test_restart_waits_for_owners_and_blocked_generation(managed):
     assert runtime.local_api.read()["phase"] != "idle"
 
 
-def test_unrelated_save_does_not_restart_and_environment_fallback(managed, monkeypatch):
+def test_unrelated_save_does_not_restart_and_ignores_environment_credentials(managed, monkeypatch):
     monkeypatch.setenv("TELEGRAM_API_ID", "1234")
     monkeypatch.setenv("TELEGRAM_API_HASH", HASH)
     save(managed, download_concurrency=4)
     assert managed.app.state.runtime.local_api.read()["phase"] == "idle"
-    assert managed.app.state.settings.public()["editable"]["telegram_api_hash"]
+    assert managed.app.state.settings.read()[1].telegram_api_hash == ""
     save(managed, telegram_api_hash="b" * 32)
     assert managed.app.state.settings.read()[1].telegram_api_hash == "b" * 32
 

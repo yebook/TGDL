@@ -74,3 +74,9 @@
 ## Artifact Status
 
 需求 v1.0 与技术设计/实施计划已获用户确认，已执行 task.py start，状态为 in_progress。后端、WebUI、部署实现按 ownership 分派给 Trellis 子代理，随后进行集成与独立检查；真实 Bot/NAS/代理实验仍需部署环境，不能把文档研究或模拟测试标为真实验证。
+# Configuration portability and first-release cleanup (2026-10-21)
+
+- Add authenticated WebUI configuration export/import. Include Bot Token, API Hash and proxy password encrypted with an independent user-supplied backup password. Exclude administrator credentials/sessions, tasks/history/database, media, logs, caches and service/protection state; explain the scope in UI and public documentation.
+- Restore must validate the complete settings before changing anything, respect environment-controlled fields, current storage roots, settings revision conflicts and existing safe API transition barriers. It must not contact Telegram merely to inspect a backup. Wrong passwords/corrupt/unsupported files must not change settings or expose secrets.
+- Remove unpublished-version compatibility in active application code, tests, UI and public documentation. Incompatible old test data may be cleaned; no migration bridge is required. Preserve upstream Telegram semantics, crash recovery, credential/cooldown protections and normal safe defaults. Historical journals remain historical records.
+- Proxy behavior is consistent across API modes: enabled uses the configured proxy, disabled uses the container's normal network. Investigate removing the host TUN requirement and simplify deployment without silent direct fallback when proxy setup fails.

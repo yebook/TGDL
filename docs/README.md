@@ -8,6 +8,7 @@
 | [本地 Bot API 与 API ID / Hash](telegram-api.md) | [部署后验收工具](acceptance.md) |
 | [Bot 提示与文件名模板](templates.md) | [Docker 隔离验收](docker-acceptance.md) |
 | [日志、维护、备份与恢复](operations.md) | [验证范围](verification.md) |
+| [配置备份与恢复](configuration-backup.md) | |
 | [常见问题](faq.md) | [文档站与 GitHub Pages](pages.md) |
 | [Windows 本地运行](local-run.md) | [贡献、安全与许可](project.md) |
 

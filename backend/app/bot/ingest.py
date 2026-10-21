@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.bot.grouping import GROUP_MAX_SECONDS, GROUP_MIN_SECONDS, GROUP_QUIET_SECONDS
 from app.core.errors import AppError
 from app.db.models import IngestUpdate, MediaItem, MediaRequest, Notification, PollCursor, uid
 from app.db.session import Database
@@ -59,7 +60,7 @@ class IngestService:
         media: dict[str, Any] | None = None
         kind = "video"
         if message.get("animation"):
-            media = None  # Telegram also exposes document for animations for backwards compatibility.
+            media = None  # Animations also have a document field; do not ingest that duplicate representation.
         elif message.get("video"):
             media = message["video"]
         elif message.get("photo"):
@@ -84,16 +85,19 @@ class IngestService:
                     MediaRequest.deleted_at.is_(None)
                 ).order_by(MediaRequest.created_at.desc())) if group_key else None
                 now = time.time()
-                if request and request.collect_until <= now:
-                    request = None  # Late members become a new batch, never mutate a displayed card.
+                if request and request.created_at + GROUP_MAX_SECONDS <= now:
+                    request = None  # Hard cap; displayed cards are never selected above.
                 if not request:
                     request = MediaRequest(id=uid(), bot_id=bot_id, chat_id=chat_id, user_id=user_id,
                                            kind="group" if group_key else "single", group_key=group_key,
-                                           collect_until=now + (1 if group_key else 0))
+                                           created_at=now, updated_at=now,
+                                           collect_until=now + (GROUP_MIN_SECONDS if group_key else 0))
                     session.add(request)
                     session.flush()
                 elif group_key:
-                    request.collect_until = min(request.created_at + 5, now + 1)
+                    request.collect_until = min(request.created_at + GROUP_MAX_SECONDS,
+                                                max(request.created_at + GROUP_MIN_SECONDS,
+                                                    now + GROUP_QUIET_SECONDS))
                 session.add(MediaItem(request_id=request.id, bot_id=bot_id, chat_id=chat_id,
                                       message_id=message["message_id"], file_id=media["file_id"],
                                       file_unique_id=media.get("file_unique_id"), media_type=kind,

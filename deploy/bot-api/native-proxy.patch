@@ -1,0 +1,77 @@
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -6767,8 +6767,12 @@
+ 
+   void on_result(object_ptr<td_api::Object> result) final {
+     if (result->get_id() == td_api::error::ID) {
+-      LOG(WARNING) << "Failed to initialize due to " << td::oneline(to_string(result));
++      client_->tgd_initialization_failed_ = true;
+       client_->close();
++    }
++    if (--client_->tgd_initialization_pending_ == 0 && !client_->tgd_initialization_failed_) {
++      client_->send_request(make_object<td_api::setNetworkType>(make_object<td_api::networkTypeOther>()),
++                            td::make_unique<TdOnOkCallback>());
+     }
+   }
+ 
+@@ -9408,6 +9412,36 @@
+                      td::make_unique<TdOnOkCallback>());
+       }
+ 
++      // StateManager starts offline. These requests queue until parameters exist;
++      // all three acknowledgements must succeed before networking is enabled.
++      send_request(make_object<td_api::setNetworkType>(make_object<td_api::networkTypeNone>()),
++                   td::make_unique<TdOnInitCallback>(this));
++      const char *mode = std::getenv("TGD_NATIVE_PROXY_MODE");
++      if (mode == nullptr) {
++        return close();
++      }
++      if (td::string(mode) == "direct") {
++        send_request(make_object<td_api::disableProxy>(), td::make_unique<TdOnInitCallback>(this));
++      } else if (td::string(mode) == "socks5" || td::string(mode) == "http") {
++        const char *host = std::getenv("TGD_NATIVE_PROXY_HOST");
++        const char *port = std::getenv("TGD_NATIVE_PROXY_PORT");
++        const char *username = std::getenv("TGD_NATIVE_PROXY_USERNAME");
++        const char *password = std::getenv("TGD_NATIVE_PROXY_PASSWORD");
++        if (!host || !port || !username || !password) {
++          return close();
++        }
++        object_ptr<td_api::ProxyType> type;
++        if (td::string(mode) == "socks5") {
++          type = make_object<td_api::proxyTypeSocks5>(username, password);
++        } else {
++          type = make_object<td_api::proxyTypeHttp>(username, password, false);
++        }
++        auto proxy = make_object<td_api::proxy>(host, std::stoi(port), std::move(type));
++        send_request(make_object<td_api::addProxy>(std::move(proxy), true, ""),
++                     td::make_unique<TdOnInitCallback>(this));
++      } else {
++        return close();
++      }
+       auto request = make_object<td_api::setTdlibParameters>();
+       request->use_test_dc_ = is_test_dc_;
+       request->database_directory_ = dir_;
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -277,6 +277,8 @@
+   class TdOnOkCallback;
+   class TdOnAuthorizationCallback;
+   class TdOnInitCallback;
++  int tgd_initialization_pending_ = 3;
++  bool tgd_initialization_failed_ = false;
+   class TdOnGetUserProfilePhotosCallback;
+   class TdOnGetUserProfileAudiosCallback;
+   class TdOnSendMessageCallback;
+--- a/td/td/telegram/StateManager.h
++++ b/td/td/telegram/StateManager.h
+@@ -64,8 +64,8 @@
+  private:
+   ActorShared<> parent_;
+   bool sync_flag_ = true;
+-  bool network_flag_ = true;
+-  NetType network_type_ = NetType::Unknown;
++  bool network_flag_ = false;
++  NetType network_type_ = NetType::None;
+   uint32 network_generation_ = 1;
+   bool online_flag_ = false;
+   bool use_proxy_ = false;

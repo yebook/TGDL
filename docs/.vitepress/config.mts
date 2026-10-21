@@ -34,6 +34,7 @@ export default defineConfig({
         { text: '任务与归档', link: '/usage' },
         { text: '本地 Bot API 与凭据', link: '/telegram-api' },
         { text: '提示与文件名模板', link: '/templates' },
+        { text: '配置备份与恢复', link: '/configuration-backup' },
         { text: '维护与诊断日志', link: '/operations' },
         { text: '常见问题', link: '/faq' },
       ] },

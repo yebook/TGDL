@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { errorMessage, request } from '../api/client'
-import { cooldownText, localApiPhases, localApiStates, localApiTone, modeLabel } from '../api/localApi'
+import { botConnectionLabel, cooldownText, localApiPhases, localApiStates, localApiTone, localBotConnectionHint, modeLabel } from '../api/localApi'
 import type { BotRequestSafety, LocalApiStatus } from '../api/types'
 import { safetyLabels } from '../api/botSafety'
 
@@ -19,7 +19,7 @@ const connection = computed(() => {
   const safety = props.bot?.request_safety
   if (safety && safety.state !== 'ready') return safetyLabels[safety.state]
   const state = props.bot?.state
-  return state === 'connected' || state === 'online' ? 'Bot 已连接' : state === 'connecting' ? 'Bot 正在连接' : state === 'unconfigured' ? 'Bot 尚未配置' : 'Bot 未连接'
+  return botConnectionLabel(state || 'unconfigured', props.status?.applied_mode ?? null)
 })
 async function act(action: 'restart' | 'retry', acknowledge = false) {
   if (busy.value || confirming || props.disabled || props.stale || !props.status?.managed) return
@@ -53,6 +53,7 @@ async function act(action: 'restart' | 'retry', acknowledge = false) {
     <template v-if="status">
       <p v-if="stale" class="warning-text" role="status">状态更新失败，当前显示上次结果；恢复连接后可操作。</p>
       <dl class="local-api-modes"><div><dt>已保存选择</dt><dd>{{ modeLabel(status.desired_mode) }}</dd></div><div><dt>实际使用</dt><dd>{{ modeLabel(status.applied_mode) }}</dd></div><div v-if="bot"><dt>Bot 连接</dt><dd>{{ connection }}</dd></div></dl>
+      <p v-if="status.applied_mode === 'local' && (bot?.state === 'online' || bot?.state === 'connected')" class="field-hint">{{ localBotConnectionHint }}</p>
       <p v-if="status.phase !== 'idle'" class="local-api-phase" aria-live="polite">{{ localApiPhases[status.phase] }}</p>
       <p class="field-hint local-api-message" aria-live="polite">{{ status.message || (status.managed ? '保存配置后由后台协调应用。' : '当前服务由部署环境管理；升级管理组件后可在此控制 API 进程。') }}</p>
       <p v-if="cooldown" class="warning-text">{{ cooldown }}</p>

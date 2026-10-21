@@ -3,19 +3,14 @@
 import json
 import os
 import time
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
 
-from app.bot.client import TelegramClient
 from app.core.config import Config
 from app.core.errors import AppError
-from app.db.models import LocalApiRuntime
 from app.main import create_app
 from app.schemas.contracts import SettingsPatch
-from app.services.local_api import LocalApiService
 
 
 @pytest.fixture
@@ -35,26 +30,6 @@ def managed_app(config: Config):
 def save(state, **changes):
     patch = SettingsPatch(revision=state.settings.read()[0], **changes)
     return state.settings.save(patch, state.settings.candidate(patch))
-
-
-async def test_external_local_upgrade_waits_for_explicit_activation(managed_app, monkeypatch):
-    state = managed_app
-    save(state, bot_api_mode="local", telegram_api_id="1234", telegram_api_hash="a" * 32)
-    with state.db.transaction() as session:
-        session.execute(delete(LocalApiRuntime))
-    service = LocalApiService(state.settings)
-    identity, logout = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(TelegramClient, "identity", identity)
-    monkeypatch.setattr(TelegramClient, "logout", logout)
-    assert service.read()["phase"] == "failed"
-    assert service.status()["applied_mode"] is None
-    assert service.status()["can_retry"]
-    assert not service.status()["can_restart"]
-    assert await service.reconcile(state.runtime)
-    identity.assert_not_awaited()
-    logout.assert_not_awaited()
-    service.action(False)
-    assert service.read()["phase"] == "draining"
 
 
 @pytest.mark.parametrize("process_state,acknowledge", [("stopped", False), ("starting", True)])

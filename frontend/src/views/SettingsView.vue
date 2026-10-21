@@ -3,11 +3,13 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiError, errorMessage, request } from '../api/client'
 import { parseUserIds } from '../api/format'
+import { validationBlockReason } from '../api/localApi'
 import { confirmationVariables, defaultConfirmationTemplate, defaultFilenameTemplate, filenameVariables, templateExamples } from '../api/templates'
 import type { LocalApiStatus, Settings, SettingsValues, StorageRoot, SystemStatus } from '../api/types'
 import { usePolling } from '../composables/usePolling'
 import SettingsSource from '../components/SettingsSource.vue'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
+import SettingsBackup from '../components/SettingsBackup.vue'
 
 const emit = defineEmits<{ dirty: [value: boolean] }>()
 const settings = ref<Settings>()
@@ -27,6 +29,7 @@ const clearBotToken = ref(false)
 const clearProxyPassword = ref(false)
 const clearApiHash = ref(false)
 const busy = ref(false)
+const backupBusy = ref(false)
 const loading = ref(true)
 const error = ref('')
 const conflict = ref(false)
@@ -45,10 +48,10 @@ const proxyStatus = computed(() => {
 })
 const proxyLabels: Record<string, string> = { disabled: '未启用', pending: '等待应用', applying: '正在应用', active: '已应用', failed: '应用失败', unavailable: '网络组件未连接' }
 const proxyMessages: Record<string, string> = { disabled: '当前未启用代理。', pending: '代理变更等待后台确认，尚未生效。', applying: '正在应用代理配置，请稍候。', active: '代理配置已应用。', failed: '代理配置应用失败，请检查代理地址、认证和可用性。', unavailable: '网络组件未连接，请在系统状态页查看详情。' }
+const validationBlocked = computed(() => statusError.value ? '服务状态更新失败，请等待状态恢复后再校验。' : !liveSystem.value ? '正在获取服务状态，请稍候。' : validationBlockReason(liveSystem.value.local_api, proxyStatus.value))
 const current = computed(() => JSON.stringify({ form, userIds: userIds.value, clearBotToken: clearBotToken.value, clearProxyPassword: clearProxyPassword.value, clearApiHash: clearApiHash.value }))
 const dirty = computed(() => !!snapshot.value && snapshot.value !== current.value)
 const examples = computed(() => templateExamples(form.confirmation_template, form.filename_template, form.confirmation_timeout_seconds))
-// Displaying legacy seconds must not round the value or mark the form dirty.
 const confirmationMinutes = computed({
   get: () => form.confirmation_timeout_seconds / 60,
   set: (minutes: number | undefined) => { if (minutes !== undefined) form.confirmation_timeout_seconds = Math.round(minutes * 60) },
@@ -73,11 +76,17 @@ async function load() {
     const [value, system] = await Promise.all([
       request<Settings>('/settings'), request<SystemStatus>('/system/status'),
     ])
-    roots.value = system.storage.roots; assign(value)
+    roots.value = system.storage.roots; liveSystem.value = system; assign(value)
   } catch (cause) { error.value = errorMessage(cause); ElMessage.error(error.value) }
   finally { loading.value = false }
 }
 function payload() {
+  if (form.proxy.enabled && form.proxy.scheme === 'socks5') {
+    const encoder = new TextEncoder()
+    if (encoder.encode(form.proxy.username).length > 255 || (!clearProxyPassword.value && encoder.encode(form.proxy.password).length > 255)) {
+      throw new Error('SOCKS5 用户名和密码各自不能超过 255 字节；中文等字符会占用多个字节，请缩短后重试。')
+    }
+  }
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.diagnostic_log_cleanup_time)) throw new Error('日志自动清理时间须为 00:00–23:59。')
   if (!Number.isInteger(form.diagnostic_log_retention_days) || form.diagnostic_log_retention_days < 0 || form.diagnostic_log_retention_days > 3650) throw new Error('诊断日志保留天数须为 0–3650 的整数。')
   if (examples.value.confirmationError || examples.value.fileError) throw new Error(examples.value.confirmationError || examples.value.fileError)
@@ -93,7 +102,7 @@ function payload() {
   return changed
 }
 async function save() {
-  if (!settings.value || busy.value || conflict.value) return
+  if (!settings.value || busy.value || backupBusy.value || conflict.value) return
   busy.value = true; error.value = ''
   try {
     const saved = await request<Settings>('/settings', { method: 'PATCH', body: JSON.stringify({ revision: settings.value.revision, ...payload() }) })
@@ -111,7 +120,7 @@ async function save() {
   } finally { busy.value = false }
 }
 async function validate() {
-  if (busy.value || conflict.value) return
+  if (busy.value || backupBusy.value || conflict.value || validationBlocked.value) return
   busy.value = true; error.value = ''
   const checked = current.value
   try {
@@ -136,9 +145,9 @@ onMounted(load)
 <template>
   <section class="settings-view">
     <div class="settings-scroll">
-      <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="muted">管理 Bot 连接、保存规则与下载偏好。</p></div><el-button :disabled="busy" @click="reload">重新读取</el-button></div>
+      <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="muted">管理 Bot 连接、保存规则与下载偏好。</p></div><el-button :disabled="busy || backupBusy" @click="reload">重新读取</el-button></div>
       <el-skeleton v-if="loading" :rows="8" animated />
-      <el-form v-else-if="settings" label-position="top" id="settings-form" class="settings-form" :disabled="busy" novalidate @submit.prevent="save">
+      <el-form v-else-if="settings" label-position="top" id="settings-form" class="settings-form" :disabled="busy || backupBusy" novalidate @submit.prevent="save">
         <section class="panel settings-section">
           <div class="section-heading"><span class="section-number">01</span><div><h2>Telegram 连接</h2><p class="muted">选择 API 服务，设置 Bot 与允许使用的人。</p></div></div>
           <el-form-item label="Bot API 服务" label-for="bot-api-mode">
@@ -163,14 +172,13 @@ onMounted(load)
           <div v-if="form.bot_api_mode === 'local' || liveSystem?.local_api?.desired_mode === 'local' || liveSystem?.local_api?.applied_mode === 'local'" class="local-api-credentials">
             <h3>Telegram 应用凭据</h3>
             <p class="field-hint">通过 <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> 的 API development tools 获取，与 Bot Token 不同。云端模式无需填写。</p>
-            <p v-if="settings.sources.telegram_api_id === 'deployment_fallback' || settings.sources.telegram_api_hash === 'deployment_fallback'" class="field-hint">当前使用部署凭据回退，可在此填写新值覆盖；已保存的 WebUI 配置优先。</p>
             <div class="form-grid">
               <el-form-item label="API ID" label-for="telegram-api-id"><template #label><span class="setting-label">API ID<SettingsSource :source="settings.sources.telegram_api_id" :editable="editable('telegram_api_id')" /></span></template><el-input id="telegram-api-id" aria-label="API ID" v-model="form.telegram_api_id" inputmode="numeric" autocomplete="off" :disabled="!editable('telegram_api_id')" placeholder="填写数字 API ID" /></el-form-item>
               <el-form-item label="API Hash" label-for="telegram-api-hash"><template #label><span class="setting-label">API Hash<SettingsSource :source="settings.sources.telegram_api_hash" :editable="editable('telegram_api_hash')" /></span></template><el-input id="telegram-api-hash" aria-label="API Hash" v-model="form.telegram_api_hash" type="password" show-password autocomplete="new-password" :disabled="!editable('telegram_api_hash') || clearApiHash" :placeholder="settings.configured.telegram_api_hash ? '已配置 · 留空保持不变' : '填写 API Hash'" /><p class="field-hint">已保存的 Hash 不回显，留空保持不变。</p><el-checkbox v-if="settings.configured.telegram_api_hash && editable('telegram_api_hash')" v-model="clearApiHash">清除已保存的 API Hash</el-checkbox></el-form-item>
             </div>
             <p v-if="liveSystem?.local_api && !liveSystem.local_api.managed" class="field-hint">当前 API 由外部管理，保存这些凭据不会修改外部进程；需先升级为配套管理组件。</p>
           </div>
-          <LocalApiPanel :status="liveSystem?.local_api" :bot="liveSystem?.bot" :disabled="busy || dirty || conflict" :stale="!!statusError" @changed="localApiChanged" />
+          <LocalApiPanel :status="liveSystem?.local_api" :bot="liveSystem?.bot" :disabled="busy || backupBusy || dirty || conflict" :stale="!!statusError" @changed="localApiChanged" />
           <p v-if="dirty" class="field-hint">请先保存或放弃修改，再进行服务操作。</p>
           <details class="settings-details"><summary>连接与切换须知</summary><div class="details-content"><p>保存与连接校验分开；已保存选择与实际使用可能暂时不同，请查看服务状态。切换期间 Bot 会暂停接收，已排队任务会保留。</p><p v-if="liveSystem?.local_api?.managed">填写本地 API 凭据、按需设置下方代理并保存，后台等待网络就绪和下载安全结束后切换。云端退出后回切需等待至少 10 分钟，WebUI 持续可用。</p><p v-else>当前为外部管理模式，请按部署指南配置本地服务。</p><p>其他程序须停止使用同一个 Bot。更换 Bot 身份前，请结束原 Bot 的活动和待确认请求。</p></div></details>
         </section>
@@ -216,7 +224,6 @@ onMounted(load)
               <div class="template-preview"><div class="preview-heading"><strong>确认提示示例</strong><span>演示数据</span></div><pre data-testid="confirmation-preview">{{ examples.confirmationError ? '请修正模板后查看示例。' : examples.text }}</pre></div>
             </div>
             <dl class="template-variables" aria-label="确认提示变量"><div v-for="[key, description] in confirmationVariables" :key="key"><dt><code>{{ '{' + key + '}' }}</code></dt><dd>{{ description }}</dd></div></dl>
-            <details class="settings-details"><summary>旧模板兼容说明</summary><div class="details-content"><p><code v-text="'{expires_in}'" /> 保留为秒数，兼容已有自定义提示。新模板建议使用 <code v-text="'{expires_in_minutes}'" /> 并标注“分钟”。</p></div></details>
           </div>
           <div class="template-block">
             <div class="template-layout">
@@ -240,7 +247,7 @@ onMounted(load)
             <el-switch id="proxy-enabled" aria-label="启用代理" v-model="form.proxy.enabled" :disabled="!editable('proxy')" /><span class="switch-label">{{ form.proxy.enabled ? '已开启（当前表单）' : '已关闭（当前表单）' }}</span>
           </el-form-item>
           <div v-if="form.proxy.enabled" class="form-grid"><el-form-item label="协议" label-for="proxy-scheme"><el-select id="proxy-scheme" v-model="form.proxy.scheme" :disabled="!editable('proxy')"><el-option label="SOCKS5" value="socks5" /><el-option label="HTTP CONNECT" value="http" /></el-select></el-form-item><el-form-item label="代理地址" label-for="proxy-host"><el-input id="proxy-host" v-model="form.proxy.host" :disabled="!editable('proxy')" placeholder="代理服务的 IP 或域名" /></el-form-item><el-form-item label="端口" label-for="proxy-port"><el-input-number id="proxy-port" v-model="form.proxy.port" :min="1" :max="65535" :disabled="!editable('proxy')" /></el-form-item><el-form-item label="用户名（可选）" label-for="proxy-username"><el-input id="proxy-username" v-model="form.proxy.username" :disabled="!editable('proxy')" autocomplete="off" /></el-form-item><el-form-item label="密码（可选）" label-for="proxy-password"><el-input id="proxy-password" v-model="form.proxy.password" type="password" show-password autocomplete="new-password" :disabled="!editable('proxy') || clearProxyPassword" :placeholder="settings.configured.proxy_password ? '已配置 · 留空保持不变' : '无认证可留空'" /><p class="field-hint">已保存的密码留空不变。</p><el-checkbox v-if="settings.configured.proxy_password && editable('proxy')" v-model="clearProxyPassword">清除已保存的代理密码</el-checkbox></el-form-item></div>
-          <p class="field-hint proxy-mode-hint">{{ form.bot_api_mode === 'cloud' ? '云端连接由应用直接使用代理。' : '本地 API 由内置网络组件应用代理。' }}保存后自动生效，无需额外 Compose 文件。请填写容器可访问的地址，127.0.0.1 指向容器自身。</p>
+          <p class="field-hint proxy-mode-hint">云端和本地 API 使用相同的代理设置。开启后通过所填代理连接 Telegram；关闭后使用容器默认网络，不会自动读取宿主机的系统代理。保存后自动应用，无需额外 Compose 文件。代理地址须可从容器访问，127.0.0.1 指向容器自身。</p>
           <div class="proxy-saved-state"><div class="proxy-state-heading"><strong>代理生效状态</strong><span class="proxy-state-label">{{ proxyLabels[proxyStatus?.state ?? ''] || proxyStatus?.state || '等待确认' }}</span></div><el-alert :title="proxyStatus?.message || proxyMessages[proxyStatus?.state ?? ''] || '代理状态等待后台确认。'" :type="proxyStatus?.state === 'active' ? 'success' : ['failed', 'unavailable'].includes(proxyStatus?.state ?? '') ? 'error' : 'info'" :closable="false" show-icon /><details class="settings-details"><summary>查看配置详情</summary><div class="details-content"><p>已保存版本 {{ proxyStatus?.desired_revision ?? '—' }} / 已应用版本 {{ proxyStatus?.applied_revision ?? '—' }}</p><p>状态对应已保存配置；Bot 是否连接请查看上方服务状态。</p></div></details></div>
         </section>
         <section class="panel settings-section">
@@ -258,10 +265,12 @@ onMounted(load)
           <p class="field-hint">在系统状态页可查看日志占用、导出或手动清理，不影响任务、媒体文件或连接配置。</p>
         </section>
       </el-form>
+      <SettingsBackup v-if="settings && !loading" :dirty="dirty" :disabled="busy || conflict" @busy="backupBusy = $event" @restored="assign($event); refreshStatus()" />
     </div>
     <div v-if="settings && !loading" class="save-bar" aria-label="设置操作">
       <div class="save-bar-content">
-        <div class="save-actions"><span class="muted" aria-live="polite">{{ conflict ? '版本冲突 · 请重新读取' : dirty ? '有尚未保存的修改' : '配置版本 ' + settings.revision + ' · 已保存' }}</span><div class="save-buttons"><el-button :loading="busy" :disabled="conflict" @click="validate">校验配置</el-button><el-button type="primary" native-type="submit" form="settings-form" :loading="busy" :disabled="!dirty || conflict">保存设置</el-button></div></div>
+        <div class="save-actions"><span class="muted" aria-live="polite">{{ conflict ? '版本冲突 · 请重新读取' : dirty ? '有尚未保存的修改' : '配置版本 ' + settings.revision + ' · 已保存' }}</span><div class="save-buttons"><el-button :loading="busy" :disabled="conflict || backupBusy || !!validationBlocked" @click="validate">校验配置</el-button><el-button type="primary" native-type="submit" form="settings-form" :loading="busy" :disabled="!dirty || conflict || backupBusy">保存设置</el-button></div></div>
+        <p v-if="validationBlocked" class="save-hint" role="status">{{ validationBlocked }}</p>
         <p class="save-hint">保存无需联网；校验检查当前输入的连接，不会保存。</p>
       </div>
     </div>

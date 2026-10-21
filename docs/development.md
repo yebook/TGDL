@@ -4,7 +4,9 @@
 
 ## 工具与依赖
 
-当前仍在首版开发中，不为未发布版本增加兼容分支；功能修改同步更新当前契约、测试与文档。保留现有测试数据和安全状态，不用清空数据库规避问题。正式发布后再制定旧版本兼容和迁移策略。
+当前仍在首版开发中，不为未发布版本保留兼容分支；功能修改同步更新当前契约、测试与文档。不兼容的旧测试数据可以清理，优先保持当前设计简洁；清理前明确范围，媒体文件不随测试数据清理，正常运行中的下载所有权与 Telegram 安全保护不能绕过。正式发布后再制定版本兼容和迁移策略。
+
+数据库当前使用单一 `initial` 初始结构，不提供早期开发修订的自动升级。遇到不支持的开发数据库时，先停服、备份并明确要保留的配置及文件，再重建测试数据库；不要只修改版本号强行启动，也不要通过清理运行状态绕过不确定获取或 Telegram 冷却。配置导入只恢复设置，不恢复这些安全状态。
 
 安装 Python 3.12、uv、Node.js 24 和 pnpm 11.23.0。使用提交的锁文件，不手动修改锁定版本。文档有独立依赖包，不加入应用镜像或前端依赖。
 
@@ -41,6 +43,20 @@ pnpm test:e2e
 该命令构建前端，启动真实本地后端及独立临时数据库，不连接 Telegram。不要把测试服务指向生产数据。Windows 的部分 POSIX 文件权限测试会跳过，需要 Linux 隔离环境补充。
 
 运行中部署的只读检查见 [部署后验收](acceptance.md)；使用临时容器修改临时数据的工具见 [Docker 隔离验收](docker-acceptance.md)。真实设备待测项见 [验证范围](verification.md)。
+
+## 原生代理隔离验证
+
+修改本地 API 源码补丁时，先编译实际镜像，再运行专用传输检查。以下命令在项目根目录执行，不挂载应用数据，不填写真实凭据；专用检查镜像安装 `strace`，只在断网容器中验证。
+
+```sh
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api:0.1.0 .
+docker build -f deploy/bot-api/Dockerfile.verify-native -t tgd-native-transport-acceptance .
+docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-transport-acceptance
+```
+
+检查脚本要求只有回环网卡，通过假 SOCKS5 / HTTP CONNECT 服务和系统调用记录验证：代理拒绝时没有直连尝试、同一缓存关闭代理后使用默认连接、无效代理或缺少模式时不启用网络。仅输出汇总，不输出请求、凭据或原始子进程日志。`SYS_PTRACE` 仅用于该隔离测试，正常部署无需此权限。
+
+该检查不证明真实代理认证、Telegram 大文件下载或飞牛 OS 已通过验收。
 
 ## 文档开发
 

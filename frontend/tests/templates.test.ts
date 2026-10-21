@@ -30,8 +30,11 @@ describe('settings template examples', () => {
     expect(sample.confirmationError).toBe('')
     expect(sample.fileError).toBe('')
   })
-  it.each([[1800, '30'], [30, '0.5'], [90, '1.5'], [31, '0.52']])('previews minutes and keeps legacy seconds for %s', (seconds, minutes) => {
-    expect(templateExamples('{expires_in_minutes} 分钟 / {expires_in} 秒', '{name}', seconds).text).toBe(`${minutes} 分钟 / ${seconds} 秒${identifierLine}`)
+  it.each([[1800, '30'], [30, '0.5'], [90, '1.5']])('previews the supported minute variable for %s', (seconds, minutes) => {
+    expect(templateExamples('{expires_in_minutes} 分钟', '{name}', seconds).text).toBe(`${minutes} 分钟${identifierLine}`)
+  })
+  it('rejects removed template variables', () => {
+    expect(templateExamples('{expires_in}', '{name}', 1800).confirmationError).toContain('模板变量或括号无效')
   })
   it.each([['CON', 'file_CON.mp4'], ['.', 'file_file.mp4'], ['{name}.mp4', '海边日落.mp4'], ['{name} . ', '海边日落.mp4']])('matches safe backend sample name for %s', (template, result) => {
     expect(templateExamples('{files}', template, 300).file).toBe(result)

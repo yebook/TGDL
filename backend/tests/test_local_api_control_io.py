@@ -10,12 +10,14 @@ from cryptography.fernet import Fernet
 
 from app.schemas.contracts import UserSettings
 from app.services.local_api import LocalApiService, private_bytes
+from app.services.settings import SettingsService
 
 
 def service_at(directory: Path) -> LocalApiService:
     service = object.__new__(LocalApiService)
     service.config = Mock(local_api_control_dir=directory)
     service.update = Mock()
+    service.settings = SettingsService
     return service
 
 

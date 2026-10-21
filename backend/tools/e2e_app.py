@@ -57,7 +57,7 @@ def seed(app: FastAPI) -> None:
     patch = SettingsPatch(revision=settings.read()[0], allowed_user_ids=[12345], bot_api_mode="local")
     settings.save(patch, settings.candidate(patch))
     with db.transaction() as session:
-        session.add(Admin(id=1, username="e2e-admin", password_hash=password_hasher.hash("local-e2e-only-password")))
+        session.add(Admin(id=1, username="e2e-admin", password_hash=password_hasher.hash("local-e2e-password")))
         for index, (request_id, title, states) in enumerate([
             ("e2e-queued", "E2E queued video", ["queued"]),
             ("e2e-mixed", "E2E mixed group", ["succeeded", "failed"]),
@@ -105,13 +105,13 @@ def main() -> None:
     # No caller-provided data directory is accepted; every run creates and deletes its own.
     with TemporaryDirectory(prefix="tgd-e2e-") as temporary:
         root = Path(temporary)
-        for name in ("data", "downloads", "cache", "network", "api-control"):
+        for name in ("data", "downloads", "cache", "api-control"):
             (root / name).mkdir()
         config = Config(data_dir=root / "data", download_root=root / "downloads",
-                        bot_api_root=root / "cache", network_dir=root / "network",
+                        bot_api_root=root / "cache",
                         static_dir=Path(__file__).resolve().parents[2] / "frontend" / "dist",
                         bot_api_base="http://127.0.0.1:1", run_background=False,
-                        proxy_capable=False, cookie_secure=False, minimum_free_bytes=1024)
+                        cookie_secure=False, minimum_free_bytes=1024)
         # A fixed test scenario is allowed; no caller-provided paths, secrets or real upstream.
         scenario = os.getenv("E2E_MANAGED_API", "")
         if scenario in {"credentials", "restart", "uncertain", "cooldown"}:

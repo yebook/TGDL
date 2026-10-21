@@ -24,7 +24,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 MAX_BYTES = 8192
 FIELDS = {
-    "version", "command_id", "action", "credential_revision", "api_id", "api_hash_encrypted"
+    "version", "command_id", "action", "credential_revision", "api_id", "api_hash_encrypted",
+    "proxy_encrypted", "proxy_signature",
 }
 COMMAND = [
     "/usr/local/bin/telegram-bot-api", "--local", "--http-ip-address=0.0.0.0",
@@ -84,6 +85,8 @@ class Desired:
     credential_revision: int
     api_id: int | None
     api_hash_encrypted: str | None
+    proxy_encrypted: str | None
+    proxy_signature: str | None
 
 
 def decode(raw: bytes) -> Desired:
@@ -106,6 +109,10 @@ def decode(raw: bytes) -> Desired:
         raise ConfigError("invalid_configuration")
     if encrypted is not None and (not isinstance(encrypted, str) or len(encrypted) > 2048):
         raise ConfigError("invalid_configuration")
+    if value['proxy_encrypted'] is not None and (not isinstance(value['proxy_encrypted'], str) or len(value['proxy_encrypted']) > 8192):
+        raise ConfigError("invalid_configuration")
+    if value['proxy_signature'] is not None and (not isinstance(value['proxy_signature'], str) or not re.fullmatch(r'[a-f0-9]{64}', value['proxy_signature'])):
+        raise ConfigError("invalid_configuration")
     return Desired(**value)
 
 
@@ -127,12 +134,14 @@ class Supervisor:
         self.next_retry = 0.0
         self.failures = 0
         self.active_credentials: bytes | None = None
+        self.latest_revision = -1
 
     def publish(self) -> None:
         value = {
             "version": 1,
             "command_id": self.desired.command_id if self.desired else None,
             "credential_revision": self.desired.credential_revision if self.desired else 0,
+            "proxy_signature": self.desired.proxy_signature if self.desired and self.state in ('starting', 'running') else None,
             "state": self.state, "generation": self.generation,
             "heartbeat_at": time.time(), "error_code": self.error_code,
         }
@@ -164,17 +173,45 @@ class Supervisor:
             raise ConfigError("invalid_credentials")
         return str(desired.api_id), plaintext
 
+    def proxy_environment(self, desired: Desired) -> dict[str, str]:
+        try:
+            key = read_private(self.shared / 'control.key', 128).strip()
+            value = json.loads(Fernet(key).decrypt((desired.proxy_encrypted or '').encode()))
+            fields = {'enabled', 'scheme', 'host', 'port', 'username', 'password'}
+            if not isinstance(value, dict) or set(value) != fields or type(value['enabled']) is not bool:
+                raise ValueError
+            if value['scheme'] not in {'http', 'socks5'} or type(value['port']) is not int or not 1 <= value['port'] <= 65535:
+                raise ValueError
+            for name, limit in [('host', 253), ('username', 200), ('password', 1000)]:
+                if not isinstance(value[name], str) or len(value[name]) > limit or any(ord(c) < 32 or ord(c) == 127 for c in value[name]):
+                    raise ValueError
+            if value['enabled'] and not re.fullmatch(r'[A-Za-z0-9.-]{1,253}', value['host']):
+                raise ValueError
+            if value['enabled'] and value['scheme'] == 'socks5' and any(len(value[name].encode()) > 255 for name in ('username', 'password')):
+                raise ValueError
+            canonical = value if value['enabled'] else {'enabled': False}
+            signature = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+            if signature != desired.proxy_signature:
+                raise ValueError
+            return {'TGD_NATIVE_PROXY_MODE': value['scheme'] if value['enabled'] else 'direct',
+                    'TGD_NATIVE_PROXY_HOST': value['host'], 'TGD_NATIVE_PROXY_PORT': str(value['port']),
+                    'TGD_NATIVE_PROXY_USERNAME': value['username'], 'TGD_NATIVE_PROXY_PASSWORD': value['password']}
+        except (ValueError, TypeError, KeyError, InvalidToken, OSError):
+            raise ConfigError('invalid_proxy') from None
+
     def start_process(self) -> None:
         assert self.desired is not None
         api_id, api_hash = self.credentials(self.desired)
-        environment = dict(os.environ, TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('TGD_NATIVE_PROXY_')}
+        environment.update(TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash)
+        environment.update(self.proxy_environment(self.desired))
         self.cache.joinpath("tmp").mkdir(exist_ok=True)
         # The previous process has been waited for before a new marker is visible.
         self.process = subprocess.Popen(
             self.command, env=environment, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        self.active_credentials = hashlib.sha256(f"{api_id}:{api_hash}".encode()).digest()
+        self.active_credentials = hashlib.sha256(f"{api_id}:{api_hash}:{self.desired.proxy_signature}".encode()).digest()
         self.generation = str(uuid.uuid4())
         try:
             atomic_write(self.cache / ".tgd-api-generation", (self.generation + "\n").encode(), 0o644)
@@ -189,7 +226,8 @@ class Supervisor:
         fingerprint = None
         if desired.action != "stop":
             api_id, api_hash = self.credentials(desired)
-            fingerprint = hashlib.sha256(f"{api_id}:{api_hash}".encode()).digest()
+            self.proxy_environment(desired)
+            fingerprint = hashlib.sha256(f"{api_id}:{api_hash}:{desired.proxy_signature}".encode()).digest()
         same_credentials = (
             self.desired is not None
             and desired.credential_revision == self.desired.credential_revision
@@ -224,12 +262,16 @@ class Supervisor:
             if digest != self.last_hash:
                 self.last_hash = digest
                 candidate = decode(raw)
+                if candidate.credential_revision < self.latest_revision:
+                    raise ConfigError("stale_revision")
                 if self.desired and candidate.command_id == self.desired.command_id:
                     previous = self.desired
                     same_command = (
                         candidate.action == previous.action
                         and candidate.credential_revision == previous.credential_revision
                         and candidate.api_id == previous.api_id
+                        and candidate.proxy_signature == previous.proxy_signature
+                        and (candidate.action == "stop" or self.proxy_environment(candidate) == self.proxy_environment(previous))
                         and (candidate.action == "stop" or self.credentials(candidate) == self.credentials(previous))
                     )
                     if not same_command:
@@ -238,6 +280,7 @@ class Supervisor:
                     # Fernet nonce. A repeated restart must never execute twice.
                 else:
                     self.apply(candidate)
+                    self.latest_revision = candidate.credential_revision
         except FileNotFoundError:
             pass
         except (ConfigError, OSError, ValueError) as error:

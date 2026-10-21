@@ -3,9 +3,11 @@ import { ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, errorMessage } from '../api/client'
 import type { TaskDetail } from '../api/types'
-import { bytes, dateTime, percent, stateLabel } from '../api/format'
+import { bytes, dateTime } from '../api/format'
+import { mediaState } from '../api/mediaProgress'
 import { usePolling } from '../composables/usePolling'
 import StatusBadge from './StatusBadge.vue'
+import MediaProgress from './MediaProgress.vue'
 
 const props = defineProps<{ id: string; deleting?: boolean }>()
 const emit = defineEmits<{ changed: []; remove: [id: string] }>()
@@ -42,15 +44,9 @@ async function action(kind: 'cancel' | 'retry') {
       <div v-if="data.can_cancel || data.can_retry || data.can_delete" class="detail-actions"><el-button v-if="data.can_retry" type="primary" :loading="busy" :disabled="deleting" @click="action('retry')">重试失败文件</el-button><el-button v-if="data.can_cancel" :loading="busy" :disabled="deleting" @click="action('cancel')">取消下载</el-button><el-button v-if="data.can_delete" type="danger" plain :disabled="busy || deleting" @click="emit('remove', data.id)">删除任务</el-button></div>
       <h3>文件明细 <span class="muted">{{ data.completed_count }} / {{ data.item_count }}</span></h3>
       <article v-for="(item, index) in data.items" :key="item.id" class="media-card">
-        <div class="media-heading"><div><span class="eyebrow">{{ item.media_type === 'video' ? '视频' : '图片' }} · {{ index + 1 }}</span><h4>{{ item.original_name || '自动命名文件' }}</h4></div><StatusBadge :status="item.status" /></div>
+        <div class="media-heading"><div><span class="eyebrow">{{ item.media_type === 'video' ? '视频' : '图片' }} · {{ index + 1 }}</span><h4>{{ item.original_name || '自动命名文件' }}</h4></div><StatusBadge :status="mediaState(item)" /></div>
         <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · {{ item.duration_seconds }} 秒</template></p>
-        <template v-if="['saving', 'fetching', 'cancelling'].includes(item.status)">
-          <p class="progress-caption">{{ stateLabel(item.phase || item.status) }}<span v-if="item.elapsed_seconds != null"> · {{ Math.floor(item.elapsed_seconds) }} 秒</span></p>
-          <template v-if="item.phase === 'saving' || item.status === 'saving'">
-            <el-progress v-if="percent(item.completed_bytes, item.total_bytes) != null" :percentage="percent(item.completed_bytes, item.total_bytes)" :stroke-width="6" />
-            <p class="muted">{{ bytes(item.completed_bytes) }} / {{ bytes(item.total_bytes) }}<template v-if="item.speed_bps != null"> · {{ bytes(item.speed_bps) }}/s</template></p>
-          </template>
-        </template>
+        <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
         <p v-if="item.linked_job_id" class="muted">关联已有文件任务：<span class="mono">{{ item.linked_job_id }}</span></p>
         <el-alert v-if="item.error_message || item.error_code" :title="item.error_message || item.error_code || ''" type="error" :closable="false" show-icon />

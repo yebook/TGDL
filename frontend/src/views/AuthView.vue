@@ -14,6 +14,7 @@ const error = ref('')
 async function submit() {
   error.value = ''
   if (!form.username.trim() || !form.password) { error.value = '请填写管理员账号和密码。'; return }
+  if (form.password.length < 6 || form.password.length > 20) { error.value = '密码须为 6–20 位。'; return }
   if (isSetup.value && (!form.bootstrap_secret || form.password.length < 6 || form.password.length > 20 || form.password !== form.confirm)) {
     error.value = '请填写初始化密钥，设置 6–20 位密码，并确认两次密码一致。'; return
   }

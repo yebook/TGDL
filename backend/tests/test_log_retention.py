@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ from aiogram.methods import GetMe
 from fastapi.testclient import TestClient
 
 from app.core.errors import AppError
-from app.schemas.contracts import SettingsPatch
 from app.services.diagnostics import DiagnosticLog
 
 
@@ -306,29 +304,11 @@ async def test_shutdown_joins_inflight_maintenance(authenticated: TestClient, mo
         await task
 
 
-def test_retention_save_preserves_local_proxy_handoff(authenticated: TestClient) -> None:
+def test_retention_save_preserves_native_proxy_selection(authenticated: TestClient) -> None:
     state = authenticated.app.state
-    state.runtime.config.proxy_capable = True
-    before = state.settings.public()
-    patch = SettingsPatch(revision=before["revision"], bot_api_mode="local",
-                          proxy={"enabled": True, "host": "proxy.lan"})
-    saved = state.settings.save(patch, state.settings.candidate(patch))
-    state.settings.write_proxy_desired()
-    desired = state.runtime.config.network_dir / "desired.json"
-    original = desired.read_bytes()
-    network_revision = json.loads(original)["revision"]
-    (desired.parent / "applied.json").write_text(json.dumps({
-        "desired_revision": network_revision, "applied_revision": network_revision,
-        "state": "applied", "message": "proxy_live_check_passed", "heartbeat_at": time.time()}))
-    assert authenticated.patch("/api/v1/settings", json={
-        "revision": saved["revision"], "diagnostic_log_retention_days": 2}).status_code == 200
-    state.settings.write_proxy_desired()
-    assert desired.read_bytes() == original
-    assert state.settings.public()["proxy_status"]["state"] == "active"
-    assert state.settings.public()["proxy_status"]["desired_revision"] == network_revision
-    changed = SettingsPatch(revision=state.settings.public()["revision"],
-                            proxy={"enabled": True, "host": "other.lan"})
-    state.settings.save(changed, state.settings.candidate(changed))
-    assert state.settings.public()["proxy_status"]["state"] == "pending"
-    state.settings.write_proxy_desired()
-    assert json.loads(desired.read_bytes())["revision"] > network_revision
+    before = state.settings.read()[1]
+    signature = state.settings.proxy_signature(before)
+    revision = state.settings.read()[0]
+    response = authenticated.patch("/api/v1/settings", json={"revision":revision,"diagnostic_log_retention_days":2})
+    assert response.status_code == 200
+    assert state.settings.proxy_signature(state.settings.read()[1]) == signature

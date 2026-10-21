@@ -2,6 +2,7 @@
 import { request } from '../api/client'
 import type { BotRequestSafety, DiagnosticLogStatus, LocalApiStatus, SystemStatus } from '../api/types'
 import { bytes } from '../api/format'
+import { botConnectionLabel, localBotConnectionHint } from '../api/localApi'
 import { usePolling } from '../composables/usePolling'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
 import BotSafetyPanel from '../components/BotSafetyPanel.vue'
@@ -29,7 +30,7 @@ const good = (state: string) => ['connected', 'online', 'running', 'ready', 'app
     <el-skeleton v-if="!data && loading" :rows="8" animated />
     <template v-if="data">
       <div class="system-grid">
-        <section class="panel diagnostic-card"><p class="eyebrow">TELEGRAM BOT</p><div class="diagnostic-title"><h2>{{ data.bot.username ? `@${data.bot.username}` : 'Bot 连接' }}</h2><el-tag :type="good(data.bot.state) ? 'success' : 'warning'" round>{{ labels[data.bot.state] || data.bot.state }}</el-tag></div><p v-if="!data.bot.request_safety || data.bot.request_safety.state === 'ready'" class="muted">{{ data.bot.message || '在设置中配置 Bot Token 和用户白名单。' }}</p><BotSafetyPanel :status="data.bot.request_safety" :stale="!!error" @changed="botSafetyChanged" /></section>
+        <section class="panel diagnostic-card"><p class="eyebrow">TELEGRAM BOT</p><div class="diagnostic-title"><h2>{{ data.bot.username ? `@${data.bot.username}` : 'Bot 连接' }}</h2><el-tag :type="good(data.bot.state) ? 'success' : 'warning'" round>{{ botConnectionLabel(data.bot.state, data.local_api.applied_mode) }}</el-tag></div><p v-if="!data.bot.request_safety || data.bot.request_safety.state === 'ready'" class="muted">{{ data.bot.message || ((data.bot.state === 'online' || data.bot.state === 'connected') ? (data.local_api.applied_mode === 'local' ? localBotConnectionHint : 'Bot API 可用，可发送媒体进行下载。') : '在设置中配置 Bot Token 和用户白名单。') }}</p><BotSafetyPanel :status="data.bot.request_safety" :stale="!!error" @changed="botSafetyChanged" /></section>
         <section class="panel diagnostic-card"><p class="eyebrow">DOWNLOAD QUEUE</p><h2>下载队列</h2><div class="queue-stats"><div><strong>{{ data.queue.active }}</strong><span>正在执行</span></div><div><strong>{{ data.queue.pending }}</strong><span>等待执行</span></div><div><strong>{{ data.queue.concurrency }}</strong><span>并发上限</span></div></div></section>
       </div>
       <section class="panel diagnostic-card"><LocalApiPanel :status="data.local_api" :bot="data.bot" :stale="!!error" detailed @changed="localApiChanged" /></section>

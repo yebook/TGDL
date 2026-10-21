@@ -1,12 +1,12 @@
 # 快速开始
 
-准备支持 Linux 容器和 TUN 的 Docker Compose v2 主机、完整项目源码、专属 Bot Token 和自己的数字 Telegram 用户 ID。先使用云端模式，无需申请 API ID / Hash。
+准备支持 Linux 容器的 Docker Compose v2 主机、完整项目源码、专属 Bot Token 和自己的数字 Telegram 用户 ID。先使用云端模式，无需申请 API ID / Hash。
 
 ## 1. 准备部署
 
 在项目根目录将 `.env.example` 复制为 `.env`，配置持久目录、非 root UID/GID、WebUI 绑定地址。按 [部署指南](deployment.md#目录和参数) 创建目录并授权。NAS 媒体共享必须先挂载好；不要只上传 Compose 文件。
 
-唯一的 `compose.yaml` 已包含应用、本地 API 管理组件和网络组件，并自动初始化私有控制卷；没有应用凭据时 API 进程等待，不妨碍云端使用。直连和代理都在同一 WebUI 切换，无需更换部署文件。
+唯一的 `compose.yaml` 已包含应用与本地 API 管理服务，并自动初始化私有控制卷；没有应用凭据时 API 进程等待，不妨碍云端使用。直连和代理都在同一 WebUI 切换，无需更换部署文件或开启 TUN。
 
 ## 2. 启动与初始化
 

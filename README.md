@@ -16,11 +16,12 @@
 
 - **确认下载**：用户 ID 白名单，确认有效期可配置，默认 30 分钟。
 - **自动归档**：按 `YYYY-MM-DD/` 保存；单文件直接归档，同组文件放入组目录，优先使用消息文字摘要命名任务。
-- **任务管理**：进度查看、去重、取消、重试与恢复；文件并发默认 3，可配置。
+- **任务管理**：逐文件状态、云端下载及本地保存进度，支持去重、取消、重试与恢复；文件并发默认 3，可配置。
 - **WebUI 配置**：切换云端 / 本地 Bot API，自定义 Bot 确认提示和保存文件名。
+- **配置备份**：独立密码加密导出并恢复配置与密钥，不包含任务、数据库或媒体。
 - **记录管理**：单条或多选删除已结束任务记录，保留已下载的媒体文件。
 - **维护与诊断**：脱敏日志默认保留 7 天，每日 08:00 清理，时间可配置；查看空间占用、导出和手动清理。
-- **网络配置**：一份 Compose 部署，WebUI 开关 HTTP CONNECT / SOCKS5 代理，内置请求节流、冷却和认证异常暂停。
+- **网络配置**：一份 Compose 部署，云端与本地统一使用 WebUI 的 HTTP CONNECT / SOCKS5 代理，无需 TUN；内置请求节流、冷却和认证异常暂停。
 
 ## 选择 Bot API 模式
 
@@ -33,7 +34,7 @@
 
 ## 快速部署
 
-需要 Docker Compose v2、支持 TUN 的 Linux 容器环境、完整项目源码、Bot Token 和自己的数字 Telegram 用户 ID。目前采用**源码构建**，尚未提供可直接拉取的公开应用镜像。
+需要 Docker Compose v2、Linux 容器环境、完整项目源码、Bot Token 和自己的数字 Telegram 用户 ID。目前采用**源码构建**，尚未提供可直接拉取的公开应用镜像。
 
 ### 1. 准备配置与目录
 
@@ -47,7 +48,7 @@ cp .env.example .env
 
 | 根目录文件 | 用途 |
 | --- | --- |
-| [compose.yaml](compose.yaml) | 唯一部署入口，包含应用、本地 API 和网络组件，初始使用云端模式 |
+| [compose.yaml](compose.yaml) | 唯一部署入口，包含应用和本地 API 管理服务，初始使用云端模式 |
 | [.env.example](.env.example) | 环境参数模板，复制为 `.env` 后修改 |
 
 ### 2. 构建并启动
@@ -66,7 +67,7 @@ docker compose --env-file .env -f compose.yaml ps
 
 从应用数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），在 WebUI 中创建管理员账号和密码。随后选择官方云端模式，填写 Bot Token 和允许用户 ID，保存配置。
 
-保存配置无需在线验证；可手动点击「校验配置」，并在系统状态页查看实际连接。先向 Bot 发送一个小于 20 MB 的媒体文件，确认下载并检查保存结果。完整步骤见 [快速开始](docs/quick-start.md)。
+保存配置无需在线验证；可手动点击「校验配置」，并在系统状态页查看实际连接。本地模式的“本地 API 可用”只表示服务可响应，仍需实际收发消息验证 Telegram 连接。先向 Bot 发送一个小于 20 MB 的媒体文件，确认下载并检查保存结果。完整步骤见 [快速开始](docs/quick-start.md)。
 
 ## 文档
 
@@ -77,10 +78,11 @@ docker compose --env-file .env -f compose.yaml ps
 | [Docker / 飞牛 OS 部署](docs/deployment.md) | 目录权限、挂载、内网访问和代理部署 |
 | [Telegram API 接入](docs/telegram-api.md) | API ID / Hash 获取、云端与本地切换、进程管理 |
 | [任务与归档](docs/usage.md) / [模板设置](docs/templates.md) | 多文件、目录结构、任务操作、Bot 提示和文件名 |
+| [配置备份与恢复](docs/configuration-backup.md) | 独立密码加密，迁移配置及密钥，不包含业务数据和文件 |
 | [维护与诊断](docs/operations.md) / [常见问题](docs/faq.md) | 日志、备份恢复、请求保护和故障排查 |
 | [开发指南](docs/development.md) / [文档站维护](docs/pages.md) | 本地开发、测试、文档构建与发布 |
 
-当前处于首版实现与验证阶段，真实 Telegram 大文件、飞牛 OS 和 TUN 代理的完整验收仍待完成，详见 [验证范围](docs/verification.md)。
+当前处于首版实现与验证阶段，真实 Telegram 大文件、飞牛 OS 和代理的完整验收仍待完成，详见 [验证范围](docs/verification.md)。
 
 ## 参与贡献
 

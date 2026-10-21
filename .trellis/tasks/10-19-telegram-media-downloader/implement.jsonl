@@ -13,3 +13,5 @@
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/public-docs-plan.md", "reason": "MIT authorized; independent curated static docs, portable source links and no repository Actions workflow."}
 {"file": ".trellis/spec/frontend/documentation-contracts.md", "reason": "Independent static docs build, curated publication, source links and Pages authorization boundaries."}
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/unified-proxy-plan.md", "reason": "Single Compose proxy switching evidence and safety pitfalls"}
+{"file": ".trellis/spec/backend/config-backup-contracts.md", "reason": "Encrypted settings-only backup and restore"}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/proxy-native.md", "reason": "Native TDLib proxy startup gate and no-TUN architecture"}

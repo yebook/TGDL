@@ -1,18 +1,13 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.autogenerate import compare_metadata
-from alembic.config import Config as AlembicConfig
-from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from test_pipeline import confirm_all, message, setup_pipeline
 
 from app.core.errors import AppError
-from app.db.models import Base, Job, MediaItem, MediaRequest, Notification, StoredFile
+from app.db.models import Job, MediaItem, MediaRequest, Notification, StoredFile
 from app.services.tasks import project
 
 
@@ -26,7 +21,7 @@ def seed(client: TestClient, status: str = "cancelled", job_state: str | None = 
                              message_id=int(request.created_at * 1e6), file_id="file", media_type="video")
             session.add(item)
             session.flush()
-            session.add(Job(request_id=request.id, item_id=item.id, state=job_state, relative_path="old/month/video.mp4"))
+            session.add(Job(request_id=request.id, item_id=item.id, state=job_state, relative_path="2026-10-21/video.mp4"))
         return request.id
 
 
@@ -191,16 +186,3 @@ def test_late_worker_failure_cannot_requeue_removed_record(authenticated: TestCl
     with state.db.sessions() as session:
         assert session.get(Job, job_id).state == "failed"
         assert session.get(MediaRequest, request_id).status == "failed"
-
-
-def test_migration_preserves_existing_snapshots(authenticated: TestClient) -> None:
-    state = authenticated.app.state
-    request_id = seed(authenticated, "failed", "failed")
-    migration = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    with state.db.engine.begin() as connection:
-        migration.attributes["connection"] = connection
-        command.downgrade(migration, "0004")
-        command.upgrade(migration, "head")
-        assert connection.exec_driver_sql("SELECT deleted_at FROM requests").scalar() is None
-        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
-    assert state.tasks.detail(request_id)["items"][0]["relative_path"] == "old/month/video.mp4"

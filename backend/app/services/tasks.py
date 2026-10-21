@@ -8,13 +8,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.bot.grouping import GROUP_MAX_SECONDS
 from app.core.errors import AppError
 from app.core.templates import render_confirmation
-from app.db.models import Attempt, Job, MediaItem, MediaRequest, Notification, uid
+from app.db.models import Attempt, IngestUpdate, Job, MediaItem, MediaRequest, Notification, uid
 from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
 from app.services.settings import SettingsService
-from app.storage.naming import fit_name, legacy_name, planned_name, request_summary, unique_name
+from app.storage.naming import fit_name, planned_name, request_summary, unique_name
 
 ACTIVE = {"queued", "fetching", "saving", "cancelling", "retry_wait", "waiting_existing", "recovery_blocked"}
 TERMINAL = {"succeeded", "already_exists", "failed", "cancelled"}
@@ -100,9 +101,17 @@ class TaskService:
     def freeze_due(self) -> None:
         revision, settings, _ = self.settings.read()
         with self.db.transaction() as session:
+            now = time.time()
+            pending_bots = set(session.scalars(select(IngestUpdate.bot_id).where(
+                IngestUpdate.processed.is_(False)).distinct()))
             requests = session.scalars(select(MediaRequest).where(
-                MediaRequest.deleted_at.is_(None), MediaRequest.status == "collecting", MediaRequest.collect_until <= time.time()))
+                MediaRequest.deleted_at.is_(None), MediaRequest.status == "collecting", MediaRequest.collect_until <= now))
             for request in requests:
+                # Already durable members must get a chance to join before the card
+                # freezes. Do not let unrelated/stuck inbox work exceed the hard cap.
+                if (request.kind == "group" and request.bot_id in pending_bots
+                        and now < request.created_at + GROUP_MAX_SECONDS):
+                    continue
                 items = list(session.scalars(select(MediaItem).where(
                     MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
                 if not items:
@@ -125,7 +134,7 @@ class TaskService:
                 sizes = [item.size_bytes for item in items]
                 text = render_confirmation(settings.confirmation_template, {
                     "title": request.title, "destination": request.destination,
-                    "expires_in": str(settings.confirmation_timeout_seconds), "file_count": str(len(items)),
+                    "file_count": str(len(items)),
                     "expires_in_minutes": f"{settings.confirmation_timeout_seconds / 60:.2f}".rstrip("0").rstrip("."),
                     "total_size": format_bytes(sum(s for s in sizes if s is not None)
                                                if all(s is not None for s in sizes) else None),
@@ -163,8 +172,10 @@ class TaskService:
                 return "configuration_changed"
             request.config_revision = revision
             items = list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
+            if not items or any(not item.planned_filename for item in items):
+                raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送媒体", 409)
             for item in items:
-                name = item.planned_filename or legacy_name(item)
+                name = item.planned_filename
                 session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,
                                 relative_path=f"{request.destination}/{name}", max_auto_retries=settings.max_auto_retries))
             request.status, request.updated_at = "queued", time.time()
@@ -200,6 +211,7 @@ class TaskService:
                     "original_name": item.original_name, "size_bytes": item.size_bytes,
                     "duration_seconds": item.duration_seconds, "status": job.state if job else request.status,
                     "phase": job.phase if job else request.status, "completed_bytes": job.completed_bytes if job else 0,
+                    "acquisition_mode": job.acquisition_mode if job else None,
                     "total_bytes": item.size_bytes, "speed_bps": job.speed_bps if job else None,
                     "elapsed_seconds": max(0, (job.finished_at or time.time()) - job.started_at) if job and job.started_at else 0,
                     "relative_path": job.relative_path if job else None, "error_code": job.error_code if job else None,

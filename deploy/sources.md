@@ -9,14 +9,17 @@ Queried read-only from GitHub Git references/commit API and Docker Registry mani
 | Source | Pin |
 | --- | --- |
 | Official `tdlib/telegram-bot-api` | `e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1`; its submodule gitlinks pin TDLib dependencies; repository returned no release tags |
-| `SagerNet/sing-box` v1.11.15 | `bc35aca01704497c179da1a03e45ad8e32f1a51b` |
+| TDLib submodule | `bc9c263e2bfee06aaab41e82db51a103376030bc`, pinned by the Bot API source |
 | `python:3.12.12-slim-bookworm` | `sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c` |
 | `node:24.11.1-bookworm-slim` | `sha256:48abc13a19400ca3985071e287bd405a1d99306770eb81d61202fb6b65cf0b57` |
-| `golang:1.24.10-bookworm` | `sha256:aaa1dedbfef846dbd62fa803cecd7486b0e98a32cb6f68656eee20acac5dd53a` |
 | `debian:bookworm-slim` | `sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587` |
 | Python dependencies | `backend/uv.lock`, uv 0.12.5 |
 | Frontend dependencies | `frontend/pnpm-lock.yaml`, pnpm 11.23.0 |
 
 Each Dockerfile pins source revisions and multiarchitecture base manifest digests. Build-time Debian package indexes remain distribution-managed, so this is **not** a byte-for-byte reproducible or fully offline toolchain. Preserve built image digests and dependencies in your registry for repeat deployments. Runtime does not fetch `latest` or install dependencies.
 
-The Bot API image installs its and TDLib's license files. The network image includes the sing-box license. Review upstream license requirements before redistribution; the network build contains GPL-licensed sing-box. This source list records provenance; it is not a successful image-build report.
+The Bot API image applies [native-proxy.patch](bot-api/native-proxy.patch) to the exact pinned source and TDLib; this is a project-specific build, not an unmodified upstream binary. The patch starts TDLib networking disabled, explicitly selects SOCKS5 / HTTP CONNECT or disables cached proxies, and enables networking only after initialization succeeds. Upstream's original `--proxy` option remains webhook-specific. No TUN or separate network image is used.
+
+The image installs the Bot API and TDLib license files. Review their license requirements before redistribution. This source list records provenance; it is not a successful image-build report.
+
+The source patch is checked by `git apply --check` before compilation. Keep its LF line endings (`.gitattributes` enforces this on Windows checkouts); changing the upstream pins requires rechecking and compiling the patch.

@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "WebUI cloud/local switching, readable file sizes and configurable confirmation/filename templates implemented and deployed to current local Docker WebUI. Migration0003 freezes planned filenames; legacy cards retain default naming. Backend90/full20focused, frontend38unit/12E2E, independent review, static checks and isolated Docker8stages pass. Current service health/initialized pass; user config preserved. Real Telegram, local over20MB, proxy routing and fnOS remain pending. Keep in_progress.",
+  "notes": "Current first-release baseline initial, encrypted configuration-only backups, native local SOCKS5/HTTP CONNECT without TUN, and no unpublished-version compatibility. Mixed media grouping uses bounded 5/3/15-second collection. Validation failure guidance and honest cloud-download/local-saving progress are implemented, independently reviewed and deployed. Current local application health and preserved business data verified; real fnOS and full large-file acceptance remain separate. Keep in_progress. Local Telegram download percentage is research/discussion only; no endpoint or native progress implementation authorized this round.",
   "meta": {}
 }

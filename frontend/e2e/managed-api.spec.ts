@@ -4,7 +4,7 @@ const scenario = process.env.E2E_MANAGED_API
 async function login(page: Page, view: '设置' | '系统状态' = '设置') {
   await page.goto('/')
   await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
-  await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+  await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await page.getByRole('link', { name: view, exact: true }).click()
   await expect(page.getByTestId('local-api-status')).toBeVisible()

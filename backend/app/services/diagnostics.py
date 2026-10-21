@@ -34,7 +34,7 @@ METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "ans
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
             "cancelling", "fetching", "saving", "partial_success", "expired", "awaiting_confirmation", "collecting",
-            "idle", "draining", "waiting_network", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
+            "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST", "NETWORK_ERROR",
           "SERVER_ERROR", "UNKNOWN_ERROR", "BOT_REQUEST_PAUSED", "CANCELLED", "INTERRUPTED",
           "ACQUISITION_UNCERTAIN", "SIZE_MISMATCH", "CLOUD_FILE_TOO_LARGE", "CLOUD_DOWNLOAD_FAILED",

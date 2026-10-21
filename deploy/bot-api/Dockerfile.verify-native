@@ -1,0 +1,7 @@
+# Disposable development acceptance image only. Never used by compose.yaml.
+ARG TGDL_API_IMAGE=tgd-bot-api:0.1.0
+FROM ${TGDL_API_IMAGE}
+USER root
+RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends strace && rm -rf /var/lib/apt/lists/*
+COPY deploy/bot-api/verify-native-transport.py /verify-native-transport.py
+ENTRYPOINT ["python3", "/verify-native-transport.py"]

@@ -215,13 +215,13 @@ async def test_cloud_proxy_connectors_fail_closed(config: Config, scheme):
             await telegram.close()
 
 
-def test_new_cloud_legacy_local_and_safe_mode_guard(client: TestClient):
+def test_cloud_defaults_and_safe_mode_guard(client: TestClient):
     state = client.app.state
     assert state.settings.read()[1].bot_api_mode == "cloud"
     with state.db.transaction() as session:
         session.get(Settings, 1).values = {}
     SettingsService(state.db, state.settings.config, state.settings.secrets)
-    assert state.settings.read()[1].bot_api_mode == "local"
+    assert state.settings.read()[1].bot_api_mode == "cloud"
     state, ingest = setup_pipeline(client)
     ingest.message(7, message(), "in")
     confirm_all(state)
@@ -303,26 +303,11 @@ def test_cloud_does_not_budget_unused_local_cache(client: TestClient, config: Co
         assert state.tasks.detail(request_id)["items"][0]["error_code"] == "NO_SPACE"
 
 
-def test_migration_existing_job_ownership_and_schema(client: TestClient):
-    from pathlib import Path
-
-    from alembic import command
-    from alembic.autogenerate import compare_metadata
-    from alembic.config import Config as AlembicConfig
-    from alembic.migration import MigrationContext
-
-    from app.db.models import Base
-
+def test_local_acquisition_ownership_survives_recovery(client: TestClient):
     state, ingest = setup_pipeline(client)
     ingest.message(7, message(), "in")
     request_id = confirm_all(state)
     job_id = state.runtime.worker.claim(7, "local")
-    migration = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    with state.db.engine.begin() as connection:
-        migration.attributes["connection"] = connection
-        command.downgrade(migration, "0001")
-        command.upgrade(migration, "head")
-        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
     with state.db.sessions() as session:
         job = session.get(Job, job_id)
         assert job.request_id == request_id

@@ -1,14 +1,10 @@
 ﻿from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.autogenerate import compare_metadata
-from alembic.config import Config as AlembicConfig
-from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db.models import Base, Job, MediaItem, MediaRequest, Notification
+from app.db.models import Job, MediaItem, MediaRequest, Notification
 from app.services.tasks import project, task_message
 from app.storage.naming import fit_name, text_summary
 from tests.test_pipeline import confirm_all, message, setup_pipeline
@@ -88,7 +84,7 @@ def test_group_directory_safety_keeps_unique_suffix(summary: str) -> None:
     assert ".." not in name and name.split(".")[0] != "CON"
 
 
-def test_same_caption_ids_are_distinct_and_old_upgrade_is_additive(client: TestClient) -> None:
+def test_same_caption_ids_are_distinct(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     for index in (1, 2):
         media = message(index)
@@ -98,19 +94,6 @@ def test_same_caption_ids_are_distinct_and_old_upgrade_is_additive(client: TestC
     rows = state.tasks.list_tasks(None, None, 1, 20)["items"]
     assert [row["title"] for row in rows] == ["相同名称", "相同名称"]
     assert len({row["id"] for row in rows}) == 2
-    with state.db.sessions() as session:
-        snapshots = [(r.id, r.title, r.destination) for r in session.scalars(select(MediaRequest))]
-        notifications = [n.payload for n in session.scalars(select(Notification))]
-    migration = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    with state.db.engine.begin() as connection:
-        migration.attributes["connection"] = connection
-        command.downgrade(migration, "0003")
-        command.upgrade(migration, "head")
-        assert connection.exec_driver_sql("SELECT caption_snippet FROM media_items").scalar() is None
-        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
-    with state.db.sessions() as session:
-        assert [(r.id, r.title, r.destination) for r in session.scalars(select(MediaRequest))] == snapshots
-        assert [n.payload for n in session.scalars(select(Notification))] == notifications
 
 
 def test_task_message_reserves_identifier_after_long_astral_content() -> None:
@@ -120,7 +103,7 @@ def test_task_message_reserves_identifier_after_long_astral_content() -> None:
     assert text.endswith(f"…\n任务编号：{request_id}")
 
 
-def test_status_keeps_all_five_full_identifiers_and_frozen_legacy_title(client: TestClient) -> None:
+def test_status_keeps_all_five_full_identifiers_and_frozen_title(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     for index in range(1, 6):
         ingest.message(7, message(index), f"in{index}")
@@ -128,7 +111,7 @@ def test_status_keeps_all_five_full_identifiers_and_frozen_legacy_title(client: 
     with state.db.transaction() as session:
         rows = list(session.scalars(select(MediaRequest)))
         ids = [row.id for row in rows]
-        rows[0].title = "旧标题 #abcdef01"
+        rows[0].title = "春日海边记录"
         for row in rows[1:]:
             row.title = "😀" * 1000
         snapshots = [(row.id, row.title, row.destination) for row in rows]

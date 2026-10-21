@@ -1,10 +1,9 @@
 """Small, non-executable plain-text templates shared by validation and rendering."""
 from string import Formatter
 
-LEGACY_CONFIRMATION_TEMPLATE = "确认下载：{title}\n保存到：{destination}\n确认有效期：{expires_in} 秒\n{files}"
 DEFAULT_CONFIRMATION_TEMPLATE = "确认下载：{title}\n保存到：{destination}\n确认有效期：{expires_in_minutes} 分钟\n{files}"
 DEFAULT_FILENAME_TEMPLATE = "{name}_{id}"
-CONFIRMATION_FIELDS = frozenset({"title", "file_count", "total_size", "files", "destination", "expires_in",
+CONFIRMATION_FIELDS = frozenset({"title", "file_count", "total_size", "files", "destination",
                                "expires_in_minutes"})
 FILENAME_FIELDS = frozenset({"name", "date", "time", "datetime", "type", "index", "id"})
 

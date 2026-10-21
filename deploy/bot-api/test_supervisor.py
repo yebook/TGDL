@@ -53,6 +53,8 @@ def command(supervisor: Any, key: bytes, identifier: str, action: str = "start",
         "version": 1, "command_id": identifier, "action": action,
         "credential_revision": 1, "api_id": 12345,
         "api_hash_encrypted": Fernet(key).encrypt(b"a" * 32).decode(),
+        "proxy_encrypted": Fernet(key).encrypt(json.dumps({"enabled": False,"scheme":"socks5","host":"","port":1080,"username":"","password":""}).encode()).decode(),
+        "proxy_signature": module.hashlib.sha256(json.dumps({"enabled":False}, sort_keys=True).encode()).hexdigest(),
     }
     desired.update(changes)
     module.atomic_write(supervisor.shared / "desired.json", json.dumps(desired).encode())
@@ -66,6 +68,60 @@ def settle(supervisor: Any, state: str) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"Expected {state}, got {supervisor.state}")
+
+
+@pytest.mark.parametrize('scheme', ['http', 'socks5'])
+def test_native_proxy_encrypted_handoff_and_restart(service: Any, scheme: str) -> None:
+    supervisor, key = service
+    command(supervisor, key, 'direct')
+    settle(supervisor, 'running')
+    generation = supervisor.generation
+    proxy = {'enabled': True, 'scheme': scheme, 'host':'127.0.0.1', 'port':1080,
+             'username':'user', 'password':'synthetic-secret'}
+    encrypted = Fernet(key).encrypt(json.dumps(proxy).encode()).decode()
+    signature = module.hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()
+    command(supervisor, key, 'proxied', credential_revision=2, proxy_encrypted=encrypted, proxy_signature=signature)
+    settle(supervisor, 'running')
+    assert supervisor.generation != generation
+    desired = supervisor.desired
+    environment = supervisor.proxy_environment(desired)
+    assert environment['TGD_NATIVE_PROXY_MODE'] == scheme
+    assert environment['TGD_NATIVE_PROXY_PASSWORD'] == 'synthetic-secret'
+    status = (supervisor.shared / 'applied.json').read_text()
+    assert 'synthetic-secret' not in status
+    assert json.loads(status)['proxy_signature'] == signature
+    assert all('synthetic-secret' not in argument for argument in supervisor.process.args)
+    command(supervisor, key, 'tampered', credential_revision=3, proxy_encrypted=encrypted, proxy_signature='0'*64)
+    supervisor.tick()
+    assert supervisor.state == 'failed'
+    assert supervisor.error_code == 'invalid_proxy'
+    assert json.loads((supervisor.shared/'applied.json').read_text())['proxy_signature'] is None
+
+
+def test_disabled_proxy_is_explicit_direct_and_unicode_credentials_are_bounded(service: Any) -> None:
+    supervisor, key = service
+    proxy={'enabled':True,'scheme':'http','host':'proxy.lan','port':1080,'username':'😀'*200,'password':'😀'*1000}
+    # Match the application's compact UTF-8 JSON encoding.
+    encrypted=Fernet(key).encrypt(json.dumps(proxy, ensure_ascii=False, separators=(',', ':')).encode()).decode()
+    signature=module.hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()
+    command(supervisor,key,'unicode',proxy_encrypted=encrypted,proxy_signature=signature)
+    supervisor.tick()
+    assert supervisor.proxy_environment(supervisor.desired)['TGD_NATIVE_PROXY_MODE']=='http'
+    command(supervisor,key,'direct-again',credential_revision=2)
+    settle(supervisor,'running')
+    assert supervisor.proxy_environment(supervisor.desired)['TGD_NATIVE_PROXY_MODE']=='direct'
+
+
+@pytest.mark.parametrize('credential', ['x' * 256, '中' * 85 + 'x'])
+def test_socks5_rejects_credentials_over_255_bytes_before_spawn(service: Any, credential: str) -> None:
+    supervisor, key = service
+    proxy = {'enabled':True,'scheme':'socks5','host':'proxy.lan','port':1080,'username':'user','password':credential}
+    encrypted = Fernet(key).encrypt(json.dumps(proxy).encode()).decode()
+    signature = module.hashlib.sha256(json.dumps(proxy, sort_keys=True).encode()).hexdigest()
+    command(supervisor,key,'oversized-socks',proxy_encrypted=encrypted,proxy_signature=signature)
+    supervisor.tick()
+    assert supervisor.process is None
+    assert supervisor.error_code == 'invalid_proxy'
 
 
 def test_waits_without_credentials_and_publishes_heartbeat(service: Any) -> None:

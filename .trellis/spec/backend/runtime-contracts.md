@@ -3,16 +3,18 @@
 ## 1. Scope / Trigger
 Read for changes to backend/app main, services, workers, storage, database and deployment integration. One process owns a data directory using instance.lock.
 
-Task record removal and migration `0005` follow
+Task record removal follows
 [task-deletion-contracts.md](task-deletion-contracts.md). Media-file deletion
 remains outside scope; task soft deletion retains stored-file and recovery data.
 
 ## 2. Signatures
 create_app(config: Config | None = None) -> FastAPI. API prefix /api/v1: setup, auth/login|me|logout|password, tasks, tasks/{id}, tasks/{id}/cancel|retry, settings, settings/validate, system/status. Database.transaction uses BEGIN IMMEDIATE; Alembic runs before readiness. Models separate MediaRequest, MediaItem, Job, FileReservation, StoredFile, PublishJournal and Notification.
 
-Migration `0004` adds nullable `MediaItem.caption_snippet` (`String(80)`) for
-normalized media-caption naming. Existing rows stay NULL; the HTTP DTO does not
-expose this internal field. Startup migrates before intake/readiness.
+The explicit initial schema includes nullable `MediaItem.caption_snippet`
+(`String(80)`) for normalized media-caption naming; the HTTP DTO does not expose
+this internal field. Startup initializes schema before intake/readiness.
+Only current baseline revision `initial` is supported before release; no
+unpublished migration chain or automatic database reset.
 
 `app.storage.naming.text_summary(value: str | None) -> str` normalizes bounded
 display snippets. `request_summary(request, items) -> str` consumes items already
@@ -24,14 +26,12 @@ Input schemas live in app/schemas/contracts.py, output/OpenAPI models in app/sch
 
 WebUI confirmation duration is edited in minutes (0.5..1440); the API, stored
 `confirmation_timeout_seconds` and environment override remain integer seconds.
-Convert explicitly at the UI boundary and round only a user edit back to seconds.
-Opening settings or saving another field must preserve any old integer duration,
-including 31 seconds. Persisted durations and already-issued card deadlines are
+Convert explicitly at the UI boundary. Persisted durations and issued deadlines are
 never reset by the new default. Missing duration settings use 1800 seconds.
 
 Session cookies are HttpOnly/SameSite strict. Mutations require X-CSRF-Token; supplied Origin must match scheme and authority. Passwords use Argon2, saved secrets encryption. Back up master.key together with database. Errors are {error:{code,message,request_id,details}} without raw validation inputs or upstream credentials.
 
-Administrator setup and password change accept 6–20 characters inclusive, without character-class requirements. Reject 5 or 21 characters with 422; test both accepted boundaries (6 and 20). Login retains its existing broader input limit so an older longer password can authenticate and be changed. Never echo rejected passwords in error details.
+Administrator setup, login and password change accept 6–20 characters inclusive, without character-class requirements. Reject 5 or 21 characters with 422; test both accepted boundaries (6 and 20). Never echo rejected passwords in error details.
 
 Settings persistence and online validation are separate. `PATCH /api/v1/settings` saves locally valid Bot Token and allowed user IDs without calling Telegram; it still enforces revision, environment ownership, ranges and secret handling. `POST /api/v1/settings/validate` checks the candidate form against its selected Bot API without persisting it. An unreachable API must not block saving; manual validation may return `BOT_VALIDATION_FAILED` (422). A saved token is not proof of Bot identity or connectivity. Runtime must verify identity before using a changed token and retain cross-Bot active-request and notification ownership protection.
 
@@ -44,6 +44,15 @@ convention as the WebUI: integer bytes, one decimal for larger units, `0 B` for 
 and `未知` for missing size. Do not append a literal byte unit after a formatted
 value. Persisted metadata and API numeric size/progress fields remain byte counts.
 
+Task detail `MediaResponse.acquisition_mode` is `cloud|local|null`, projected
+from its existing Job ownership snapshot; media without a job returns null.
+Do not infer transport from current settings, because saved mode can change.
+Local `getFile` waits for Telegram acquisition before returning, so subsequent
+`completed_bytes`/speed values measure cache-to-destination saving. Cloud stream
+bytes measure real downloading, even while the worker's internal state is
+`saving`. This presentation field changes no lifecycle or database schema.
+DTO/worker regressions assert each acquisition mode and null before job creation.
+
 New request destinations use `YYYY-MM-DD` for single files and
 `YYYY-MM-DD/<safe-message-summary-or-fallback>_<request-short-id>` for groups.
 Do not add `videos`, `images` or `groups` classification directories. Derive the date from
@@ -51,6 +60,18 @@ Do not add `videos`, `images` or `groups` classification directories. Derive the
 card. Persist the destination for consent and job creation; never migrate old
 monthly/type-prefixed destinations or recompute an existing job path during retry/recovery.
 Mixed media in a group continue to share one destination.
+
+Aggregate group members only by matching Bot, private chat and Telegram
+`media_group_id`, irrespective of image/video type. Collect for at least five
+seconds after the first member and three seconds after the latest distinct
+member, capped at fifteen seconds from the first member. Duplicate delivery
+must not extend the window. A still-collecting matching request may accept a
+member before the hard cap even if its quiet deadline has elapsed but no card
+has been frozen. Pending persisted inbox updates for that Bot postpone group
+freezing until processed or the hard cap, preventing processing backlog from
+splitting a known group. Single-file messages remain immediate. Frozen cards
+and confirmed jobs are immutable; members after freezing or the hard cap form
+another batch instead of changing earlier consent.
 
 For new cards, derive the task title from the first nonblank media caption in
 message order, otherwise an original filename or media description. Persist only
@@ -82,7 +103,7 @@ confirmation card: report its real state and direct the user to WebUI cancellati
 Do not show internal English state names or claim a cancellation that did not
 occur. A failed callback acknowledgement must not undo durable business changes.
 
-Proxy desired.json revision is separate from applied.json acknowledgement. Saving is not activation; disabling in a proxy-capable stack requires redeployment. Live generation reconciliation must not delete or reset files owned by active workers.
+Saving proxy configuration is not activation; fresh exact supervisor command/configuration acknowledgement and Bot verification are separate. Enabling and disabling require no redeployment. Live generation reconciliation must not delete or reset files owned by active workers.
 
 ## 4. Validation & Error Matrix
 | Condition | Result |
@@ -97,7 +118,7 @@ Proxy desired.json revision is separate from applied.json acknowledgement. Savin
 | Expired confirmation/cancel button | Visible expired guidance; no jobs created |
 | Repeated confirm / cancel after confirmation | Report actual state; no duplicate jobs or false cancellation |
 | Invalid/unauthorized callback | Generic visible guidance; no task detail disclosure |
-| Missing caption / migrated NULL snippet | Original filename or media description fallback |
+| Missing caption | Original filename or media description fallback |
 | Caption contains path/control/reserved syntax | Normalize display text; sanitize group folder as one bounded component |
 | Existing frozen title/destination | Keep issued title/path, including during re-confirmation/retry |
 
@@ -105,34 +126,37 @@ Proxy desired.json revision is separate from applied.json acknowledgement. Savin
 Good: a mixed group confirms once under YYYY-MM-DD/<summary>_<short-id>, retries preserve its directory. Base: a single image archives directly under YYYY-MM-DD after Bot confirmation. Bad: link-only media, unauthorized callback or symlink escape must not obtain/publish media.
 
 ## 6. Tests Required
-From backend: uv run ruff check app tests; uv run mypy app; run pytest on affected test files/selectors and directly related contracts. Expand regression only when shared infrastructure, failures, unresolved concerns or release gates justify it; see index.md. Temporary databases/roots and fake Telegram services must assert persisted side effects for duplicates, journal crashes, cancellation, notification retry, missing files and root changes. Real Telegram >20MB, fnOS and TUN evidence is separately required in docs/verification.md; mocks cannot pass those release gates.
+From backend: uv run ruff check app tests; uv run mypy app; run pytest on affected test files/selectors and directly related contracts. Expand regression only when shared infrastructure, failures, unresolved concerns or release gates justify it; see index.md. Temporary databases/roots and fake Telegram services must assert persisted side effects for duplicates, journal crashes, cancellation, notification retry, missing files and root changes. Real Telegram >20MB, fnOS and proxy evidence is separately required in docs/verification.md; mocks cannot pass those release gates.
 
 For callback/date changes, cover both buttons before/after expiration, repeat
 clicks, authorization and visible alert payload; assert job counts and durable
 state. Check daily video/image/group paths at timezone day boundaries, and retain
-old monthly/type-prefixed request/job paths across confirmation, retry and recovery.
+frozen current request/job paths across confirmation, retry and recovery.
 Caption tests cover reordered group arrivals, blank/long/control/unsafe text,
-fallback names, duplicate titles and Bot/API consistency. Migration tests retain
-old rows with nullable summaries. No browser suite is needed when frontend
+fallback names, duplicate titles and Bot/API consistency. Baseline schema tests
+compare explicit migration metadata to ORM. No browser suite is needed when frontend
 contracts/assets remain unchanged.
+
+Group regressions use a controlled clock: two photos followed by three videos
+across delayed batches yield one five-item request/card/destination. Cover
+minimum/quiet/hard-cap boundaries, pending-inbox delay, joining an unfrozen group
+after its quiet deadline, duplicate delivery, Bot/chat/group isolation and
+immutability after freezing/confirmation. No real sleeps are needed.
 
 ## 7. Wrong vs Correct
 Wrong: release the global slot as soon as an HTTP await is cancelled, or show proxy active immediately after writing desired.json. Correct: retain uncertain upstream ownership until reconciliation; show activation only from the supervisor acknowledgement matching the desired revision.
 
-Local TUN proxy desired/applied revisions identify network configuration, not
-every settings save. Preserve the existing desired payload and revision when
-proxy values match; changing log retention or templates must not reload sing-box
-or repeat connectivity probes. Proxy status compares the network acknowledgement
-against the effective proxy payload revision, which may differ from global
-settings revision. Actual proxy changes advance the network revision; verify
-unchanged-file/active-ack behavior and actual-change pending behavior in tests.
+Local proxy settings travel in the encrypted API supervisor command, with fresh
+matching command/configuration acknowledgement. Unrelated settings changes must
+not restart the child or repeat connectivity probes. Proxy changes drain and
+restart the child with the frozen configuration, preserving cloud logout state.
 
 Wrong: rebuild an existing task name/path from current settings, or use a caption
 as a relative directory path. Correct: persist the bounded caption summary,
 freeze the shared title and sanitized date-first destination before confirmation,
 and keep existing task/job snapshots across upgrades and retries.
 
-## Local UI-only startup boundary
+## Local startup and deployment boundary
 
 Deployment update verification: compare mounts as a mapping keyed by container
 Destination rather than Docker's non-stable array order. Preserve the old image
@@ -145,12 +169,12 @@ database integrity and a private media hash manifest without printing secrets
 or media filenames. Do not use Telegram probes or manual log clearing as an
 application deployment smoke test.
 
-- Scope: Windows Docker preview before API credentials exist; see `docs/local-run.md`.
-- Command: `docker compose --env-file .runtime/local-docker/.env -f .runtime/local-docker/compose.web.yaml up -d --no-build` after building `tgd-app:0.1.0`.
-- Contract: bind loopback only; isolated Docker data/download/cache roots; API base remains `http://bot-api:8081`. Missing API credentials must never be replaced with fake values. Keep the Docker roots when switching to full Compose; do not reuse native Windows storage identity markers.
-- Validation: default Compose parses without application credentials and starts only the app; the optional `local-api` service entrypoint rejects missing application credentials. Healthy UI does not mean Telegram-ready.
-- Cases: good = initialize UI then switch stacks with preserved data; base = uninitialized UI with live/ready OK; bad = two stacks writing one database or claiming real download success from readiness.
+- Scope: standard single Compose on Linux containers, Windows preview documented in `docs/local-run.md`.
+- Command: `docker compose --env-file .env -f compose.yaml up -d --build`.
+- Contract: default loopback binding; isolated data/download/cache roots; internal API `http://bot-api:8081`. Missing API credentials are never replaced with fake values. Nonroot API supervisor waits until configured through WebUI.
+- Validation: Compose parses with blank credentials and starts app/API supervisor with private-volume initialization, no TUN or extra network privileges. Healthy UI does not mean Telegram-ready.
+- Cases: good = initialize UI then configure same deployment through WebUI; base = uninitialized UI with live/ready OK; bad = two instances writing one database or claiming real download success from readiness.
 - Required checks: app image build, Compose config quiet, live/ready OK, setup status and browser initialization page. Real Telegram >20MB remains a separate gate.
 - Wrong: show parsed Compose output containing credentials or copy native QA storage. Correct: use `config --quiet`, inspect only credential presence, and keep dedicated Docker data.
 
-Deployment portability: public docs and build configuration use project-relative paths rather than developer-machine locations. `.env.example` defaults to `./data`, `./downloads`, `./bot-api`, and `./network`; Compose resolves these from the selected Compose file's directory, not the env file's directory. Existing NAS shares may use user-supplied absolute host paths; fixed container paths remain `/data`, `/downloads`, and `/var/lib/telegram-bot-api`. Exclude root runtime folders from Git/build context without excluding `deploy/bot-api` or `deploy/network` source. Do not rewrite an existing deployment's paths or storage identity when changing template defaults.
+Deployment portability: public docs and build configuration use project-relative paths rather than developer-machine locations. `.env.example` defaults to `./data`, `./downloads`, `./bot-api`; Compose resolves these from the selected Compose file's directory, not the env file's directory. Existing NAS shares may use user-supplied absolute host paths; fixed container paths remain `/data`, `/downloads`, and `/var/lib/telegram-bot-api`. Exclude runtime folders from Git/build context without excluding `deploy/bot-api` source. Do not rewrite an existing deployment's paths or storage identity when changing template defaults.

@@ -1,6 +1,6 @@
 # 飞牛 OS / Docker 部署
 
-标准部署只使用项目根目录的 **`compose.yaml`**。应用、本地 Bot API 管理组件和网络组件一起部署；之后在 WebUI 配置代理、填写 Telegram 凭据和切换 API，无需更换 Compose 文件。
+标准部署只使用项目根目录的 **`compose.yaml`**。应用与本地 Bot API 管理服务一起部署；之后在 WebUI 配置代理、填写 Telegram 凭据和切换 API，无需更换 Compose 文件。
 
 当前仍处于首版开发阶段，采用源码构建，尚未提供公开应用镜像。真实大文件、飞牛 OS 和内置代理的验收边界见 [验证记录](verification.md)。
 
@@ -19,12 +19,12 @@
 ## 准备
 
 - Docker Compose v2 和 Linux 容器环境。Windows 本机验证使用 Docker Desktop，见 [本地运行](local-run.md)。
-- 标准栈的网络组件需要 `/dev/net/tun`、网络管理权限及 iptables。它只管理本项目 API 的容器网络，不修改宿主机代理设置。宿主不支持这些能力时，标准栈不能完整启动；具体飞牛 OS 机型仍需实测。
+- 云端和本地均支持 HTTP CONNECT / SOCKS5，不需要 TUN 设备或 NET_ADMIN 权限；具体飞牛 OS 机型仍需实测。
 - 专属 Bot Token 和自己的数字 Telegram 用户 ID。先用官方云端不需要 API ID / Hash；本地大文件模式才需要 [申请应用凭据](telegram-api.md)。
 - 应用与 API 使用非 root UID/GID，一个管理员、一个 Bot、单实例。媒体共享先挂载，并允许该用户写入。
 - 应用数据库放在可靠本地文件系统，不放在 SMB/NFS 上。API 缓存和最终下载会各保存媒体，预留至少两份大文件及并发临时空间。
 
-首次构建需要访问 Docker Hub、GitHub、Debian、PyPI、npm 和 Go 模块源；官方 API 编译可能耗时较长并占用数 GB 内存。
+首次构建需要访问 Docker Hub、GitHub、Debian、PyPI 和 npm；本地 API 编译可能耗时较长并占用数 GB 内存。
 
 ## 目录和参数
 
@@ -39,7 +39,7 @@ sudo chmod 750 data bot-api downloads
 chmod 600 .env
 ```
 
-这些命令只设置项目顶层目录，不递归修改已有媒体库。已有 NAS 共享的 ACL 也必须允许该 UID/GID 写入。API 控制信息和网络配置使用私有 Docker 卷，初始化服务负责准备权限，不需要另建控制目录。
+这些命令只设置项目顶层目录，不递归修改已有媒体库。已有 NAS 共享的 ACL 也必须允许该 UID/GID 写入。API 控制信息使用私有 Docker 卷，初始化服务负责准备权限，不需要另建控制目录。
 
 主要参数：
 
@@ -62,7 +62,6 @@ TGD_TIMEZONE=Asia/Shanghai
 | `TGD_UID` / `TGD_GID` | 应用与 API 使用的非 root 数字用户和组 |
 | `TGD_BIND_IP` / `TGD_WEB_PORT` | 默认只允许本机访问；NAS 内网访问改为 NAS 的固定局域网 IP |
 | `TGD_TIMEZONE` | 应用默认时区，之后可在 WebUI 修改 |
-| `TGD_NETWORK_SUBNET` | 内部子网；勿与 LAN、VPN、Docker 或 TUN 网段重叠 |
 
 相对挂载路径以 Compose 文件所在目录为基准。WebUI 的下载根目录对应容器中的 `/downloads`；宿主实际位置在 `.env` 配置，页面不输入 NAS 宿主路径。启动前确认媒体共享已挂载，避免 Docker 在缺失路径下创建空目录。
 
@@ -88,34 +87,34 @@ docker compose --env-file .env -f compose.yaml ps
 
 1. 按 [申请步骤](telegram-api.md#获取-api-id-api-hash) 获取 API ID / Hash。
 2. 在 WebUI 填写凭据，选择本地模式并保存；如需代理，在同一设置页配置。
-3. 后台等待活动任务和在途请求，应用目标网络，退出云端，启动本地进程并验证 Bot。
+3. 后台等待活动任务和在途请求，退出云端，按目标代理配置启动本地进程并验证 Bot。
 4. 查看已保存模式、实际模式、切换步骤和 Bot 连接；实际连接成功后再测试超过 20 MB 的视频。
 
 日常无需停止应用、重启容器或手动执行 `logOut`。修改凭据可重启容器内 API 进程；WebUI 的“重启 API 进程”不代表重建容器。管理组件失联、宿主网络能力缺失或容器自身停止时仍需 Docker 排查。
 
 云端退出结果不确定时系统保持暂停，需按状态提示核实后继续；不会反复退出或自动回连云端。云端退出成功后可立即登录本地，返回云端需等待至少 10 分钟。完整流程见 [API 接入](telegram-api.md)。
 
-## 本地 API 的代理：三个容器
+## 统一的网络代理
 
-常驻服务为应用、本地 API 管理组件、网络组件；另有一次性权限初始化服务。网络组件与 API 共享网络命名空间，内置 sing-box TUN，应用通过内部地址访问 API。
+常驻服务为应用与本地 API 管理服务，另有一次性权限初始化服务。两种 API 使用同一份 WebUI 代理设置；本地服务采用固定官方源码及 TDLib 原生代理补丁构建，不需要额外网络容器。
 
-- **关闭代理**：后台确认直连配置后使用宿主的 IPv4 网络出口；本地 API 网络暂不启用 IPv6。
-- **启用代理**：在 WebUI 选择 HTTP CONNECT 或 SOCKS5，填写地址、端口和可选认证。云端请求由应用使用代理，本地 API 的 Telegram 连接由网络组件接管。
+- **关闭代理**：使用容器的默认网络出口；不会自动读取宿主的系统或浏览器代理。
+- **启用代理**：在 WebUI 选择 HTTP CONNECT 或 SOCKS5，填写地址、端口和可选认证。云端 HTTPS 与本地 Telegram 连接均使用此配置；应用到内部本地 API 的 HTTP 连接保持直连。
 - **切换中**：页面显示等待应用的状态；保存成功不代表网络已生效或 Bot 已连接。
 - **失败**：显示安全错误原因。启用代理失败不会自动回退直连；排查后按页面提示重试。
 
-代理地址必须能由容器访问。宿主代理可填写 `host.docker.internal` 或可达的 LAN 地址，并允许 Docker 网络访问该端口；容器中的 `127.0.0.1` 指向容器自己。使用内置网络组件时无需另外开启宿主代理软件的 TUN，只需代理软件提供可达的 HTTP CONNECT / SOCKS5 服务。
+代理地址必须能由容器访问。宿主代理可填写 `host.docker.internal` 或可达的 LAN 地址，并允许 Docker 网络访问该端口；容器中的 `127.0.0.1` 指向容器自己。两种模式均无需另外开启宿主代理软件的 TUN，只需提供可达的 HTTP CONNECT / SOCKS5 服务。
 
-系统代理、浏览器代理或 `HTTP_PROXY` 变量不会自动覆盖官方 API 的底层 Telegram 连接；官方 `--proxy` 参数用于 webhook，不能代替此网络配置。
+系统代理、浏览器代理或 `HTTP_PROXY` 变量不会自动配置本项目的连接。请在 WebUI 填写；原版官方 API 的 `--proxy` 参数仅用于 webhook，本项目的本地 Telegram 代理由固定源码补丁接入 TDLib 实现。
 
 ## 飞牛 OS 图形界面
 
 1. 将完整源码放到 NAS 项目目录，按上文准备 `.env` 和业务目录。
 2. 在 Docker 中新建 Compose 项目，工作目录选择源码根目录，使用 `compose.yaml`。
-3. 确认环境文件、TUN 设备和网络权限可用，执行构建和启动。
+3. 确认环境文件、挂载与用户权限可用，执行构建和启动。
 4. 打开 WebUI 完成初始化，后续只在设置页管理代理与 API。
 
-若图形界面无法设置构建上下文、设备权限或 `.env`，使用 SSH 执行上述命令。飞牛 OS 各版本界面与机型支持仍需实机确认。
+若图形界面无法设置构建上下文或 `.env`，使用 SSH 执行上述命令。飞牛 OS 各版本界面与机型支持仍需实机确认。
 
 ## 日常命令
 
@@ -126,4 +125,4 @@ docker compose --env-file .env -f compose.yaml stop
 docker compose --env-file .env -f compose.yaml start
 ```
 
-容器维护前等待活动任务结束并备份。若重建网络组件，需要同时重建共享其网络的 API 组件；普通 WebUI 代理开关无需此操作。不要用 `down -v` 清理部署，它会删除私有持久卷。备份范围和故障处理见 [维护指南](operations.md)。
+容器维护前等待活动任务结束并备份。普通 WebUI 代理开关无需重建容器；本地代理变更会在安全边界重启 API 子进程。不要用 `down -v` 清理部署，它会删除私有持久卷。备份范围和故障处理见 [维护指南](operations.md)。

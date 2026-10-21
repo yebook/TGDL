@@ -119,7 +119,7 @@ class Job(Base):
     request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
     state: Mapped[str] = mapped_column(default="queued", index=True)
     phase: Mapped[str] = mapped_column(default="queued")
-    acquisition_mode: Mapped[str] = mapped_column(default="local", server_default="local")
+    acquisition_mode: Mapped[str] = mapped_column(default="cloud", server_default="cloud")
     root_id: Mapped[str] = mapped_column(default="default")
     relative_path: Mapped[str]
     attempt_sequence: Mapped[int] = mapped_column(default=0)

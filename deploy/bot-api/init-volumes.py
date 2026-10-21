@@ -8,7 +8,7 @@ from pathlib import Path
 def initialize(uid: int, gid: int) -> None:
     if not 1 <= uid <= 2147483647 or not 1 <= gid <= 2147483647:
         raise ValueError("TGD_UID and TGD_GID must be nonroot numeric IDs")
-    for name, mode in (("/run/tgd-api-control", 0o700), ("/run/tgd-network", 0o770)):
+    for name, mode in (("/run/tgd-api-control", 0o700),):
         path = Path(name)
         if not stat.S_ISDIR(path.lstat().st_mode):
             raise ValueError("Expected a private volume directory")

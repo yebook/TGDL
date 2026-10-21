@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from app.core.templates import DEFAULT_CONFIRMATION_TEMPLATE, DEFAULT_FILENAME_TEMPLATE, validate_template
 
@@ -13,6 +13,12 @@ class ProxySettings(BaseModel):
     port: int = Field(default=1080, ge=1, le=65535)
     username: str = Field(default="", max_length=200)
     password: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def socks5_credentials_fit_protocol(self) -> "ProxySettings":
+        if self.enabled and self.scheme == "socks5" and any(len(value.encode("utf-8")) > 255 for value in (self.username, self.password)):
+            raise ValueError("SOCKS5 用户名和密码分别最多 255 字节；中文等字符会占用多个字节")
+        return self
 
     @field_validator("host")
     @classmethod
@@ -35,7 +41,7 @@ class ProxySettings(BaseModel):
 
 class UserSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    bot_api_mode: Literal["cloud", "local"] = "local"
+    bot_api_mode: Literal["cloud", "local"] = "cloud"
     confirmation_template: str = DEFAULT_CONFIRMATION_TEMPLATE
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
     confirmation_timeout_seconds: int = Field(default=1800, ge=30, le=86400)
@@ -116,7 +122,7 @@ class SettingsPatch(BaseModel):
 
 class Credentials(BaseModel):
     username: str = Field(min_length=1, max_length=80)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=6, max_length=20)
 
 
 class Setup(Credentials):

@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
 
 async function login(page: Page) {
   await page.goto('/')
   await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
-  await page.getByLabel('密码', { exact: true }).fill('local-e2e-only-password')
+  await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await expect(page.getByRole('heading', { name: '下载任务', exact: true })).toBeVisible()
 }
@@ -24,6 +25,61 @@ async function settle(page: Page, selector: string) {
     await Promise.all(element.getAnimations({ subtree: true })
       .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
       .map(animation => animation.finished.catch(() => {})))
+  })
+}
+
+for (const width of [1440, 390]) {
+  test(`encrypted settings backup previews and restores without overwriting dirty edits at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 })
+    await login(page)
+    await settings(page)
+    const initial = await (await page.request.get('/api/v1/settings')).json()
+    await page.getByRole('button', { name: '导出配置备份', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('备份密码', { exact: true }).fill('backup-test-only-password')
+    await dialog.getByLabel('再次输入备份密码').fill('backup-test-only-password')
+    const download = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: '加密并下载' }).click()
+    const file = await download
+    const buffer = await readFile((await file.path())!)
+    const envelope = JSON.parse(buffer.toString())
+    expect(envelope.format).toBe('tgdl-settings')
+    expect(envelope.ciphertext).toBeTruthy()
+    expect(buffer.toString()).not.toContain('allowed_user_ids')
+    await expect(dialog).not.toBeVisible()
+    const concurrency = page.getByLabel('同时下载的文件数', { exact: true })
+    await concurrency.fill(String(initial.values.download_concurrency === 4 ? 3 : 4))
+    await expect(page.getByRole('button', { name: '恢复配置备份', exact: true })).toBeDisabled()
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.el-message').last()).toContainText('设置已保存')
+    await page.getByRole('button', { name: '恢复配置备份', exact: true }).click()
+    await dialog.locator('input[type=file]').setInputFiles({ name: 'settings.json', mimeType: 'application/json', buffer })
+    await dialog.getByLabel('备份密码', { exact: true }).fill('wrong-password')
+    const before = (await (await page.request.get('/api/v1/settings')).json()).revision
+    await dialog.getByRole('button', { name: '预览备份', exact: true }).click()
+    await expect(page.locator('.el-message').last()).toContainText('密码')
+    expect((await (await page.request.get('/api/v1/settings')).json()).revision).toBe(before)
+    await dialog.getByLabel('备份密码', { exact: true }).fill('backup-test-only-password')
+    await dialog.getByRole('button', { name: '预览备份', exact: true }).click()
+    await expect(dialog.getByRole('heading', { name: '恢复预览', exact: true })).toBeVisible()
+    await expect(dialog.getByLabel('备份预览')).toContainText('空密钥也会清除当前密钥')
+    await noOverflow(page)
+    await page.screenshot({ path: `test-results/settings-backup-${width}.png` })
+    const csrf = (await (await page.request.get('/api/v1/auth/me')).json()).csrf_token
+    const current = await (await page.request.get('/api/v1/settings')).json()
+    expect((await page.request.patch('/api/v1/settings', { headers: { 'X-CSRF-Token': csrf }, data: { revision: current.revision, max_auto_retries: current.values.max_auto_retries === 2 ? 3 : 2 } })).ok()).toBe(true)
+    await dialog.getByRole('button', { name: '确认覆盖配置', exact: true }).click()
+    await expect(page.locator('.el-message').last()).toContainText('配置')
+    await expect(dialog.getByRole('button', { name: '预览备份', exact: true })).toBeVisible()
+    expect((await (await page.request.get('/api/v1/settings')).json()).values.download_concurrency).not.toBe(initial.values.download_concurrency)
+    await dialog.getByRole('button', { name: '预览备份', exact: true }).click()
+    await expect(dialog.getByRole('heading', { name: '恢复预览', exact: true })).toBeVisible()
+    await dialog.getByRole('button', { name: '确认覆盖配置', exact: true }).click()
+    await expect(dialog).not.toBeVisible()
+    await expect(concurrency).toHaveValue(String(initial.values.download_concurrency))
+    await page.getByRole('button', { name: '导出配置备份', exact: true }).click()
+    await expect(dialog.getByLabel('备份密码', { exact: true })).toHaveValue('')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
   })
 }
 
@@ -189,12 +245,12 @@ test('settings persist and two real sessions conflict without losing edits', asy
   } finally { await otherContext.close() }
 })
 
-test('legacy second durations survive minute display and unrelated settings saves', async ({ page }) => {
+test('minute duration controls persist current settings through unrelated saves', async ({ page }) => {
   await login(page)
   const initial = await (await page.request.get('/api/v1/settings')).json()
   const csrf = (await (await page.request.get('/api/v1/auth/me')).json()).csrf_token
   try {
-    for (const seconds of [30, 31, 90]) {
+    for (const seconds of [30, 90, 1800]) {
       const saved = await (await page.request.get('/api/v1/settings')).json()
       expect((await page.request.patch('/api/v1/settings', { headers: { 'X-CSRF-Token': csrf }, data: { revision: saved.revision, confirmation_timeout_seconds: seconds } })).ok()).toBe(true)
       await page.reload()

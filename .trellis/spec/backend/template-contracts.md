@@ -10,8 +10,9 @@ scripts, expressions or filesystem paths.
 
 `UserSettings` and `SettingsPatch` expose `confirmation_template` and
 `filename_template`. Existing GET/PATCH settings and candidate validation carry
-these fields with the usual revision, source and editable semantics. Migration
-`0003` adds nullable `MediaItem.planned_filename` for confirmation-time snapshots.
+these fields with the usual revision, source and editable semantics.
+`MediaItem.planned_filename` is nullable during collection and mandatory when
+confirming a frozen card.
 
 ## 3. Contracts
 
@@ -25,11 +26,9 @@ Default confirmation text (actual newlines):
 ```
 
 Default filename template: `{name}_{id}`. Confirmation variables are `title`,
-`file_count`, `total_size`, `files`, `destination`, `expires_in_minutes` and the
-legacy `expires_in`. The minute variable uses at most two decimals with trailing
-zeros removed; legacy `expires_in` remains seconds for existing custom templates.
-Only an exactly matching stored old system-default template is upgraded, with a
-revision increment; custom templates and environment overrides remain untouched.
+`file_count`, `total_size`, `files`, `destination`, `expires_in_minutes`.
+The minute variable uses at most two decimals with trailing zeros removed.
+Unsupported variables are rejected; no old-template rewriting or aliases.
 Existing notification text and card deadlines stay unchanged. File sizes
 use the existing readable-unit convention, with unknown totals remaining unknown.
 `files` lists the planned saved filenames with readable sizes. Rendered Bot text
@@ -72,8 +71,8 @@ do not change the archive directory. Same-group collisions resolve deterministic
 final publication still never overwrites an existing file.
 
 Freeze planned filenames when issuing a new confirmation card; confirmed jobs use
-those snapshots. Later template/timezone edits affect new cards only. Old pending
-items with a null snapshot use legacy default naming, not newly edited settings.
+those snapshots. Later template/timezone edits affect new cards only. A card
+missing its planned filename is invalid and must not invent a new filename.
 Job retry/restart preserves its stored path; existing successful files are untouched.
 
 The WebUI shows editable templates, whitelisted variable help, example previews
@@ -104,7 +103,7 @@ braces as another expression, or silently renaming an already confirmed job.
 Assert template validation and offline persistence, all supported variables,
 escaped/literal braces, readable/unknown sizes, original-name sanitation,
 extension-preserving byte limits, deterministic collisions, card-time snapshots,
-legacy null snapshots and upgrade compatibility. Browser tests verify persistence,
+missing-snapshot rejection and current defaults. Browser tests verify persistence,
 example preview, reset, invalid input and short mobile layout. No real Bot or
 existing runtime data is used by these tests.
 

@@ -1,59 +1,25 @@
-from pathlib import Path
-
 import pytest
-from alembic import command
-from alembic.autogenerate import compare_metadata
-from alembic.config import Config as AlembicConfig
-from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.core.errors import AppError
 from app.core.templates import (
     DEFAULT_CONFIRMATION_TEMPLATE,
-    LEGACY_CONFIRMATION_TEMPLATE,
     render_confirmation,
     render_template,
 )
-from app.db.models import Base, Job, MediaItem, MediaRequest, Notification, Settings
+from app.db.models import Job, MediaItem, MediaRequest, Notification
 from app.schemas.contracts import SettingsPatch, UserSettings
-from app.services.settings import SettingsService
 from app.storage.naming import planned_name, unique_name
 from tests.test_pipeline import message, setup_pipeline
 
 
-@pytest.mark.parametrize("seconds", [None, 30, 31, 90, 300, 1800])
-def test_timeout_defaults_and_legacy_template_upgrade(client: TestClient, seconds: int | None) -> None:
-    state = client.app.state
-    with state.db.transaction() as session:
-        row = session.get(Settings, 1)
-        row.values = {"confirmation_template": LEGACY_CONFIRMATION_TEMPLATE,
-                      **({"confirmation_timeout_seconds": seconds} if seconds is not None else {})}
-        revision = row.revision
-    service = SettingsService(state.db, state.settings.config, state.settings.secrets)
-    upgraded_revision, values, _ = service.read()
-    assert upgraded_revision == revision + 1
-    assert values.confirmation_timeout_seconds == (seconds if seconds is not None else 1800)
-    assert values.confirmation_template == DEFAULT_CONFIRMATION_TEMPLATE
-    assert SettingsService(state.db, state.settings.config, state.settings.secrets).read()[0] == upgraded_revision
-
-
-def test_legacy_custom_template_and_environment_stay_seconds(client: TestClient, monkeypatch) -> None:
-    state = client.app.state
-    custom = "请在 {expires_in} 秒内确认"
-    with state.db.transaction() as session:
-        row = session.get(Settings, 1)
-        row.values = {"confirmation_template": custom, "confirmation_timeout_seconds": 90}
-        revision = row.revision
-    service = SettingsService(state.db, state.settings.config, state.settings.secrets)
-    assert service.read()[0] == revision
-    assert service.read()[1].confirmation_template == custom
-    monkeypatch.setenv("TGD_CONFIRMATION_TIMEOUT_SECONDS", "31")
-    monkeypatch.setenv("TGD_CONFIRMATION_TEMPLATE", LEGACY_CONFIRMATION_TEMPLATE)
-    _, values, sources = service.read()
-    assert values.confirmation_timeout_seconds == 31
-    assert values.confirmation_template == LEGACY_CONFIRMATION_TEMPLATE
-    assert sources["confirmation_timeout_seconds"] == "environment"
+def test_current_timeout_and_template_defaults() -> None:
+    settings = UserSettings()
+    assert settings.confirmation_timeout_seconds == 1800
+    assert settings.confirmation_template == DEFAULT_CONFIRMATION_TEMPLATE
+    assert settings.bot_api_mode == "cloud"
 
 
 def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) -> None:
@@ -70,7 +36,7 @@ def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) 
         original_text = card.payload["text"]
         assert "确认有效期：30 分钟" in original_text
     patch = SettingsPatch(revision=state.settings.read()[0], confirmation_timeout_seconds=90,
-                          confirmation_template="{expires_in_minutes} 分钟 / {expires_in} 秒")
+                          confirmation_template="{expires_in_minutes} 分钟")
     state.settings.save(patch, state.settings.candidate(patch))
     state.tasks.freeze_due()
     with state.db.sessions() as session:
@@ -84,14 +50,14 @@ def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) 
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         card = session.scalar(select(Notification).where(Notification.request_id == new_id))
-        assert card.payload["text"] == f"1.5 分钟 / 90 秒\n任务编号：{new_id}"
+        assert card.payload["text"] == f"1.5 分钟\n任务编号：{new_id}"
 
 
 @pytest.mark.parametrize("field,value", [
     ("confirmation_template", " "), ("confirmation_template", "x" * 2001),
     ("confirmation_template", "{title.__class__}"), ("confirmation_template", "{title[0]}"),
     ("confirmation_template", "{title!r}"), ("confirmation_template", "{title:}"),
-    ("confirmation_template", "{unknown}"), ("confirmation_template", "{"),
+    ("confirmation_template", "{unknown}"), ("confirmation_template", "{expires_in}"), ("confirmation_template", "{"),
     ("confirmation_template", "bad\x00text"), ("filename_template", "x" * 161),
     ("filename_template", "../{name}"), ("filename_template", "a\\{id}"),
     ("filename_template", "{index:03d}"), ("filename_template", "{name}\n"),
@@ -106,7 +72,7 @@ def test_template_validation(field: str, value: str) -> None:
 def test_plain_render_escapes_and_length() -> None:
     assert render_template("{{title}} {title}", {"title": "{files}"}) == "{title} {files}"
     text = render_confirmation(DEFAULT_CONFIRMATION_TEMPLATE, {
-        "title": "😀" * 4000, "destination": "videos/2026-10", "expires_in_minutes": "30",
+        "title": "😀" * 4000, "destination": "2026-10-21", "expires_in_minutes": "30",
         "files": "video.mp4 · 2.0 MB\n" * 500,
     })
     assert len(text.encode("utf-16-le")) // 2 <= 3500
@@ -134,7 +100,7 @@ def test_template_settings_persistence_and_environment(authenticated: TestClient
     assert readonly.status_code == 400 and readonly.json()["error"]["code"] == "READ_ONLY_SETTING"
 
 
-def test_freeze_names_prompt_and_legacy_compatibility(client: TestClient) -> None:
+def test_freeze_names_prompt_and_retry_preserve_snapshot(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     patch = SettingsPatch(revision=2, filename_template="{date}_{index}",
                           confirmation_template="{file_count}项 {total_size}\n{files}")
@@ -154,16 +120,11 @@ def test_freeze_names_prompt_and_legacy_compatibility(client: TestClient) -> Non
         assert card.payload["text"] == f"2项 2.0 KB\n19700101_1.mp4 · 1.0 KB\n19700101_2.mp4 · 1.0 KB\n任务编号：{card.request_id}"
     patch = SettingsPatch(revision=3, filename_template="new_{name}", timezone="Pacific/Honolulu")
     state.settings.save(patch, state.settings.candidate(patch))
-    # Simulate an awaiting card from a pre-0003 database for one item.
-    with state.db.transaction() as session:
-        first = session.scalar(select(MediaItem).order_by(MediaItem.message_id))
-        first.planned_filename = None
-        legacy_expected = f"movie1_{first.id[:8]}.mp4"
     assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
     with state.db.sessions() as session:
         jobs = list(session.scalars(select(Job)))
         paths = [job.relative_path for job in jobs]
-        assert paths[0].endswith(legacy_expected) and paths[1].endswith(names[1])
+        assert all(path.endswith(name) for path, name in zip(paths, names, strict=True))
     state.tasks.confirm(request_id, nonce, 42, 42, "confirm")
     with state.db.sessions() as session:
         assert [job.relative_path for job in session.scalars(select(Job))] == paths
@@ -197,14 +158,20 @@ def test_name_safety_unicode_extensions_and_collision() -> None:
     assert collision.endswith("_2.mp4") and len(collision.encode("utf-8")) <= 180
 
 
-def test_upgrade_0002_keeps_existing_items(client: TestClient) -> None:
+def test_confirmation_rejects_incomplete_frozen_file_plan(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
-    ingest.message(7, message(), "in1")
-    migration = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    with state.db.engine.begin() as connection:
-        migration.attributes["connection"] = connection
-        command.downgrade(migration, "0002")
-        assert connection.exec_driver_sql("SELECT original_name FROM media_items").scalar() == "movie1.mp4"
-        command.upgrade(migration, "head")
-        assert connection.exec_driver_sql("SELECT planned_filename FROM media_items").scalar() is None
-        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+    for number in (1, 2):
+        ingest.message(7, message(number, "g"), f"in{number}")
+    with state.db.transaction() as session:
+        request = session.scalar(select(MediaRequest))
+        request.collect_until = 0
+        request_id, nonce = request.id, request.nonce
+    state.tasks.freeze_due()
+    with state.db.transaction() as session:
+        session.scalar(select(MediaItem).order_by(MediaItem.message_id.desc())).planned_filename = None
+    with pytest.raises(AppError, match="文件名不完整") as error:
+        state.tasks.confirm(request_id, nonce, 42, 42, "confirm")
+    assert error.value.code == "INVALID_FILE_PLAN"
+    with state.db.sessions() as session:
+        assert list(session.scalars(select(Job))) == []
+        assert session.get(MediaRequest, request_id).status == "awaiting_confirmation"

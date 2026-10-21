@@ -151,10 +151,10 @@ def test_daily_destination_uses_creation_time_and_timezone(client: TestClient, k
                for item in state.tasks.detail(request_id)["items"])
 
 
-def test_frozen_legacy_monthly_path_survives_confirmation_and_retry(client: TestClient) -> None:
+def test_frozen_daily_path_survives_confirmation_and_retry(client: TestClient) -> None:
     state, _, request_id, payload = pending_request(client)
     with state.db.transaction() as session:
-        session.get(MediaRequest, request_id).destination = "videos/2026-10"
+        session.get(MediaRequest, request_id).destination = "2026-10-21"
     nonce = payload["data"].split(":")[2]
     state.tasks.confirm(request_id, nonce, 42, 42, "confirm")
     path = state.tasks.detail(request_id)["items"][0]["relative_path"]
@@ -164,4 +164,4 @@ def test_frozen_legacy_monthly_path_survives_confirmation_and_retry(client: Test
         session.get(MediaRequest, request_id).status = "failed"
     state.tasks.retry(request_id, None)
     assert state.tasks.detail(request_id)["items"][0]["relative_path"] == path
-    assert path.startswith("videos/2026-10/")
+    assert path.startswith("2026-10-21/")

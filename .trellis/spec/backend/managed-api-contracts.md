@@ -24,21 +24,26 @@ manual-only migration contract only when `Config.managed_local_api` is true.
 ## 3. Contracts
 
 API Hash is encrypted with the app's Secrets at rest and never echoed. Blank
-secret retains the stored value; explicit clear removes it. Old deployment API
-credentials can remain an overridable fallback. Offline configuration saving
+secret retains the stored value; explicit clear removes it. Application API
+credentials are managed in WebUI with no bare-environment fallback. Offline configuration saving
 must not require Telegram connectivity. Desired mode is distinct from verified
 applied mode; unrelated settings edits must not restart the API.
-First enabling managed mode on a legacy desired-local database must use unknown
-applied mode and wait for explicit retry. An upgrade alone cannot initiate Bot
-logout or target login. Unacknowledged/incomplete child commands have bounded
+Initial runtime state is cloud/idle; a settings change schedules the safe
+transition. Unacknowledged/incomplete child commands have bounded
 persistent deadlines and fail with retry available instead of staying busy forever.
 
 The nonroot API supervisor stays alive without credentials, controls only the
 fixed official API child and uses no Docker socket. Private control volume and
 independent Fernet key are shared only with app/API, never full app data or
 master.key. Versioned desired.json carries command_id, action start/stop/restart,
-credential_revision, api_id and api_hash_encrypted. Applied status carries the
-command ID, allowlisted process state/error, generation and heartbeat only.
+credential_revision, api_id, api_hash_encrypted, proxy_encrypted and
+proxy_signature. The proxy signature hashes the canonical effective proxy (only
+enabled=false when disabled); encrypted proxy contains strict complete settings.
+Applied status carries command/revision, matching proxy signature, allowlisted
+process state/error, generation and heartbeat. Proxy active requires the current
+expected command/revision and signature, nonempty generation and fresh heartbeat;
+idle uses the last committed applied command. Handle matching failed command
+before requiring successful signature/generation to avoid misleading timeouts.
 Bounded regular-file reads reject symlinks; private atomic writes sync before
 replace. Secrets go to child environment, never argv/status/logs. Identical
 command replay cannot restart a healthy child. Publish a new cache generation
@@ -63,30 +68,42 @@ Only verified target identity permits applied-mode commit and resumption.
 
 Manual restart drains owners and uses a new command; the app and container keep
 running. Supervisor/container failure itself may require host restart policy or
-deployment intervention and must be displayed honestly. Standard Compose always
-includes a network supervisor. Direct and proxy commands use the same topology
-and are switched from WebUI; fresh matching heartbeat/revision acknowledgement
-is required for either. Commands use the frozen operation snapshot before cloud
-logout. `waiting_network` has a bounded deadline and appears in DTOs/diagnostics.
-Proxy-only changes drain consumers without replaying logout. Enabled proxy
-failure never falls back to direct or an obsolete configuration. Managed=false
-disables process actions for independently administered APIs.
+deployment intervention and must be displayed honestly. Standard Compose has
+app/API and private-volume initializer, with no network sidecar or TUN capability.
+Encrypted supervisor commands carry the frozen proxy configuration and exact
+credential/configuration revision. Proxy-only changes drain consumers and
+restart the API child with a new generation without replaying cloud logout.
 
-The network supervisor treats invalid, stale or nonincreasing desired revisions
-as revocation: install blocking egress rules and stop its child before reporting
-failure, including when the previous mode was direct. Root-written network IPC
-uses random exclusive no-follow temporary files and atomic replacement; reads
-reject nonregular/hardlinked files and changed inode identity. The fixed
-initializer mounts only private control volumes, validates nonroot UID/GID and
-uses opened no-follow directory descriptors for ownership/mode changes, never
-recursive media permission changes. Status tests must exercise actual HTTP DTOs
-for `waiting_network` and proxy `unavailable`, as well as diagnostic projection.
+`validate_allowed(candidate)` retains HTTP409 `LOCAL_API_BUSY` while an operation
+is unresolved. For `failed`, `blocked` or `logout_uncertain`, return the sanitized
+failure/phase reason and direct the user to local API service controls; never
+describe terminal failure as an operation that will finish by waiting. In-flight
+phases describe applying API or proxy settings, including proxy-only restarts.
+Validation neither retries an operation nor probes through these barriers.
+Regression tests cover failure reasons, busy phases and unchanged probe gating.
+Fresh matching command/configuration acknowledgement is required before local
+use; Bot identity verification remains separate from a process listening port.
+Managed=false disables controls for independently administered APIs.
 
-Runtime checks fresh network acknowledgement before local dispatch/poll/notify;
-the DB claim barrier atomically blocks settings edits/migrations. Kernel routing
-rules provide proxy fail-closed behavior when a child dies. A metadata read in a
-worker claim cannot atomically certify independent process/network liveness and
-must not be described as such.
+The fixed upstream source patch starts TDLib with network None and false network
+flag; queue proxy selection or explicit cached-proxy disable and initialization,
+then enable Other only after all successes. Do not wait for pre-initialization
+queued callbacks before sending parameters, which deadlocks. Proxy failure
+cannot enable direct transport. This is native transport selection, not kernel
+firewall containment. Patch exact pinned source and compile it in validation.
+
+Enabled SOCKS5 usernames and passwords each have a 255-byte UTF-8 protocol limit;
+enforce in shared settings validation before saving or irreversible logout, and
+again in supervisor decrypted-payload validation. Disabled proxy fields may be
+retained for editing; HTTP CONNECT retains normal character limits. Maximum
+Unicode HTTP credentials must fit the encrypted IPC bounds.
+
+The fixed initializer mounts only private control volume, validates nonroot
+UID/GID and uses opened no-follow directory descriptors for ownership/mode
+changes, never recursive media permission changes. Runtime gates local
+dispatch/poll/notify on current acknowledged process settings, while transactional
+phase barriers block conflicting acquisition. Metadata checks cannot atomically
+certify independent process liveness.
 
 ## 4. Validation & Error Matrix
 
@@ -101,7 +118,7 @@ must not be described as such.
 | Cloud cooldown | Visible deadline; no early probe/connection |
 | Child crash | Sanitized state, bounded recovery; manual restart available |
 | Local target identity network failure | Persist LOCAL_API_CONNECTION_FAILED and actionable sanitized message; process running is not Bot readiness; preserve successful logout and request protection |
-| External deployment | No managed process command; explicit compatibility status |
+| Externally managed API | No managed process command; explicit external status |
 
 ## 5. Good / Base / Bad Cases
 
@@ -118,10 +135,10 @@ test child processes. Assert secret encryption/no echo, migration preservation,
 command replay, child termination before generation replacement, stale heartbeat,
 claim/operation races, poll persistence before logout, durable uncertainty and
 cooldown across app restart, candidate-validation barriers, unrelated saves,
-blocked recovery and external compatibility. Narrow browser tests cover status,
+blocked recovery and externally managed API status. Narrow browser tests cover status,
 actions, credential blank/clear, unsaved form preservation and mobile layout.
 Quiet Compose parsing must support blank credentials without dumping secrets.
-Mocks cannot certify actual Telegram, local >20 MB, TUN or fnOS behavior.
+Mocks cannot certify actual Telegram, local >20 MB, real proxy or fnOS behavior.
 
 Windows Docker Desktop host binds may appear inside Linux containers as
 root-owned mode 777 regardless of host ACLs. Do not relax the control protocol's

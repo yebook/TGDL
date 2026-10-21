@@ -51,7 +51,6 @@ class Runtime:
         self.loops: list[asyncio.Task[None]] = []
         self.stopping = False
         self.api_generation = ""
-        self.network_write_error = False
         self.poll_lock = asyncio.Lock()
         self.notify_lock = asyncio.Lock()
         self.local_api = LocalApiService(settings)
@@ -64,12 +63,6 @@ class Runtime:
             # Persist the initial desired/applied barrier before any consumer starts.
             await self.local_api.reconcile(self)
         await asyncio.to_thread(self.recover_generation, True)
-        active, _, _ = await asyncio.to_thread(self.counts)
-        if active == 0:
-            try:
-                await asyncio.to_thread(self.settings.write_proxy_desired)
-            except OSError:
-                self.network_write_error = True
         self.loops = [asyncio.create_task(self.poll_loop()), asyncio.create_task(self.tick_loop()),
                       asyncio.create_task(self.notify_loop()), asyncio.create_task(self.diagnostic_loop())]
 
@@ -271,19 +264,11 @@ class Runtime:
                 revision, settings, _ = await asyncio.to_thread(self.settings.read)
                 active, blocked, _ = await asyncio.to_thread(self.counts)
                 proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
-                # Pending proxy updates are handed over only after current acquisition/copy slots drain.
-                if active == 0 and self.config.proxy_capable and settings.bot_api_mode == "local":
-                    try:
-                        async with self.poll_lock, self.notify_lock:
-                            await asyncio.to_thread(self.settings.write_proxy_desired)
-                        self.network_write_error = False
-                    except OSError:
-                        self.network_write_error = True
                 client, bot_id = self.client, self.bot_id
                 can_dispatch = (client is not None and bot_id is not None and bool(settings.bot_token)
                                 and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
                                 and self.safety.status(settings.bot_token)["state"] == "ready"
-                                and not blocked and (settings.bot_api_mode == "cloud" or not self.network_write_error)
+                                and not blocked
                                 and (proxy["state"] == ("active" if settings.proxy.enabled else "disabled")))
                 if self.config.managed_local_api and settings.bot_api_mode == "local":
                     applied = await asyncio.to_thread(self.local_api.applied)

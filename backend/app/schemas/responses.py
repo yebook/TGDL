@@ -30,7 +30,7 @@ class ProxyStatus(BaseModel):
 class SettingsResponse(BaseModel):
     revision: int
     values: UserSettings
-    sources: dict[str, Literal["default", "database", "environment", "deployment_fallback"]]
+    sources: dict[str, Literal["default", "database", "environment"]]
     editable: dict[str, bool]
     configured: dict[str, bool]
     proxy_status: ProxyStatus
@@ -81,6 +81,7 @@ class MediaResponse(BaseModel):
     duration_seconds: int | None
     status: str
     phase: str
+    acquisition_mode: Literal["cloud", "local"] | None
     completed_bytes: int
     total_bytes: int | None
     speed_bps: float | None
@@ -147,7 +148,7 @@ class LocalApiStatus(BaseModel):
     desired_mode: Literal["cloud", "local"]
     applied_mode: Literal["cloud", "local"] | None
     operation_id: str | None
-    phase: Literal["idle", "draining", "waiting_network", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain", "failed"]
+    phase: Literal["idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain", "failed"]
     message: str
     generation: str | None
     last_heartbeat_at: str | None

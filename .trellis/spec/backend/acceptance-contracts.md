@@ -4,7 +4,7 @@
 
 Read before editing `scripts/acceptance.py`, its tests, `backend/tools/e2e_app.py`,
 `frontend/e2e/`, Playwright configuration or the checks workflow. These tools
-verify local/API behavior; they cannot satisfy real Telegram, NAS or TUN gates.
+verify local/API behavior; they cannot satisfy real Telegram, NAS or real proxy gates.
 
 Also read the isolated Docker runner contract below before editing
 `scripts/docker_acceptance.py` or its tests.

@@ -32,12 +32,6 @@ def fit_name(stem: str, extension: str, suffix: str = "") -> str:
     return stem + suffix + extension
 
 
-def legacy_name(item: MediaItem) -> str:
-    extension = ".mp4" if item.media_type == "video" else ".jpg"
-    name = PurePosixPath(safe_name(item.original_name, f"{item.media_type}_{item.id}{extension}"))
-    return f"{name.stem}_{item.id[:8]}{name.suffix}"
-
-
 def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone: str, index: int) -> str:
     fallback = ".mp4" if item.media_type == "video" else ".jpg"
     # Extract extension before sanitization/truncation so long Unicode stems cannot lose it.
