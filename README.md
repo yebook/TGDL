@@ -41,7 +41,7 @@ docker compose --env-file .env -f compose.yaml ps
 - [文档索引](docs/README.md)：部署、使用、模板、日志、维护与常见问题。
 - [开发指南](docs/development.md) / [参与贡献](CONTRIBUTING.md) / [安全报告](SECURITY.md) / [变更记录](CHANGELOG.md)。
 - [验证范围](docs/verification.md)：模拟测试与真实 Telegram、飞牛 OS、TUN 验收分开记录，尚未完成的实机验证不能视为已通过。
-- [静态文档站](docs/pages.md)：独立构建、中文搜索和本地预览；可用于 GitHub Pages 或 NAS 静态托管，尚未发布站点。
+- [在线文档](https://yebook.github.io/TGDL/)：支持中文搜索；[构建与发布指南](docs/pages.md)介绍本地预览、GitHub Pages 和 NAS 静态托管。
 
 在 `docs/` 中运行 `pnpm install --frozen-lockfile`、`pnpm docs:build`、`pnpm docs:preview`，即可本地查看文档站；默认子路径 `/TGDL/`。仓库仅提供[文档站自动发布工作流](.github/workflows/docs-pages.yml)，启用方式见[Pages 指南](docs/pages.md)。它不构建应用镜像、不更新 NAS，也不恢复应用检查任务。
 

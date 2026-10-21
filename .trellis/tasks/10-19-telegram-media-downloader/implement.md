@@ -355,3 +355,10 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 - [x] Documentation-only path filters, independent build/artifact and least-privilege deployment workflow; current docs describe setup accurately.
 - [x] Fresh remote snapshot 78a000a: 6 commits, 326 unique textual blobs, 269 HEAD files plus 291 pending source files audited. No confirmed real credentials; external commit email and internal dated incident/development notes remain privacy decisions before public visibility. Custom offline scanner limitations and unaudited GitHub surfaces recorded in research/remote-privacy-audit.md; no history rewrite performed.
 - [x] Independent YAML/workflow permission/path/artifact review and docs build pass (20 Markdown, 89 relative links, 15 pages). Final authorization accepts existing email/internal notes; official Actions now pinned to REST-verified commit SHAs, Node 24 installs fixed pnpm 11.23.0, and deployments serialize without interruption. User configured Pages Actions source; ordinary commit/push and publication are authorized. No application/container deployment or history rewrite.
+
+## 37. Documentation publication verification
+
+- [x] User accepts audited email/internal records and configured Pages source; no history rewrite or visibility mutation performed.
+- [x] Committed log retention separately (76ea00a), then documentation/Pages (59b4718), and pushed to origin/main.
+- [x] GitHub run 39539596903 build/deploy succeeded. Live homepage, operations page and JS resource return HTTP 200 under https://yebook.github.io/TGDL/.
+- [x] Independent live browser checks passed: home, Chinese search to operations anchor, mobile navigation to deployment and no horizontal overflow. Final journal records publication; parent task remains open for real Telegram/fnOS/proxy acceptance. No running app/NAS deployment.

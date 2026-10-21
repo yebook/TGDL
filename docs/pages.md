@@ -1,6 +1,8 @@
 # 静态文档站与 GitHub Pages
 
-文档使用独立的 VitePress 1.6.4 包，源文件在 `docs/`，不改变应用前端依赖或 Docker 镜像。支持中文本地搜索、响应式目录与仓库子路径。仓库已准备仅用于文档的自动发布工作流；实际是否上线，以仓库 Pages 页面的部署状态为准。
+在线文档：[https://yebook.github.io/TGDL/](https://yebook.github.io/TGDL/)。
+
+文档使用独立的 VitePress 1.6.4 包，源文件在 `docs/`，不改变应用前端依赖或 Docker 镜像。支持中文本地搜索、响应式目录与仓库子路径，已启用仅用于文档的自动发布工作流；后续发布状态可在仓库 Pages 页面查看。
 
 ## 构建与本地预览
 
