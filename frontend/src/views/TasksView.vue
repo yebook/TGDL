@@ -56,7 +56,7 @@ async function remove(ids: string[]) {
 </script>
 <template>
   <section>
-    <div class="page-heading"><div><h1>下载任务</h1><p v-if="data" class="muted">共 {{ data.total }} 条</p></div><el-button :disabled="deleting" :loading="!data && loading" @click="refresh">刷新</el-button></div>
+    <div class="page-heading page-actions"><p v-if="data" class="muted">共 {{ data.total }} 条</p><el-button :disabled="deleting" :loading="!data && loading" @click="refresh">刷新</el-button></div>
     <div class="panel task-panel">
       <div class="task-toolbar"><el-select v-model="status" aria-label="筛选任务状态" class="status-filter" :disabled="deleting"><el-option v-for="value in filters" :key="value" :label="value ? stateLabel(value) : '全部状态'" :value="value" /></el-select><form class="search-form" @submit.prevent="submitSearch"><el-input v-model="query" placeholder="搜索名称或任务编号" aria-label="搜索名称或任务编号" :disabled="deleting" clearable @clear="submitSearch" /><el-button native-type="submit" :disabled="deleting">搜索</el-button></form></div>
       <div v-if="data?.items.length" class="task-selection"><el-checkbox :model-value="allSelected" :indeterminate="selectedIds.length > 0 && !allSelected" :disabled="deleting || !selectableIds.length" @change="selectedIds = $event ? [...selectableIds] : []">全选本页</el-checkbox><span class="muted" aria-live="polite">已选 {{ selectedIds.length }} 条</span><el-button type="danger" plain :disabled="!selectedIds.length || deleting" :loading="deleting" @click="remove([...selectedIds])">删除所选</el-button></div>

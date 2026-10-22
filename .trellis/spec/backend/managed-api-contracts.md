@@ -32,6 +32,27 @@ Initial runtime state is cloud/idle; a settings change schedules the safe
 transition. Unacknowledged/incomplete child commands have bounded
 persistent deadlines and fail with retry available instead of staying busy forever.
 
+Cloud-only effective proxy changes also use a persisted `cloud_reconnect` action
+and the existing busy/draining barrier, including deployments without a managed
+local API. Serialize accepted operations; reject additional connection changes
+while busy with `409 LOCAL_API_BUSY`, rather than silently replacing a target.
+Unrelated settings saves remain allowed and must not replace the operation's
+connection snapshot. This action drains owners/poll/notifications and replaces
+only the cloud client: never logOut, start/stop a supervisor child, reset request
+safety, or bypass cloud cooldown/uncertainty. Failed cloud reconnect permits
+correction or retry without granting external deployments local-process control.
+
+Identity publication is atomic with connection-configuration writes within the
+single application runtime: `SettingsService.connection_publication_lock` covers
+the final current-signature/operation/phase checks, Bot registration and in-memory
+client/readiness publication in one short synchronous section. Settings save and
+runtime init/update/action use the same order, publication lock then DB transaction.
+Never hold this thread lock across network I/O or an await, nor acquire it while
+already holding an unrelated DB write transaction. Close obsolete clients outside
+the lock. Nonmanaged cloud reconnect must respect the same durable cooldown and
+manual-validation barriers as managed operation; consumer/claim barriers must not
+depend only on managed_local_api.
+
 The nonroot API supervisor stays alive without credentials, controls only the
 fixed official API child and uses no Docker socket. Private control volume and
 independent Fernet key are shared only with app/API, never full app data or
@@ -57,6 +78,18 @@ Drain known live file owners and durable active jobs without cancelling them as
 a shortcut. Local recovery-blocked acquisitions require a proven child restart
 before generation reconciliation can release uncertain slots.
 
+`LocalApiStatus.drain_reason` is a required read-only projection:
+`null | "connection" | "downloads"`. It is null outside draining, downloads when
+durable fetching/saving/cancelling jobs require waiting, otherwise connection.
+Do not persist it or compare translated message strings in frontend logic.
+
+The draining phase includes finishing in-flight polling/notifications and closing
+the old client, not just downloads. Its default presentation is preparing the
+connection switch; mention waiting for downloads only when active download owners
+or durable fetching/saving/cancelling jobs actually require that wait. Queued jobs
+alone do not justify a download-wait message. Keep locks and transition barriers
+unchanged; do not speed up the label by skipping safe cleanup.
+
 Preflight required credentials, supervisor and topology before logout. Record
 logout intent before the remote request; success allows immediate local start
 but persists cloud availability no earlier than response time plus 600 seconds.
@@ -65,6 +98,28 @@ reconnection. Explicit acknowledged recovery may continue local start/verify,
 but must not claim the remote outcome became known. Candidate validation,
 runtime getMe, polling and sending respect the same operation/cooldown barriers.
 Only verified target identity permits applied-mode commit and resumption.
+
+### Bounded waits and recovery
+
+Use `services.connection_waits` for cooperative network operations: identity25s,
+logout35s and client close5s. Never detach a still-running coroutine to claim
+its lock is released, and never cancel a database `to_thread` write by timeout.
+Poll/notification barrier acquisition uses <=1s attempts, releasing partial locks;
+45s without consumer release becomes `failed/LOCAL_API_DRAIN_TIMEOUT`. Retry
+resets its wait baseline but must still acquire the original locks. Actual file
+owners/durable acquisitions wait without forced release; show download waiting.
+
+Verification has a120s no-progress deadline excluding actual future request
+protection waits. Failed identity/network operations are recoverable; do not loop
+forever in verifying. A proven restart unable to reconcile generation within150s
+stays blocked for explicit recovery, never releases uncertain download slots.
+Keep existing60/150s supervisor command acknowledgement/completion deadlines.
+Timeout during logout persists logout_uncertain and must not be replayed.
+
+Busy HTTP connection mutations must not queue stale candidates behind long
+network operations. Reject concurrent connection-changing commands promptly;
+unrelated saves still respect revision/candidate checks and remain available.
+Local request cancellation cannot prove server writes or upstream logout failed.
 
 Manual restart drains owners and uses a new command; the app and container keep
 running. Supervisor/container failure itself may require host restart policy or
@@ -116,6 +171,8 @@ certify independent process liveness.
 | Conflicting connection save during operation | 409; retain current operation/config |
 | Unknown logout result | Persistent logout_uncertain; generic retry refused |
 | Cloud cooldown | Visible deadline; no early probe/connection |
+| Consumer barrier never releases | Failed with drain timeout; retry reacquires original locks, no forced unlock |
+| Hanging identity/close or verification never progresses | Bounded cooperative wait, actionable recoverable failure |
 | Child crash | Sanitized state, bounded recovery; manual restart available |
 | Local target identity network failure | Persist LOCAL_API_CONNECTION_FAILED and actionable sanitized message; process running is not Bot readiness; preserve successful logout and request protection |
 | Externally managed API | No managed process command; explicit external status |
@@ -138,7 +195,12 @@ cooldown across app restart, candidate-validation barriers, unrelated saves,
 blocked recovery and externally managed API status. Narrow browser tests cover status,
 actions, credential blank/clear, unsaved form preservation and mobile layout.
 Quiet Compose parsing must support blank credentials without dumping secrets.
-Mocks cannot certify actual Telegram, local >20 MB, real proxy or fnOS behavior.
+Mocks cannot certify actual Telegram, local >20 MB, real proxy or Docker host behavior.
+
+Fault tests must cover hanging cooperative identity/close/logout, barrier held
+across repeated reconciliation and retry, fresh retry baselines, normal live
+download waiting, persistent cooldown and uncertain logout after restart, and
+HTTP busy rejection without queued stale connection saves.
 
 Windows Docker Desktop host binds may appear inside Linux containers as
 root-owned mode 777 regardless of host ACLs. Do not relax the control protocol's

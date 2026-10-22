@@ -14,6 +14,7 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY backend/ ./
 
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+LABEL org.opencontainers.image.version="0.1.0"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/app/backend/.venv/bin:$PATH" TGD_STATIC_DIR=/app/frontend/dist
 WORKDIR /app/backend
 COPY --from=python-build /app/backend /app/backend

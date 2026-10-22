@@ -33,7 +33,11 @@ part/hash/fsync/non-overwriting publication journal pipeline.
 
 Cloud HTTP CONNECT/SOCKS5 proxy configuration belongs to the app session and
 covers both API calls and file downloads without direct fallback. Connection
-signatures include token, mode and cloud proxy values. Proxy active status needs
+signatures include token, mode and effective cloud proxy values; disabled proxy
+normalizes to enabled=false so inactive host/credentials do not trigger reconnection.
+Identity results must be rechecked against current connection configuration and
+operation state before publishing readiness; close and discard obsolete clients.
+Proxy active status needs
 successful runtime identity verification using that signature. Local mode keeps
 the supervisor desired/applied acknowledgement and shared-cache behavior.
 
@@ -92,7 +96,7 @@ cancellation and transport-specific recovery. Assert no final publication on
 failure and no premature local slot release. Browser checks verify mode persistence
 and unsaved candidate validation. Parse default and local profile Compose with
 empty application credentials without printing expanded secrets. Actual Telegram,
-proxy routing, >20 MB local transfers and fnOS remain separate real-device gates.
+proxy routing, >20 MB local transfers and Docker host remain separate real-device gates.
 
 ## 7. Wrong vs Correct
 

@@ -1,4 +1,7 @@
-﻿from pathlib import Path
+﻿from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from pathlib import Path
+from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,7 +59,7 @@ def test_group_caption_order_survives_restart_and_freeze_is_stable(client: TestC
     detail = state.tasks.detail(request_id)
     assert detail["title"] == "海边 / 日落"
     destination = detail["effective_destination"]
-    assert destination.split("/")[1] == f"海边 _ 日落_{request_id[:8]}"
+    assert destination.split("/")[1] == "海边 _ 日落"
     assert all(str(Path(item["relative_path"]).parent).replace("\\", "/") == destination for item in detail["items"])
     paths = [item["relative_path"] for item in detail["items"]]
     with state.db.transaction() as session:
@@ -76,9 +79,8 @@ def test_group_caption_order_survives_restart_and_freeze_is_stable(client: TestC
 
 
 @pytest.mark.parametrize("summary", ["CON", "../a\\b:*?", "图" * 80, ". "])
-def test_group_directory_safety_keeps_unique_suffix(summary: str) -> None:
-    name = fit_name(summary, "", "_abcdef01")
-    assert name.endswith("_abcdef01")
+def test_group_directory_safety(summary: str) -> None:
+    name = fit_name(summary, "")
     assert len(name.encode("utf-8")) <= 180
     assert not any(char in name for char in '<>:"/\\|?*')
     assert ".." not in name and name.split(".")[0] != "CON"
@@ -94,6 +96,94 @@ def test_same_caption_ids_are_distinct(client: TestClient) -> None:
     rows = state.tasks.list_tasks(None, None, 1, 20)["items"]
     assert [row["title"] for row in rows] == ["相同名称", "相同名称"]
     assert len({row["id"] for row in rows}) == 2
+
+
+def test_group_names_reserve_transaction_deleted_records_and_existing_files(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    for index in (1, 2):
+        media = message(index, f"group{index}")
+        media["caption"] = "同名"
+        ingest.message(7, media, f"in{index}")
+    confirm_all(state)
+    with state.db.transaction() as session:
+        rows = list(session.scalars(select(MediaRequest).order_by(MediaRequest.created_at)))
+        destinations = [row.destination for row in rows]
+        assert [Path(path).name for path in destinations] == ["同名", "同名 (2)"]
+        for row in rows:
+            row.deleted_at = 1
+    day = Path(destinations[0]).parent
+    root = state.runtime.config.download_root
+    preserved = root / destinations[0] / "keep.mp4"
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(b"retained")
+    # An ordinary pre-existing file also occupies a potential directory name.
+    (root / day / "同名 (3)").write_bytes(b"existing")
+    media = message(3, "group3")
+    media["caption"] = "同名"
+    ingest.message(7, media, "in3")
+    request_id = confirm_all(state)
+    assert Path(state.tasks.detail(request_id)["effective_destination"]).name == "同名 (4)"
+    assert preserved.read_bytes() == b"retained"
+    assert (root / day / "同名 (3)").read_bytes() == b"existing"
+    with state.db.sessions() as session:
+        assert [session.get(MediaRequest, row.id).destination for row in rows] == destinations
+
+
+def test_group_folder_respects_unconfirmed_single_and_root_day_scope(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    ingest.message(7, message(), "single")
+    with state.db.transaction() as session:
+        single = session.scalar(select(MediaRequest))
+        single.created_at = datetime(2026, 10, 20, 12, tzinfo=UTC).timestamp()
+        single.collect_until = 0
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        planned = session.scalar(select(MediaItem)).planned_filename
+        assert session.scalar(select(MediaRequest)).status == "awaiting_confirmation"
+        assert session.scalar(select(Job)) is None
+    for index in (2, 3):
+        media = message(index, f"g{index}")
+        media["caption"] = planned
+        ingest.message(7, media, f"in{index}")
+    with state.db.transaction() as session:
+        groups = list(session.scalars(select(MediaRequest).where(MediaRequest.kind == "group")))
+        groups[0].created_at = single.created_at
+        groups[1].created_at = single.created_at + 86400
+        for request in groups:
+            request.collect_until = 0
+        # A different storage root must not reserve names in the selected root.
+        session.add(MediaRequest(bot_id=7, chat_id=42, user_id=42, kind="group", collect_until=0,
+                                 status="succeeded", root_id="other", destination=f"2026-10-21/{planned}"))
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        assert session.get(MediaRequest, groups[0].id).destination == f"2026-10-20/{planned} (2)"
+        assert session.get(MediaRequest, groups[1].id).destination == f"2026-10-21/{planned}"
+
+
+def test_concurrent_freezing_reserves_distinct_folders_and_one_card_per_request(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    for index in (1, 2):
+        media = message(index, f"g{index}")
+        media["caption"] = "shared"
+        ingest.message(7, media, f"in{index}")
+    with state.db.transaction() as session:
+        for request in session.scalars(select(MediaRequest)):
+            request.collect_until = 0
+    ready = Barrier(2)
+
+    def freeze() -> None:
+        ready.wait(timeout=5)
+        state.tasks.freeze_due()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(freeze) for _ in range(2)]
+        for future in futures:
+            future.result(timeout=15)
+    with state.db.sessions() as session:
+        requests = list(session.scalars(select(MediaRequest)))
+        assert {Path(request.destination).name for request in requests} == {"shared", "shared (2)"}
+        assert all(request.status == "awaiting_confirmation" for request in requests)
+        assert len(list(session.scalars(select(Notification)))) == 2
 
 
 def test_task_message_reserves_identifier_after_long_astral_content() -> None:

@@ -1,8 +1,8 @@
-# 飞牛 OS / Docker 部署
+# Docker 部署
 
 标准部署只使用项目根目录的 **`compose.yaml`**。应用与本地 Bot API 管理服务一起部署；之后在 WebUI 配置代理、填写 Telegram 凭据和切换 API，无需更换 Compose 文件。
 
-当前仍处于首版开发阶段，采用源码构建，尚未提供公开应用镜像。真实大文件、飞牛 OS 和内置代理的验收边界见 [验证记录](verification.md)。
+当前仍处于首版开发阶段，采用源码构建，尚未提供公开应用镜像。真实大文件、Docker 宿主机和内置代理的验收边界见 [验证记录](verification.md)。
 
 ## 部署文件在哪里
 
@@ -19,7 +19,7 @@
 ## 准备
 
 - Docker Compose v2 和 Linux 容器环境。Windows 本机验证使用 Docker Desktop，见 [本地运行](local-run.md)。
-- 云端和本地均支持 HTTP CONNECT / SOCKS5，不需要 TUN 设备或 NET_ADMIN 权限；具体飞牛 OS 机型仍需实测。
+- 云端和本地均支持 HTTP CONNECT / SOCKS5，不需要 TUN 设备或 NET_ADMIN 权限；目标宿主环境与 CPU 架构仍需实测。
 - 专属 Bot Token 和自己的数字 Telegram 用户 ID。先用官方云端不需要 API ID / Hash；本地大文件模式才需要 [申请应用凭据](telegram-api.md)。
 - 应用与 API 使用非 root UID/GID，一个管理员、一个 Bot、单实例。媒体共享先挂载，并允许该用户写入。
 - 应用数据库放在可靠本地文件系统，不放在 SMB/NFS 上。API 缓存和最终下载会各保存媒体，预留至少两份大文件及并发临时空间。
@@ -60,10 +60,10 @@ TGD_TIMEZONE=Asia/Shanghai
 | `TGD_HOST_DOWNLOADS` | 最终媒体根目录；可改为已挂载的 NAS 共享目录 |
 | `TGD_HOST_API_CACHE` | 官方 API 数据及媒体缓存，API 可写、应用只读 |
 | `TGD_UID` / `TGD_GID` | 应用与 API 使用的非 root 数字用户和组 |
-| `TGD_BIND_IP` / `TGD_WEB_PORT` | 默认只允许本机访问；NAS 内网访问改为 NAS 的固定局域网 IP |
+| `TGD_BIND_IP` / `TGD_WEB_PORT` | 默认只允许本机访问；其他设备通过内网访问改为部署主机的固定局域网 IP |
 | `TGD_TIMEZONE` | 应用默认时区，之后可在 WebUI 修改 |
 
-相对挂载路径以 Compose 文件所在目录为基准。WebUI 的下载根目录对应容器中的 `/downloads`；宿主实际位置在 `.env` 配置，页面不输入 NAS 宿主路径。启动前确认媒体共享已挂载，避免 Docker 在缺失路径下创建空目录。
+相对挂载路径以 Compose 文件所在目录为基准。WebUI 的下载根目录对应容器中的 `/downloads`；宿主实际位置在 `.env` 配置，页面不输入宿主机路径。启动前确认媒体共享已挂载，避免 Docker 在缺失路径下创建空目录。
 
 Bot Token、用户 ID、API ID / Hash 和代理均在 WebUI 配置。凭据不要写进准备分享的 YAML。
 
@@ -77,9 +77,9 @@ docker compose --env-file .env -f compose.yaml ps
 
 `config --quiet` 只验证配置，不打印展开后的内容。初始化服务正常完成后退出是预期行为；其他组件常驻。启动成功不表示 Telegram 已连接。
 
-访问 `http://127.0.0.1:8000`，或已配置的 NAS 局域网地址。在数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），创建管理员账号和 6–20 位密码。之后使用管理员密码登录。
+访问 `http://127.0.0.1:8000`，或已配置的部署主机局域网地址。在数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），创建管理员账号和 6–20 位密码。之后使用管理员密码登录。
 
-默认选择官方云端。在 WebUI 保存 Bot Token 和用户 ID 白名单，按需启用代理。保存只检查格式，不要求在线；在系统状态查看实际连接，必要时手动校验。先给 Bot 发送小于 20 MB 的图片或视频验证保存结果。
+默认选择官方云端。在 WebUI 保存 Bot Token 和用户 ID 白名单，按需启用代理。保存只检查格式，不要求在线；在顶部查看连接概况，在「设置 → 连接 Telegram」查看详情，必要时手动校验。先给 Bot 发送小于 20 MB 的图片或视频验证保存结果。
 
 仅 WebUI 端口对宿主开放，本地 API 的 8081 不对外发布。内网 HTTP 适用于可信网络，HTTPS 可由自己的反向代理终止；不要将 WebUI 或本地 API 直接暴露到公网。
 
@@ -87,7 +87,7 @@ docker compose --env-file .env -f compose.yaml ps
 
 1. 按 [申请步骤](telegram-api.md#获取-api-id-api-hash) 获取 API ID / Hash。
 2. 在 WebUI 填写凭据，选择本地模式并保存；如需代理，在同一设置页配置。
-3. 后台等待活动任务和在途请求，退出云端，按目标代理配置启动本地进程并验证 Bot。
+3. 后台先准备切换，有活动下载时等待安全结束，并协调在途请求；随后退出云端，按目标代理配置启动本地进程并验证 Bot。没有活动下载时不会提示等待下载。
 4. 查看已保存模式、实际模式、切换步骤和 Bot 连接；实际连接成功后再测试超过 20 MB 的视频。
 
 日常无需停止应用、重启容器或手动执行 `logOut`。修改凭据可重启容器内 API 进程；WebUI 的“重启 API 进程”不代表重建容器。管理组件失联、宿主网络能力缺失或容器自身停止时仍需 Docker 排查。
@@ -107,14 +107,14 @@ docker compose --env-file .env -f compose.yaml ps
 
 系统代理、浏览器代理或 `HTTP_PROXY` 变量不会自动配置本项目的连接。请在 WebUI 填写；原版官方 API 的 `--proxy` 参数仅用于 webhook，本项目的本地 Telegram 代理由固定源码补丁接入 TDLib 实现。
 
-## 飞牛 OS 图形界面
+## 使用 Docker 图形管理工具
 
-1. 将完整源码放到 NAS 项目目录，按上文准备 `.env` 和业务目录。
-2. 在 Docker 中新建 Compose 项目，工作目录选择源码根目录，使用 `compose.yaml`。
+1. 将完整源码放到部署主机的项目目录，按上文准备 `.env` 和业务目录。
+2. 在支持源码构建的 Docker 管理工具中新建 Compose 项目，工作目录选择源码根目录，使用 `compose.yaml`。
 3. 确认环境文件、挂载与用户权限可用，执行构建和启动。
 4. 打开 WebUI 完成初始化，后续只在设置页管理代理与 API。
 
-若图形界面无法设置构建上下文或 `.env`，使用 SSH 执行上述命令。飞牛 OS 各版本界面与机型支持仍需实机确认。
+若图形界面无法设置构建上下文或 `.env`，使用 SSH 执行上述命令。不同工具的界面与构建支持有所差异，以实际工具为准。
 
 ## 日常命令
 

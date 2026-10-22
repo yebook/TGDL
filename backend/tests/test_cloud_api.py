@@ -276,7 +276,7 @@ async def test_candidate_validation_mode_proxy_and_signature(authenticated: Test
     candidate = state.settings.candidate(patch)
     state.settings.save(patch, candidate)
     assert state.settings.public()["proxy_status"]["state"] == "pending"
-    await state.runtime.ensure_client()
+    assert not await state.runtime.local_api.reconcile(state.runtime)
     assert state.runtime.client is not original
     assert state.settings.public()["proxy_status"]["state"] == "active"
     await state.runtime.client.close()

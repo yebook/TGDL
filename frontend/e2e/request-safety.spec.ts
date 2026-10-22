@@ -6,7 +6,7 @@ async function login(page: Page) {
   await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
   await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
   await page.getByRole('button', { name: '登录', exact: true }).click()
-  await page.getByRole('link', { name: '系统状态', exact: true }).click()
+  await page.getByRole('link', { name: '设置', exact: true }).click()
   await expect(page.getByTestId('bot-request-safety')).toBeVisible()
 }
 async function screenshot(page: Page, name: string) {

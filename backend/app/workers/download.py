@@ -118,10 +118,11 @@ class DownloadWorker:
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
             if safety and RequestSafetyService.blocked(safety.values, time.time()):
                 return None
-            if self.config.managed_local_api:
-                local = session.get(LocalApiRuntime, 1)
-                if not local or local.values.get("phase") != "idle":
-                    return None
+            local = session.get(LocalApiRuntime, 1)
+            if (self.config.managed_local_api and not local or local
+                    and (self.config.managed_local_api or local.values.get("action") == "cloud_reconnect")
+                    and local.values.get("phase") != "idle"):
+                return None
             setting_row = session.get(Settings, 1)
             current_mode = os.getenv("TGD_BOT_API_MODE", setting_row.values.get("bot_api_mode", "local") if setting_row else "local")
             if self.config.managed_local_api and local and local.values.get("applied_mode") != current_mode:

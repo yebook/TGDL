@@ -3,16 +3,17 @@ import { botConnectionLabel, cooldownText, localApiPhases, modeLabel, validation
 import type { LocalApiStatus } from '../src/api/types'
 
 describe('managed API diagnostics', () => {
-  const status: LocalApiStatus = { managed: true, state: 'running', desired_mode: 'local', applied_mode: 'local', operation_id: null, phase: 'idle', message: '', generation: 'test', last_heartbeat_at: null, cloud_available_at: null, can_restart: true, can_retry: false }
+  const status: LocalApiStatus = { managed: true, state: 'running', desired_mode: 'local', applied_mode: 'local', operation_id: null, phase: 'idle', drain_reason: null, message: '', generation: 'test', last_heartbeat_at: null, cloud_available_at: null, can_restart: true, can_retry: false }
   it('blocks validation immediately while saved network settings await application', () => {
     expect(validationBlockReason(status, { state: 'pending', message: '', desired_revision: 9, applied_revision: null })).toContain('应用网络配置')
     expect(validationBlockReason(status, { state: 'disabled', message: '', desired_revision: 9, applied_revision: 9 })).toBe('')
   })
   it('distinguishes ongoing configuration application from a failed operation requiring action', () => {
     expect(validationBlockReason({ ...status, phase: 'starting' }, undefined)).toContain('操作完成后可校验')
-    expect(validationBlockReason({ ...status, phase: 'failed', message: 'Bot 连接验证失败' }, undefined)).toContain('服务状态中处理后再校验')
+    expect(validationBlockReason({ ...status, phase: 'failed', message: 'Bot 连接验证失败' }, undefined)).toContain('连接状态中处理后再校验')
     expect(validationBlockReason({ ...status, phase: 'logout_uncertain' }, undefined)).toContain('退出结果待确认')
-    expect(validationBlockReason({ ...status, managed: false, phase: 'starting' }, undefined)).toBe('')
+    expect(validationBlockReason({ ...status, managed: false, phase: 'starting' }, undefined)).toContain('操作完成后可校验')
+    expect(validationBlockReason({ ...status, managed: false, desired_mode: 'cloud', phase: 'failed', can_retry: true }, undefined)).toContain('连接状态中处理后再校验')
     expect(validationBlockReason({ ...status, desired_mode: 'cloud' }, { state: 'pending', message: '', desired_revision: 9, applied_revision: null })).toBe('')
   })
   it('distinguishes a responsive local API from an upstream Bot connection', () => {

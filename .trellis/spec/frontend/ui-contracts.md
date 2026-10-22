@@ -6,6 +6,8 @@ Read before changing frontend/src views, components, api or composables. Use the
 ## 2. Signatures
 src/api/client.ts centralizes request<T> and ApiError. src/api/types.ts is the manually maintained DTO source paired with backend routes, not generated OpenAPI. usePolling owns refresh, abort and stale-response generation guards. App shell owns sessions/hash navigation; views own temporary forms.
 
+Authenticated workspace presentation follows [workspace-experience-contracts.md](workspace-experience-contracts.md): tasks/settings only, one shared status poller, always-visible actionable status, settings sections and per-login debug details. Product version follows [numeric version contracts](../backend/version-contracts.md).
+
 ## 3. Contracts
 API base /api/v1, same-origin credentials, X-CSRF-Token for mutations. Never persist credentials in localStorage or display existing secrets. Settings revision, editable, sources, configured and proxy_status are distinct. Blank secrets preserve values, explicit clear flags erase. Keep entered values on409; end session on401. An older diagnostic poll cannot replace a newer desired_revision after PATCH.
 
@@ -147,7 +149,7 @@ restart. Logout uncertainty needs a distinct explanatory acknowledgement, never
 an implicit ordinary retry. External mode honestly reports no process control.
 
 For `local_api.applied_mode === 'local'`, render Bot `online`/`connected` as
-“本地 API 可用” in both the system card and local API panel, using the shared
+“本地 API 可用” in both the top status summary and local API panel, using the shared
 `botConnectionLabel` helper. Explain that local request success does not verify
 Telegram message reception: TDLib can serve cached identity and empty polls
 while upstream networking is unavailable. Preserve cloud connection labels and
@@ -172,7 +174,7 @@ overwriting unsaved settings. Process running is separate from Bot connectivity
 and protection; never label the feature as guaranteed protection from bans.
 
 Diagnostic export follows ../backend/diagnostic-log-contracts.md. Show log
-availability in system diagnostics; export on explicit action using existing
+availability in settings maintenance; export on explicit action using existing
 session handling, busy/stale/unmount protection and a released object URL.
 Do not poll event content, navigate to arbitrary paths or send logs externally.
 Empty/truncated/error feedback is transient. Exported content is server-filtered
@@ -181,7 +183,7 @@ JSONL; it cannot establish a historical ban reason when evidence is absent.
 Diagnostic retention uses the ordinary settings form/revision: default 7 days,
 integer range 0–3650; zero disables age cleanup while capacity rotation remains.
 Show applied policy, cleanup timestamps, readable `total_bytes` and `file_count`
-for fixed log files in system diagnostics. Settings
+for fixed log files in settings maintenance. Settings
 expose `diagnostic_log_cleanup_time` as labelled `HH:MM`, default `08:00`, using
 the application's timezone. Explain daily execution from the next future
 scheduled time; never promise immediate/hourly scans on save. Render log schedule

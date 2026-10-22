@@ -11,6 +11,7 @@ RUN cd /src && git apply --check /native-progress.patch && git apply /native-pro
 RUN mkdir -p /out/licenses/tdlib && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+LABEL org.opencontainers.image.version="0.1.0"
 RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates libssl3 zlib1g libstdc++6 python3 python3-cryptography && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/ /usr/local/
 COPY deploy/bot-api/entrypoint.sh /entrypoint.sh

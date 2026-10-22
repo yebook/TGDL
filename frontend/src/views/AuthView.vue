@@ -37,12 +37,11 @@ async function submit() {
   <main class="auth-layout">
     <section class="auth-story">
       <div class="brand"><span class="brand-mark"><AppIcon name="download" /></span><strong>TGD</strong></div>
-      <div><p class="eyebrow">TELEGRAM → YOUR STORAGE</p><h1>看到喜欢的，<br>留在自己的空间。</h1><p>转发视频与图片给专属 Bot，确认后自动保存到本地或 NAS。</p></div>
+      <div><h1>看到喜欢的，<br>留在自己的空间。</h1><p>转发视频与图片给专属 Bot，确认后自动保存到本地或 NAS。</p></div>
       <p class="auth-footer">简洁管理 · 自主存储</p>
     </section>
     <section class="auth-panel" aria-labelledby="auth-title">
       <div class="panel auth-card">
-        <p class="eyebrow">{{ isSetup ? 'WELCOME' : 'WELCOME BACK' }}</p>
         <h2 id="auth-title">{{ isSetup ? '初始化你的下载助手' : '登录管理界面' }}</h2>
         <p class="muted">{{ isSetup ? '创建唯一的管理员账号，随后连接 Telegram Bot。' : '查看下载进度，管理你的连接与存储。' }}</p>
         <el-alert v-if="notice" :title="notice" type="warning" :closable="false" show-icon />

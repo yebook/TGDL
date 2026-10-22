@@ -205,7 +205,7 @@ def run(origin: str, timeout: float, username: str | None = None, password: str 
     return {"schema_version": 1, "checked_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 -- Python 3.10
             "result": "fail" if any(c["status"] == "fail" for c in checks) else "pass",
             "scope": "service_api_only", "checks": checks,
-            "unverified": ["real_telegram_media", "video_over_20mb", "nas_filesystem",
+            "unverified": ["real_telegram_media", "video_over_20mb", "deployment_filesystem",
                            "proxy_telegram_routing", "container_rebuild_persistence"]}
 
 

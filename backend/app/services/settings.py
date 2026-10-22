@@ -1,5 +1,6 @@
 import json
 import os
+from threading import RLock
 from typing import Any
 
 from sqlalchemy import select
@@ -15,8 +16,11 @@ from app.schemas.contracts import SettingsPatch, UserSettings
 class SettingsService:
     def __init__(self, database: Database, config: Config, secrets: Secrets) -> None:
         self.db, self.config, self.secrets = database, config, secrets
+        # Single runtime process: serialize short configuration/identity publication
+        # sections. Always acquire before a write transaction, never around network I/O.
+        self.connection_publication_lock = RLock()
         self.cloud_applied_signature = ""
-        with self.db.transaction() as session:
+        with self.connection_publication_lock, self.db.transaction() as session:
             row = session.get(Settings, 1)
             if not row:
                 session.add(Settings(id=1, values={"bot_api_mode": "cloud"}))
@@ -24,7 +28,7 @@ class SettingsService:
     def client_signature(values: UserSettings) -> str:
         from app.core.security import digest
         return digest(json.dumps({"token": values.bot_token, "mode": values.bot_api_mode,
-                                  "proxy": values.proxy.model_dump() if values.bot_api_mode == "cloud" else None},
+                                  "proxy": SettingsService.proxy_signature(values) if values.bot_api_mode == "cloud" else None},
                                  sort_keys=True))
 
     def read(self) -> tuple[int, UserSettings, dict[str, str]]:
@@ -138,7 +142,7 @@ class SettingsService:
         data["proxy"]["password"] = self.secrets.encrypt(data["proxy"]["password"])
         # Never persist environment credentials into the database.
         data = {key: val for key, val in data.items() if sources[key] != "environment"}
-        with self.db.transaction() as session:
+        with self.connection_publication_lock, self.db.transaction() as session:
             row = session.scalar(select(Settings).where(Settings.id == 1))
             assert row
             if patch.revision != row.revision:
@@ -147,9 +151,8 @@ class SettingsService:
             if not self.config.managed_local_api and candidate.bot_api_mode != current_mode and session.scalar(select(Job.id).where(
                     Job.state.in_(["fetching", "saving", "cancelling", "recovery_blocked"])).limit(1)):
                 raise AppError("API_MODE_BUSY", "存在下载中或恢复待处理任务，请处理完成后切换 API 模式", 409)
-            if self.config.managed_local_api:
-                from app.services.local_api import schedule_settings
-                schedule_settings(session, row, candidate, self.secrets)
+            from app.services.local_api import schedule_settings
+            schedule_settings(session, row, candidate, self.secrets, managed=self.config.managed_local_api)
             row.values, row.revision = data, row.revision + 1
         # Runtime drains active slots before handing new network configuration to the supervisor.
         return self.public()

@@ -16,3 +16,5 @@
 {"file": ".trellis/spec/backend/config-backup-contracts.md", "reason": "Encrypted settings-only backup and restore"}
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/proxy-native.md", "reason": "Native TDLib proxy startup gate and no-TUN architecture"}
 {"file": ".trellis/spec/backend/local-progress-contracts.md", "reason": "Read-only native acquisition telemetry, exact ownership/generation and honest stage progress"}
+{"file": ".trellis/spec/frontend/workspace-experience-contracts.md", "reason": "Approved user-centered shell/settings/debug UX contracts"}
+{"file": ".trellis/spec/backend/version-contracts.md", "reason": "Canonical numeric product metadata and runtime/build/docs parity"}

@@ -14,7 +14,7 @@ from test_pipeline import confirm_all, message
 from app.bot.client import TelegramClient
 from app.core.config import Config
 from app.core.errors import AppError
-from app.db.models import IngestUpdate, Notification, Settings
+from app.db.models import IngestUpdate, Job, Notification, Settings
 from app.main import create_app
 from app.schemas.contracts import ProxySettings, SettingsPatch
 from app.services.local_api import LocalApiService
@@ -334,8 +334,28 @@ async def test_drain_joins_poll_and_preserves_owner(managed, monkeypatch):
         step = asyncio.create_task(runtime.local_api.reconcile(runtime))
         await asyncio.sleep(0.01)
         assert not step.done()
+        assert runtime.local_api.status()["message"] == "正在准备切换连接"
+        assert runtime.local_api.status()["drain_reason"] == "connection"
         logout.assert_not_awaited()
     await step
+
+
+def test_drain_message_only_waits_for_real_acquisition(managed):
+    save(managed, allowed_user_ids=[42])
+    runtime = managed.app.state.runtime
+    runtime.ingest.message(123, message(), "test")
+    confirm_all(managed.app.state)
+    runtime.local_api.update(phase="draining")
+    assert runtime.local_api.status()["message"] == "正在准备切换连接"
+    for state in ("fetching", "saving", "cancelling", "queued", "retry_wait", "succeeded"):
+        with runtime.db.transaction() as session:
+            session.scalar(select(Job)).state = state
+        expected = "等待当前下载完成后切换连接" if state in {"fetching", "saving", "cancelling"} else "正在准备切换连接"
+        assert runtime.local_api.status()["message"] == expected
+        assert runtime.local_api.status()["drain_reason"] == (
+            "downloads" if state in {"fetching", "saving", "cancelling"} else "connection")
+    runtime.local_api.update(phase="idle")
+    assert runtime.local_api.status()["drain_reason"] is None
 
 
 def test_claim_barrier_and_candidate_validation(managed):

@@ -27,7 +27,7 @@ pnpm docs:preview
 1. **先检查公开范围**：如准备将仓库转为公开，需先检查远程分支、标签和 Git 历史是否含凭据或个人信息，而非只检查当前文件。发现真实凭据应先吊销、替换，再按需要清理历史；删除当前文件不能清除历史泄露。站点产物也需检查。仓库是否必须公开取决于 GitHub 套餐，私有仓库的 Pages 也未必私有。
 2. 确认仓库 **Settings → Actions → General** 允许运行此工作流及其引用的官方 Actions。如果组织有策略限制，由管理员调整所需权限。
 3. 打开 **Settings → Pages → Build and deployment**，将 **Source** 设为 **GitHub Actions**。本项目默认子路径为 `/TGDL/`；仓库改名、自定义域名或根路径托管时，先相应调整构建 base。
-4. 将工作流及文档提交到 `main`。之后修改 `docs/**`、工作流自身或构建检查所依赖的根目录 `README.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`LICENSE` 并推送 `main`，会自动构建和部署。只修改应用代码不会触发此工作流。
+4. 将工作流及文档提交到 `main`。之后修改 `docs/**`、工作流自身或构建检查所依赖的根目录 `README.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`LICENSE`，或版本源 `backend/app/version.json` 并推送 `main`，会自动构建和部署。只修改其他应用代码不会触发此工作流；版本源参与文档版本显示，因此单独纳入触发路径。
 5. 也可到 **Actions → Documentation Pages → Run workflow** 选择 `main` 手动发布；其他分支不会部署，PR 不触发发布。如果为 `github-pages` 环境设置了审批规则，需完成审批才会发布。
 6. 等待 `build` 和 `deploy` 完成，从 **Settings → Pages** 获取实际站点地址，验证 `/TGDL/` 资源、中文搜索与手机目录。默认项目站点地址形式为 `https://<用户名>.github.io/TGDL/`；部署成功前不能认为站点已上线。
 

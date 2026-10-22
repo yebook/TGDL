@@ -29,6 +29,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   }
   if (response.status === 204) return undefined as T
   const payload: unknown = await response.json().catch(() => null)
+  if (options.signal?.aborted) throw new DOMException('Request cancelled', 'AbortError')
   if (!response.ok) {
     if (response.status === 401 && !['/auth/login', '/auth/me', '/setup'].includes(path)) {
       setCsrfToken('')

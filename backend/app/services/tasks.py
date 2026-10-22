@@ -16,6 +16,7 @@ from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.settings import SettingsService
+from app.storage.files import contained
 from app.storage.naming import fit_name, planned_name, request_summary, unique_name
 
 ACTIVE = {"queued", "fetching", "saving", "cancelling", "retry_wait", "waiting_existing", "recovery_blocked"}
@@ -94,10 +95,32 @@ class TaskService:
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
 
-    def destination(self, request: MediaRequest, summary: str, timezone: str) -> str:
+    def destination(self, session: Session, request: MediaRequest, summary: str, timezone: str) -> str:
         date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
         if request.kind == "group":
-            return f"{date:%Y-%m-%d}/{fit_name(summary, '', '_' + request.id[:8])}"
+            prefix = f"{date:%Y-%m-%d}/"
+            # Freeze under the same serialized transaction as other confirmation
+            # plans. Deleted task records still reserve folders for retained media.
+            reserved = session.scalars(select(MediaRequest.destination).where(
+                MediaRequest.root_id == request.root_id, MediaRequest.id != request.id,
+                MediaRequest.destination.startswith(prefix)))
+            used = {path[len(prefix):].split("/")[0].casefold() for path in reserved}
+            used.update(name.casefold() for name in session.scalars(select(MediaItem.planned_filename).join(
+                MediaRequest, MediaItem.request_id == MediaRequest.id).where(
+                    MediaRequest.root_id == request.root_id, MediaRequest.destination == prefix[:-1],
+                    MediaItem.planned_filename.is_not(None))) if name is not None)
+            root = self.settings.config.storage_roots[request.root_id]
+            try:
+                day = contained(root, prefix + ".tgd-folder-check").parent
+                used.update(path.name.casefold() for path in day.iterdir())
+            except FileNotFoundError:
+                # Planning never recreates an unavailable mount; worker checks it.
+                pass
+            name, sequence = fit_name(summary, ""), 2
+            while name.casefold() in used:
+                name = fit_name(summary, "", f" ({sequence})")
+                sequence += 1
+            return prefix + name
         return f"{date:%Y-%m-%d}"
 
     def freeze_due(self) -> None:
@@ -124,7 +147,7 @@ class TaskService:
                 if not request.destination:
                     summary = request_summary(request, items)
                     request.title = summary
-                    request.destination = self.destination(request, summary, settings.timezone)
+                    request.destination = self.destination(session, request, summary, settings.timezone)
                 # Conservative upper bound if send succeeds but its response is lost.
                 request.expires_at = time.time() + settings.confirmation_timeout_seconds
                 used: set[str] = set()

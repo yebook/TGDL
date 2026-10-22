@@ -1,5 +1,61 @@
 # Telegram 媒体下载助手：实施与验证计划
 
+## 切换流程与锁定恢复（2026-10-22）
+
+- [x] 审计后端各切换阶段及重启恢复：identity25s/logout35s/close5s协作截止，consumer分轮1s/累计45s、verify120s、generation150s；下载owner不强制释放，保护等待保留，退出未知需确认。组合177项直接关联回归通过（175先通过，唯一夹具问题修复后该文件22通过，独立新增generation1项），Ruff/Mypy35文件通过。
+- [x] 前端status10s/设置与服务动作15s/校验30s；重新同步保留逐字段及代理子字段草稿，dirty下重试明确使用saved配置。23unit/lint/type/build及3项真实隔离browser通过：PATCH丢响应、GET挂起/失败/重进/卸载、POST丢响应均不重复写且可恢复。
+- [x] 独立跨层审查通过：独立backend5项HTTP/generation、前端16定向unit/lint/type通过；用户说明/spec已同步，docs107链接/18输出页及版本检查通过。协作取消可恢复，OS/磁盘/进程挂起仍需人工重启，禁止强制释放owner或抹除保护。
+- [x] 最终镜像9ec8d3cf0142，运行状态idle且jobs全终态后停服备份`.runtime/local-docker/backups/before-ux-version-20261022T081433Z/`并仅更新app。health200、源码/业务/runtime/media/key/挂载/请求保护/API容器保持核验通过。最小独立只读部署复核通过，HTTP资源与dist逐字节一致，无登录或Telegram探测。不提交推送。
+
+## 连续连接操作保护（2026-10-22）
+
+- [x] 云端有效代理变更复用持久串行重连，禁止重复连接修改；effective signature及旧identity结果丢弃，保留owner/轮询/保护与重试。
+- [x] 前端切换期提前锁连接字段、提示原因，保存后状态握手，普通配置/失败修正/未保存输入保持。
+- [x] 后端121项相关回归/22项新增与独立消费者6项通过，Ruff/Mypy通过；前端19helper/lint/type/build及3项隔离浏览器通过。独立源码审查通过。用户追加可恢复性要求，最终部署待该增量审查完成后重建镜像。
+- [x] 文档/spec同步；与可恢复性增量合并验收部署，见上方20261022T081433Z备份及最终镜像；保留数据及API服务，不提交/推送。
+
+## 顶栏风格、真实等待与目录命名（2026-10-22）
+
+- [x] 统一顶栏状态分组/字体/细线刷新控件；前端23定向helper/lint/type/build及桌面/390×600两项浏览器、独立截图复核通过。
+- [x] draining含getUpdates长轮询（25秒）、通知锁及旧client收尾，并非只等下载。新增只读drain_reason，只有fetching/saving/cancelling提示下载，保留安全屏障；后端122项相关回归/Ruff/Mypy通过。
+- [x] 新组目录移除常驻任务编号，同名冲突才(2)/(3)。覆盖deleted记录/磁盘已有路径/待保存单文件/root与日期隔离/真实线程并发预留；独立补充后命名16项通过。现存冻结路径与媒体不移动。
+- [x] 文档构建107链接/18页面及spec同步通过。独立代码gate通过；app-only更新56b9e2773306，备份`.runtime/local-docker/backups/before-ux-version-20261022T071541Z/`；health200、业务/runtime/媒体/key/挂载/请求保护/API容器核验通过。
+- [x] 最小独立只读部署复核通过：镜像与HTTP资源/health/容器源码/drain_reason必需nullable枚举正确，最新停止备份与当前业务/runtime/挂载/media/key/请求保护一致，API容器未变。不登录或主动请求Telegram；不提交/推送。
+
+## 顶栏代理、API与Bot状态（2026-10-22）
+
+- [x] 用既有共享状态显示直连/代理应用状态，失败与过期明确，不新增请求、不显示敏感地址。复用设置labels，7项定向单测通过。
+- [x] 将API当前类型/实际状态与当前Bot用户名/状态分开显示；切换目标、未知、异常、保护等待和过期均明确，不将本地缓存/进程状态当成上游连通。9项summary定向单测通过。
+- [x] 刷新用44px图标，自动轮询不闪动，手动点击独立显示加载反馈；保持无障碍/固定点击范围/并发保护。lint/type/build及最终桌面/390×600两项浏览器通过，独立代码/竞态审查通过。
+- [x] app-only更新到0517c284a6de（最终assets index-D8wnoQgJ/index-B9j6BrWO）。备份`.runtime/local-docker/backups/before-ux-version-20261022T065151Z/`；health200、业务/runtime/media/key/挂载/请求保护核验通过，API容器保留。
+- [x] 最小独立只读部署复核通过：镜像/HTTP资源/健康与最终构建一致，API容器/挂载/业务与运行表/请求保护/media/key保留；无登录、主动Telegram请求或数据修改。不提交/推送。
+
+## 顶栏与通用Docker表述（2026-10-22）
+
+- [x] 左下数字版本，状态/账户同顶栏，去重复页面标题及顶部存储名称；重新读取并底部操作，去空白行。前端65unit/lint/type/build、8项定向浏览器及最终2项手机操作回归通过；独立桌面/手机长异常/焦点/过期检查通过。
+- [x] 公开项目与文档统一通用Docker部署，保留真实宿主机/大文件/网络待验收边界；文档构建/107链接/18页面通过，验收工具统一deployment_filesystem、19项测试通过。
+- [x] 独立源码/布局复核与spec同步，不修改密钥、任务数据或Telegram调用策略。
+- [x] 延续本地更新：app-only替换到e0c379c1c631，备份`.runtime/local-docker/backups/before-ux-version-20261022T062421Z/`。健康200，业务/runtime表、媒体/master key/请求保护/挂载核对通过，API容器不变。
+- [x] 独立只读部署复核通过：最终镜像与HTTP JS/CSS一致、健康正常，API容器/挂载/业务与runtime/请求保护/media/key保持，rollback及其他服务正常；未登录或探测Telegram。尚未提交/推送。
+
+## 当前执行顺序：体验与数字版本（已确认，实施验收中）
+
+- [x] 已检查App/System/Settings及所有状态动作、文档导航和散落版本字段；研究见research/user-ux-inventory.md。用户要求版本无英文后缀，统一0.1.0；当前未修改产品。
+- [x] 用户确认最终方案，已按前端界面、版本及后端元数据、用户文档分派实现；独立审查正在检查跨层整合。
+- [x] 版本元数据/同步检查及更新日志：界面/接口/包/构建/文档一致，日志实际日期，第三方版本不误替换。权威源backend/app/version.json；scripts/version.py --check通过。
+- [x] App共享状态/顶部摘要/移除系统页；设置分区布局和中文文案；会话调试开关与动作完整迁移。手机顶部/分区压紧；离开页面中断未完成本地API操作。
+- [x] 用户文档重组、使用路径及同源日志；次级开发分组，保留Pages独立发布与真实验收边界。23篇/107相对链接/18输出页校验，桌面手机导航/搜索通过。
+- [x] 独立跨层审查；backend Ruff/Mypy/9版本测试及相关71测试通过（8平台跳过）；前端65单测/lint/type/build通过。浏览器原20项验收已完成；备份恢复、工作区3/日志6/代理2补测通过，认证暂停恢复/冷却持久化各1项、重启生命周期2项通过。文档站桌面/手机导航/搜索和链接/输出通过。最终app测试镜像ac1d00c56ccd的8项隔离Docker验收及无网络版本/OpenAPI核验通过；未触真实凭据和运行容器。
+- [x] 同步spec：工作区/版本契约、文档发布边界与索引；手机可用空间、外部管理服务语义、未完成请求卸载中止已记录。
+- [ ] 本轮提交计划尚未确认，未提交/推送/发布/打tag。父任务继续保留真实Telegram/飞牛OS验收门槛。
+
+### 数字版本展示与本地更新补充（2026-10-22）
+
+- [x] 按用户最新要求去除阶段标识；version.json仅version，API/前端/站点/日志同步移除阶段字段与文字。backend 9版本测试/Ruff/Mypy、前端65单测/lint/type/build/1浏览器、文档build通过。
+- [x] 用户授权更新本地容器。app-only停止一致性备份：`.runtime/local-docker/backups/before-ux-version-20261022T042158Z/`；保留旧镜像rollback标签，停服后再次确认jobs全终态/API idle。重建app到`7f048ed29ba4`，API容器和镜像保持原状。
+- [x] 首次挂载核验因Docker Desktop等价路径写法不同中止；未重复部署，只读规范化后继续验证：live/ready200、业务/runtime表、请求保护（仅普通节流时间可推进）、媒体/key、源码及挂载保持一致。报告见私有备份verification.json。
+- [x] 独立只读部署复核通过（独立实现，未复用部署验证脚本）：health200、当前源码/纯数字元数据/前端资源、API容器及挂载、备份业务/runtime表、请求保护、media/masterkey/rollback镜像一致，pgvector仍运行。未登录或主动请求Telegram。
+
 版本：v0.1，2026-10-20。状态：已获批准并实施本地版本，正在审查；真实设备门槛尚未完成，结果见 `docs/verification.md`。
 
 依据：[需求](../../../docs/project-requirements.md)、[技术设计](design.md)、[证据与实验](research/technical-evidence.md)。本文件是执行清单，不能代替代码上下文 manifests。

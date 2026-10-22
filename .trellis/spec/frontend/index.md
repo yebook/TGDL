@@ -2,6 +2,7 @@
 
 Read [ui-contracts.md](ui-contracts.md) before editing this layer. Other topic files remain bootstrap templates, not additional implemented conventions.
 Read [documentation-contracts.md](documentation-contracts.md) for the independent static documentation site and public project guides.
+Read [workspace-experience-contracts.md](workspace-experience-contracts.md) for the authenticated status summary, settings sections and presentation-only debug mode.
 
 ## Quality Check
 

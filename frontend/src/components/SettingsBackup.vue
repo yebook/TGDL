@@ -96,10 +96,10 @@ onUnmounted(() => { mounted = false; controller?.abort(); reset(); if (objectUrl
 
 <template>
   <section class="panel settings-section backup-section" aria-label="配置备份与恢复">
-    <div class="section-heading"><span class="section-number">06</span><div><h2>配置备份与恢复</h2><p class="muted">迁移或保留一份平台设置，使用独立密码加密。</p></div></div>
+    <div class="section-heading"><div><h2>配置备份与恢复</h2><p class="muted">迁移或保留一份平台设置，使用独立密码加密。</p></div></div>
     <p class="field-hint">包含已保存的 Bot Token、API Hash 和代理密码。不包含管理员账号、会话、任务记录、数据库、媒体文件、日志、缓存及服务运行状态。</p>
     <div class="backup-actions"><el-button :disabled="disabled || busy" @click="open('export')">导出配置备份</el-button><el-button :disabled="disabled || busy || dirty" @click="open('restore')">恢复配置备份</el-button></div>
-    <p v-if="dirty" class="field-hint">导出仅包含已保存的配置。恢复前请先保存修改，或使用页面上方的“重新读取”放弃修改。</p>
+    <p v-if="dirty" class="field-hint">导出仅包含已保存的配置。恢复前请先保存修改，或使用底部的“重新读取”放弃修改。</p>
     <el-dialog v-model="dialog" class="backup-dialog" :title="mode === 'export' ? '导出配置备份' : '恢复配置备份'" width="min(560px, calc(100vw - 32px))" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy" @closed="close">
       <p class="field-hint">{{ mode === 'export' ? '导出当前已保存的配置，包含密钥。请记住备份密码，遗失后无法恢复。' : '选择加密备份并输入密码，先预览再确认。预览不会更改配置或连接 Telegram。' }}</p>
       <el-form label-position="top" :disabled="busy" @submit.prevent="run(mode === 'export' ? 'export' : 'preview')">

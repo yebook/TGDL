@@ -1,12 +1,12 @@
 import type { LocalApiStatus, Settings } from './types'
 
 export function validationBlockReason(status: LocalApiStatus | undefined, proxy: Settings['proxy_status'] | undefined): string {
-  if (!status?.managed) return ''
+  if (!status) return ''
   if (status.phase !== 'idle') {
-    if (['failed', 'blocked', 'logout_uncertain'].includes(status.phase)) return (status.message || localApiPhases[status.phase]) + '；请在上方本地 API 服务状态中处理后再校验。'
+    if (['failed', 'blocked', 'logout_uncertain'].includes(status.phase)) return (status.message || localApiPhases[status.phase]) + '；请在连接状态中处理后再校验。'
     return '正在应用 API 或代理配置：' + localApiPhases[status.phase] + '。操作完成后可校验。'
   }
-  if (status.desired_mode === 'local' && proxy && !['active', 'disabled'].includes(proxy.state)) return '正在等待本地 API 应用网络配置，请查看上方服务状态。'
+  if (status.managed && status.desired_mode === 'local' && proxy && !['active', 'disabled'].includes(proxy.state)) return '正在等待本地 API 应用网络配置，请查看上方服务状态。'
   return ''
 }
 
@@ -22,7 +22,7 @@ export const localApiStates: Record<LocalApiStatus['state'], string> = {
   running: '进程运行中', stopping: '正在停止', failed: '进程异常',
 }
 export const localApiPhases: Record<LocalApiStatus['phase'], string> = {
-  idle: '无进行中的操作', draining: '等待下载与连接安全结束', logging_out: '正在退出云端', starting: '正在启动本地 API',
+  idle: '无进行中的操作', draining: '正在准备切换连接', logging_out: '正在退出云端', starting: '正在启动本地 API',
   verifying: '正在验证 Bot 连接', cooldown: '等待云端冷却', blocked: '操作受阻', logout_uncertain: '云端退出结果待确认', failed: '操作失败',
 }
 export function localApiTone(status: LocalApiStatus): 'success' | 'warning' | 'danger' | 'info' {

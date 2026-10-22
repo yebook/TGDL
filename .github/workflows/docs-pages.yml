@@ -10,6 +10,7 @@ on:
       - 'CONTRIBUTING.md'
       - 'SECURITY.md'
       - 'CHANGELOG.md'
+      - 'backend/app/version.json'
       - 'LICENSE'
   workflow_dispatch:
 

@@ -10,21 +10,26 @@ from typing import Any
 
 from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
 from cryptography.fernet import Fernet
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.security import Secrets, private_file
-from app.db.models import LocalApiRuntime, Settings, uid
+from app.db.models import Job, LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
+from app.services import connection_waits as waits
 from app.services.diagnostics import classify_error
 from app.services.request_safety import SafetyDeferred
 
 BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
-MESSAGES = {"idle": "", "draining": "等待当前下载和消息处理完成", "logging_out": "正在退出云端 Bot API",
+MESSAGES = {"idle": "", "draining": "正在准备切换连接", "logging_out": "正在退出云端 Bot API",
             "starting": "正在应用本地 API 服务配置", "verifying": "正在验证 Bot 连接", "cooldown": "等待 Telegram 云端冷却结束",
             "blocked": "存在恢复待处理任务，请先重启本地 API 恢复", "logout_uncertain": "云端退出结果不确定；请核实退出后明确确认继续，系统不会自动重试退出或回连云端",
             "failed": "操作未完成，请检查凭据、网络或代理后重试"}
 ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保存配置",
+                  "LOCAL_API_DRAIN_TIMEOUT": "旧连接的消息处理尚未结束，本次切换已暂停。请稍后重试；不会强行中断旧处理或下载",
+                  "LOCAL_API_OPERATION_TIMEOUT": "连接操作超时，已停止本次尝试；请检查网络或代理后重试",
+                  "LOCAL_API_VERIFY_TIMEOUT": "连接验证长时间未能完成，已暂停；请检查连接或请求保护状态后重试",
                   "LOCAL_API_UNAVAILABLE": "本地 API 管理组件未连接，请检查部署",
                   "LOCAL_API_PROXY": "网络配置尚未生效，请检查本地 API 服务及代理地址、端口后重试",
                   "LOCAL_API_START_FAILED": "本地 API 进程启动失败，请检查凭据和网络后重试",
@@ -33,7 +38,8 @@ ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保
                   "LOCAL_API_PREFLIGHT_FAILED": "云端 Bot 预检查失败，请检查 Token 和云端代理后重试"}
 
 
-def schedule_settings(session: Session, settings: Settings, candidate: UserSettings, crypto: Secrets) -> None:
+def schedule_settings(session: Session, settings: Settings, candidate: UserSettings, crypto: Secrets,
+                      *, managed: bool = True) -> None:
     row = session.get(LocalApiRuntime, 1)
     if not row:
         row = LocalApiRuntime(id=1, values={"applied_mode": "cloud", "phase": "idle"})
@@ -48,9 +54,19 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
     old_proxy["password"] = crypto.decrypt(old_proxy["password"])
     if "TGD_PROXY" in os.environ:
         old_proxy = json.loads(os.environ["TGD_PROXY"])
+    old_proxy = UserSettings.model_validate({"proxy": old_proxy}).proxy.model_dump()
+    effective_old = old_proxy if old_proxy["enabled"] else {"enabled": False}
+    effective_new = candidate.proxy.model_dump() if candidate.proxy.enabled else {"enabled": False}
+    proxy_changed = effective_old != effective_new
     connection_changed = (candidate.bot_token != os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", ""))) or
-                          candidate.proxy.model_dump() != old_proxy)
+                          proxy_changed)
     token_changed = candidate.bot_token != os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", "")))
+    cloud_reconnect = (candidate.bot_api_mode == old.get("bot_api_mode", "cloud") == "cloud"
+                       and (proxy_changed or state.get("action") == "cloud_reconnect" and connection_changed))
+    if not managed and not cloud_reconnect and state.get("action") != "cloud_reconnect":
+        return
+    if state.get("logout_uncertain") and (changed or connection_changed):
+        raise AppError("LOCAL_API_BUSY", MESSAGES["logout_uncertain"], 409)
     if (token_changed and (os.getenv("TGD_BOT_TOKEN") or old.get("bot_token")) and
             candidate.bot_api_mode != old.get("bot_api_mode", "cloud")):
         raise AppError("LOCAL_API_BUSY", "请先在当前模式保存 Bot Token，再单独切换 API 模式", 409)
@@ -58,7 +74,19 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
         raise AppError("LOCAL_API_BUSY", "请先完成当前 Bot 的本地连接，再更换 Bot Token", 409)
     if state.get("phase", "idle") in BUSY_PHASES | {"logout_uncertain"} and (changed or connection_changed):
         raise AppError("LOCAL_API_BUSY", "本地 API 操作尚未完成，请完成或重试当前操作后修改连接配置", 409)
-    network_changed = candidate.proxy.model_dump() != old_proxy and candidate.bot_api_mode == "local"
+    if cloud_reconnect:
+        state.update(operation_id=uid(), phase="draining", action="cloud_reconnect", target_mode="cloud",
+                     snapshot=crypto.encrypt(candidate.model_dump_json()), command_id=None,
+                     credential_revision=settings.revision + 1, error_code="",
+                     drain_wait_started_at=None, verification_started_at=None)
+        row.values = state
+        return
+    if not managed:
+        if candidate.bot_api_mode != "cloud" and state.get("action") == "cloud_reconnect":
+            state.update(phase="idle", action=None, operation_id=None, snapshot=None, error_code="")
+            row.values = state
+        return
+    network_changed = proxy_changed and candidate.bot_api_mode == "local"
     if changed or network_changed or connection_changed and state.get("phase") in {"failed", "blocked"} or token_changed and candidate.bot_token and state.get("applied_mode") == "local":
         old_token = os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", ""))) or candidate.bot_token
         cloud_snapshot = candidate.model_copy(update={"bot_token": old_token, "proxy": UserSettings.model_validate(
@@ -67,7 +95,8 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
         state.update(operation_id=uid(), phase="draining", action="switch", target_mode=candidate.bot_api_mode,
                      snapshot=crypto.encrypt(candidate.model_dump_json()), command_id=None,
                      credential_revision=settings.revision + 1, error_code="",
-                     cloud_snapshot=crypto.encrypt(cloud_snapshot.model_dump_json()))
+                     cloud_snapshot=crypto.encrypt(cloud_snapshot.model_dump_json()),
+                     drain_wait_started_at=None, verification_started_at=None)
         if network_changed and not changed and not token_changed and state.get("applied_mode") == "local" and not state.get("logout_uncertain"):
             state["action"] = "restart"
         if token_changed and candidate.bot_token:
@@ -131,14 +160,13 @@ class LocalApiService:
 
         self.diagnostics: DiagnosticLog | None = None
         self.settings, self.db, self.config = settings, settings.db, settings.config
-        if self.config.managed_local_api:
-            with self.db.transaction() as session:
-                row = session.get(LocalApiRuntime, 1)
-                if not row:
-                    state: dict[str, Any] = {"applied_mode": "cloud", "phase": "idle"}
-                    session.add(LocalApiRuntime(id=1, values=state))
-                elif row.values.get("phase") == "logging_out":
-                    row.values = dict(row.values) | {"phase": "logout_uncertain", "logout_uncertain": True}
+        with self.settings.connection_publication_lock, self.db.transaction() as session:
+            row = session.get(LocalApiRuntime, 1)
+            if not row:
+                state: dict[str, Any] = {"applied_mode": "cloud", "phase": "idle"}
+                session.add(LocalApiRuntime(id=1, values=state))
+            elif row.values.get("phase") == "logging_out":
+                row.values = dict(row.values) | {"phase": "logout_uncertain", "logout_uncertain": True}
 
     def read(self) -> dict[str, Any]:
         with self.db.sessions() as session:
@@ -146,7 +174,7 @@ class LocalApiService:
             return dict(row.values) if row else {"applied_mode": "cloud", "phase": "idle"}
 
     def update(self, **updates: Any) -> dict[str, Any]:
-        with self.db.transaction() as session:
+        with self.settings.connection_publication_lock, self.db.transaction() as session:
             row = session.get(LocalApiRuntime, 1)
             assert row
             row.values = dict(row.values) | updates
@@ -165,28 +193,40 @@ class LocalApiService:
         state, applied = self.read(), self.applied() if self.config.managed_local_api else {}
         phase = state.get("phase", "idle")
         available = bool(applied)
+        cloud_reconnect = state.get("action") == "cloud_reconnect"
+        message = ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES.get(phase, MESSAGES["failed"]))
+        drain_reason = "connection" if phase == "draining" else None
+        if phase == "draining" and not state.get("error_code"):
+            with self.db.sessions() as session:
+                downloading = session.scalar(select(Job.id).where(
+                    Job.state.in_(["fetching", "saving", "cancelling"])).limit(1))
+            if downloading:
+                drain_reason = "downloads"
+                message = "等待当前下载完成后切换连接"
         def iso(value: Any) -> str | None:
             return datetime.fromtimestamp(value, UTC).isoformat() if isinstance(value, (float, int)) else None
         return {"managed": self.config.managed_local_api, "state": applied.get("state", "unavailable"),
                 "desired_mode": settings.bot_api_mode, "applied_mode": state.get("applied_mode"),
-                "operation_id": state.get("operation_id"), "phase": phase,
-                "message": ("当前部署使用外部管理的本地 API" if not self.config.managed_local_api else
-                            "本地 API 管理组件未连接，请检查部署" if not available else
-                            ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES.get(phase, MESSAGES["failed"]))),
+                "operation_id": state.get("operation_id"), "phase": phase, "drain_reason": drain_reason,
+                "message": ("当前部署使用外部管理的本地 API" if not self.config.managed_local_api and not cloud_reconnect else
+                            "本地 API 管理组件未连接，请检查部署" if not available and not cloud_reconnect else
+                            message),
                 "generation": applied.get("generation"), "last_heartbeat_at": iso(applied.get("heartbeat_at")),
                 "cloud_available_at": iso(state.get("cloud_available_at")),
                 "can_restart": self.config.managed_local_api and available and
                     (settings.bot_api_mode == "local" or phase == "blocked" and state.get("applied_mode") == "local") and
                     phase not in BUSY_PHASES | {"logout_uncertain"},
-                "can_retry": self.config.managed_local_api and available and phase in {"failed", "blocked", "logout_uncertain"}}
+                "can_retry": (cloud_reconnect or self.config.managed_local_api and available)
+                    and phase in {"failed", "blocked", "logout_uncertain"}}
 
     def action(self, restart: bool, acknowledge: bool = False) -> dict[str, Any]:
         status = self.status()
-        if not status["managed"]:
+        cloud_reconnect = self.read().get("action") == "cloud_reconnect"
+        if not status["managed"] and not (cloud_reconnect and not restart):
             raise AppError("LOCAL_API_EXTERNAL", "此部署的本地 API 由外部管理", 409)
-        if status["state"] == "unavailable":
+        if status["state"] == "unavailable" and not cloud_reconnect:
             raise AppError("LOCAL_API_UNAVAILABLE", "本地 API 管理组件未连接，请检查部署", 503)
-        with self.db.transaction() as session:
+        with self.settings.connection_publication_lock, self.db.transaction() as session:
             row = session.get(LocalApiRuntime, 1)
             assert row
             state = dict(row.values)
@@ -201,7 +241,8 @@ class LocalApiService:
                 raise AppError("LOCAL_API_LOGOUT_UNCERTAIN", MESSAGES["logout_uncertain"], 409)
             if not restart and state.get("phase") == "idle":
                 return status
-            state.update(phase="draining", command_id=None, error_code="")
+            state.update(phase="draining", command_id=None, error_code="",
+                         drain_wait_started_at=None, verification_started_at=None)
             if restart:
                 state.update(action="recover_restart" if status["desired_mode"] == "cloud" else "restart",
                              operation_id=uid(), target_mode=status["desired_mode"])
@@ -211,13 +252,13 @@ class LocalApiService:
         return self.status()
 
     def validate_allowed(self, candidate: UserSettings) -> None:
-        if not self.config.managed_local_api:
-            return
         state = self.read()
+        if not self.config.managed_local_api and state.get("action") != "cloud_reconnect":
+            return
         phase = state.get("phase", "idle")
         if phase in {"failed", "blocked", "logout_uncertain"}:
             message = ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES[phase])
-            raise AppError("LOCAL_API_BUSY", message + "；请在本地 API 服务状态中处理后再校验", 409)
+            raise AppError("LOCAL_API_BUSY", message + "；请在连接状态中处理后再校验", 409)
         if state.get("phase") != "idle" or candidate.bot_api_mode != state.get("applied_mode"):
             raise AppError("LOCAL_API_BUSY", "正在应用 API 或代理配置，请等待服务操作完成后再校验连接", 409)
         if candidate.bot_api_mode == "local":
@@ -243,7 +284,10 @@ class LocalApiService:
             return saved
         except AppError:
             state = self.read()
-            if not self.config.managed_local_api or state.get("phase") != "failed" or state.get("logout_uncertain"):
+            if state.get("error_code") == "LOCAL_API_DRAIN_TIMEOUT":
+                raise
+            if ((not self.config.managed_local_api and state.get("action") != "cloud_reconnect")
+                    or state.get("phase") != "failed" or state.get("logout_uncertain")):
                 raise
             if (state.get("applied_mode") == "cloud" and not state.get("logout_done")
                     and state.get("cloud_available_at", 0) <= time.time()):
@@ -325,15 +369,19 @@ class LocalApiService:
         import asyncio
 
         from app.bot.client import TelegramClient
-        if not self.config.managed_local_api:
-            return False
         state = await asyncio.to_thread(self.read)
+        if not self.config.managed_local_api and state.get("action") != "cloud_reconnect":
+            return False
+        if state.get("logout_uncertain") and state.get("phase") != "logout_uncertain":
+            await asyncio.to_thread(self.update, phase="logout_uncertain")
+            return True
         revision, current, _ = await asyncio.to_thread(self.settings.read)
         if state.get("phase") == "idle":
             if current.bot_api_mode != state.get("applied_mode"):
                 await asyncio.to_thread(self.update, phase="draining", operation_id=uid(), action="switch",
                                         target_mode=current.bot_api_mode, snapshot=self.settings.secrets.encrypt(current.model_dump_json()),
-                                        credential_revision=revision, command_id=None)
+                                        credential_revision=revision, command_id=None,
+                                        drain_wait_started_at=None, verification_started_at=None)
                 return True
             return False
         if state.get("phase") in {"failed", "blocked", "logout_uncertain"}:
@@ -346,16 +394,35 @@ class LocalApiService:
             active, blocked, _ = await asyncio.to_thread(runtime.counts)
             owners = any(not task.done() for task in runtime.running.values())
             if owners or active > blocked:
+                if state.get("drain_wait_started_at") is not None or state.get("verification_started_at") is not None:
+                    await asyncio.to_thread(self.update, drain_wait_started_at=None, verification_started_at=None)
                 return True
             restart = state.get("action") in {"restart", "recover_restart"}
             if blocked and not restart:
                 await asyncio.to_thread(self.update, phase="blocked")
                 return True
-            async with runtime.poll_lock, runtime.notify_lock:
+            async with waits.consumers(runtime.poll_lock, runtime.notify_lock):
                 # Network owners have finished and persisted their update/outbox result.
+                if state.get("drain_wait_started_at") is not None:
+                    await asyncio.to_thread(self.update, drain_wait_started_at=None)
+                if state.get("action") == "cloud_reconnect":
+                    if state.get("cloud_available_at", 0) > time.time():
+                        await asyncio.to_thread(self.update, phase="cooldown")
+                        return True
+                    await asyncio.to_thread(self.update, phase="verifying")
+                    await self.prepare_verification(runtime, values.bot_token)
+                    await runtime.ensure_client(reconnect_operation=state["operation_id"])
+                    if values.bot_token and (runtime.client is None or runtime.bot_status["state"] != "online"
+                            or runtime.client_signature != self.settings.client_signature(values)):
+                        if runtime.safety.status(values.bot_token)["state"] == "auth_paused":
+                            await asyncio.to_thread(self.update, phase="failed")
+                        return True
+                    await asyncio.to_thread(self.update, applied_mode="cloud", phase="idle", action=None,
+                                            operation_id=None, snapshot=None, error_code="")
+                    return False
                 runtime.bot_status = {"state": "connecting", "username": "", "message": MESSAGES.get(state["phase"], "正在切换 API")}
                 if runtime.client:
-                    await runtime.client.close()
+                    await waits.network(runtime.client.close(), waits.CLOSE_TIMEOUT)
                     runtime.client, runtime.bot_id = None, None
                     runtime.client_signature = ""
                 applied = await asyncio.to_thread(self.applied)
@@ -373,10 +440,11 @@ class LocalApiService:
                     client.safety = runtime.safety
                     try:
                         # Known credential/proxy errors fail before the logout attempt.
-                        await client.identity()
+                        await self.prepare_verification(runtime, cloud.bot_token)
+                        await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
                         await asyncio.to_thread(self.update, phase="logging_out", logout_uncertain=True,
                                                 cloud_available_at=time.time() + 630)
-                        if not await client.logout():
+                        if not await waits.network(client.logout(), waits.LOGOUT_TIMEOUT):
                             raise RuntimeError("Logout not acknowledged")
                     except (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError):
                         # A local rejection is provably unsent; a Telegram 429/401 is
@@ -391,7 +459,7 @@ class LocalApiService:
                                                 error_code="" if uncertain else "LOCAL_API_PREFLIGHT_FAILED")
                         return True
                     finally:
-                        await client.close()
+                        await waits.close_candidate(client)
                     state = await asyncio.to_thread(self.update, phase="starting", logout_done=True,
                                                     logout_uncertain=False, cloud_available_at=time.time() + 600)
                 if target == "cloud" and not restart and state.get("cloud_available_at", 0) > time.time():
@@ -431,6 +499,8 @@ class LocalApiService:
                     # Generation file is written by the supervisor only after reaping the old process.
                     await asyncio.to_thread(runtime.recover_generation)
                     if (await asyncio.to_thread(runtime.counts))[1]:
+                        if time.time() - issued > waits.GENERATION_TIMEOUT:
+                            await asyncio.to_thread(self.update, phase="blocked")
                         return True
                 if state.get("action") == "recover_restart":
                     await asyncio.to_thread(self.update, phase="draining", action="switch", command_id=None)
@@ -441,23 +511,49 @@ class LocalApiService:
                     client = TelegramClient(candidate.bot_token, self.config, candidate)
                     client.safety = runtime.safety
                     try:
-                        identity = await client.identity()
+                        await self.prepare_verification(runtime, values.bot_token)
+                        identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
                         await asyncio.to_thread(runtime.remember_identity, identity)
                     except Exception as exc:
-                        if target == "local" and classify_error(exc)[0] == "NETWORK_ERROR":
+                        if target == "local" and (classify_error(exc)[0] == "NETWORK_ERROR"
+                                or isinstance(exc, AppError) and exc.code == "LOCAL_API_OPERATION_TIMEOUT"):
                             raise AppError("LOCAL_API_CONNECTION_FAILED", ERROR_MESSAGES["LOCAL_API_CONNECTION_FAILED"]) from exc
                         raise
                     finally:
-                        await client.close()
+                        await waits.close_candidate(client)
                 await asyncio.to_thread(self.update, applied_mode=target, phase="idle", operation_id=None,
                                         applied_command_id=command_id, applied_credential_revision=state.get("credential_revision", 0),
                                         applied_generation=applied.get("generation"),
                                         command_id=None, snapshot=None, cloud_snapshot=None, logout_done=target == "local", logout_required=False, error_code="")
                 return False
+        except waits.ConsumerBusy:
+            started = state.get("drain_wait_started_at")
+            if started is None:
+                await asyncio.to_thread(self.update, drain_wait_started_at=time.time())
+            elif time.time() - started >= waits.BARRIER_TIMEOUT:
+                await asyncio.to_thread(self.update, phase="failed", error_code="LOCAL_API_DRAIN_TIMEOUT")
+            return True
         except (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError):
             if (await asyncio.to_thread(runtime.safety.status, values.bot_token))["state"] == "auth_paused":
                 await asyncio.to_thread(self.update, phase="failed")
             return True
         except Exception as exc:
-            await asyncio.to_thread(self.update, phase="failed", error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED")
+            latest = await asyncio.to_thread(self.read)
+            await asyncio.to_thread(self.update, phase="logout_uncertain" if latest.get("logout_uncertain") else "failed",
+                                    error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED")
             return True
+
+    async def prepare_verification(self, runtime: Any, token: str) -> None:
+        """Limit no-progress retries while excluding official request-protection waits."""
+        import asyncio
+
+        state = await asyncio.to_thread(self.read)
+        now = time.time()
+        if state.get("verification_started_at") is None:
+            await asyncio.to_thread(self.update, verification_started_at=now)
+        elif now - state["verification_started_at"] >= waits.VERIFY_TIMEOUT:
+            safety = await asyncio.to_thread(runtime.safety.status, token)
+            if safety.get("retry_at"):
+                await asyncio.to_thread(self.update, verification_started_at=now)
+            else:
+                raise AppError("LOCAL_API_VERIFY_TIMEOUT", ERROR_MESSAGES["LOCAL_API_VERIFY_TIMEOUT"])

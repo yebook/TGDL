@@ -123,7 +123,9 @@ async def test_same_command_child_restart_progress_uses_verified_live_generation
     values = {"applied_mode": "local", "phase": "idle", "applied_generation": "previous-child",
               "applied_command_id": "same-command", "applied_credential_revision": 3}
     with state.db.transaction() as session:
-        session.add(LocalApiRuntime(id=1, values=dict(values)))
+        row = session.get(LocalApiRuntime, 1)
+        assert row is not None
+        row.values = dict(values)
     runtime.config.managed_local_api = True
     runtime.config.local_api_control_dir = tmp_path
     path = tmp_path / "applied.json"

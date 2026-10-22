@@ -146,4 +146,4 @@ Run Ruff on scripts. Repeat actual run when lifecycle/assertions change.
 
 Wrong: batch-delete names by prefix or treat a copied sentinel as a downloaded
 video. Correct: remove only this run's exact random names and explicitly report
-real Telegram, >20MB, fnOS, proxy routing and cross-device restore as unverified.
+real Telegram, >20MB, Docker host, proxy routing and cross-device restore as unverified.

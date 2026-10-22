@@ -61,7 +61,7 @@ ownership. Clear availability on stage exit, stale observation or generation
 change; no database migration or data reset is needed for telemetry.
 
 New request destinations use `YYYY-MM-DD` for single files and
-`YYYY-MM-DD/<safe-message-summary-or-fallback>_<request-short-id>` for groups.
+`YYYY-MM-DD/<safe-message-summary-or-fallback>` for groups.
 Do not add `videos`, `images` or `groups` classification directories. Derive the date from
 `MediaRequest.created_at` in the configured archive timezone when freezing the
 card. Persist the destination for consent and job creation; never migrate old
@@ -92,10 +92,14 @@ Freeze one persisted
 `MediaRequest.title`: API/list/detail, Bot confirmation `{title}`, queued/result
 messages and `/status` use that same value. Do not rename old requests or rewrite
 issued notifications. Group folder names derive from the same summary, sanitize
-as one safe bounded UTF-8 path component and retain their short-ID suffix
-(`_<request.id[:8]>`, entire folder component at most 180 UTF-8 bytes). Message
+as one safe bounded UTF-8 path component without an automatic task-ID suffix.
+On a same-root/day collision, reserve the next available `name (2)`, `name (3)`
+component within the 180-byte UTF-8 bound. Check persisted destinations (including
+deleted records whose files remain), planned single-file paths and existing filesystem entries; concurrent
+reservations cannot share a directory or overwrite media. Message
 text cannot add directory levels or change file naming templates. Re-freezing
-after a consent-affecting configuration change must not append duplicate suffixes.
+after a consent-affecting configuration change must not treat the request's own
+existing reservation as another task's collision. Frozen old destinations stay fixed.
 
 Bot callback feedback is a presentation boundary: `TaskService.confirm` returns
 its existing state string and `IngestService.callback` translates it to friendly
@@ -130,10 +134,10 @@ Saving proxy configuration is not activation; fresh exact supervisor command/con
 | Existing frozen title/destination | Keep issued title/path, including during re-confirmation/retry |
 
 ## 5. Good / Base / Bad Cases
-Good: a mixed group confirms once under YYYY-MM-DD/<summary>_<short-id>, retries preserve its directory. Base: a single image archives directly under YYYY-MM-DD after Bot confirmation. Bad: link-only media, unauthorized callback or symlink escape must not obtain/publish media.
+Good: a mixed group confirms once under YYYY-MM-DD/<summary>, a distinct same-name group reserves <summary> (2), and retries preserve its directory. Base: a single image archives directly under YYYY-MM-DD after Bot confirmation. Bad: link-only media, unauthorized callback or symlink escape must not obtain/publish media.
 
 ## 6. Tests Required
-From backend: uv run ruff check app tests; uv run mypy app; run pytest on affected test files/selectors and directly related contracts. Expand regression only when shared infrastructure, failures, unresolved concerns or release gates justify it; see index.md. Temporary databases/roots and fake Telegram services must assert persisted side effects for duplicates, journal crashes, cancellation, notification retry, missing files and root changes. Real Telegram >20MB, fnOS and proxy evidence is separately required in docs/verification.md; mocks cannot pass those release gates.
+From backend: uv run ruff check app tests; uv run mypy app; run pytest on affected test files/selectors and directly related contracts. Expand regression only when shared infrastructure, failures, unresolved concerns or release gates justify it; see index.md. Temporary databases/roots and fake Telegram services must assert persisted side effects for duplicates, journal crashes, cancellation, notification retry, missing files and root changes. Real Telegram >20MB, Docker host and proxy evidence is separately required in docs/verification.md; mocks cannot pass those release gates.
 
 For callback/date changes, cover both buttons before/after expiration, repeat
 clicks, authorization and visible alert payload; assert job counts and durable

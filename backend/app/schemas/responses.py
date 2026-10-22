@@ -137,6 +137,7 @@ class CacheStatus(BaseModel):
 
 
 class StorageStatus(BaseModel):
+    selected_root_id: str
     roots: list[RootStatus]
     cache: CacheStatus
 
@@ -159,6 +160,7 @@ class LocalApiStatus(BaseModel):
     applied_mode: Literal["cloud", "local"] | None
     operation_id: str | None
     phase: Literal["idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain", "failed"]
+    drain_reason: Literal["connection", "downloads"] | None
     message: str
     generation: str | None
     last_heartbeat_at: str | None

@@ -5,13 +5,13 @@ import { errorMessage, request } from '../api/client'
 import { retryTime, safetyLabels } from '../api/botSafety'
 import type { BotRequestSafety } from '../api/types'
 
-const props = defineProps<{ status?: BotRequestSafety; stale?: boolean }>()
+const props = defineProps<{ status?: BotRequestSafety; stale?: boolean; disabled?: boolean }>()
 const emit = defineEmits<{ changed: [status: BotRequestSafety] }>()
 const busy = ref(false)
 const controller = new AbortController()
 onUnmounted(() => controller.abort())
 async function retry() {
-  if (busy.value || props.stale || !props.status?.can_retry) return
+  if (busy.value || props.stale || props.disabled || !props.status?.can_retry) return
   busy.value = true
   try {
     const status = await request<BotRequestSafety>('/system/bot/retry', { method: 'POST', signal: controller.signal })
@@ -28,6 +28,6 @@ async function retry() {
     <p class="warning-text">{{ safetyLabels[status.state] }}</p>
     <p v-if="status.message" class="field-hint">{{ status.message }}</p>
     <p v-if="retryTime(status.retry_at)" class="field-hint">{{ retryTime(status.retry_at) }}</p>
-    <el-button v-if="status.can_retry || status.state === 'auth_paused'" :loading="busy" :disabled="stale || !status.can_retry" @click="retry">重试 Bot 连接</el-button>
+    <el-button v-if="status.can_retry || status.state === 'auth_paused'" :loading="busy" :disabled="disabled || stale || !status.can_retry" @click="retry">重试 Bot 连接</el-button>
   </div>
 </template>

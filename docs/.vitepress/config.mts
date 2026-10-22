@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import release from '../../backend/app/version.json'
 
 const base = process.env.DOCS_BASE || '/TGDL/'
 if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(base)) {
@@ -24,21 +25,28 @@ export default defineConfig({
     logo: undefined,
     nav: [
       { text: '开始使用', link: '/quick-start' },
-      { text: '部署', link: '/deployment' },
-      { text: '开发', link: '/development' },
+      { text: '使用指南', link: '/settings' },
+      { text: release.version, link: '/changelog' },
     ],
     sidebar: [
-      { text: '使用指南', items: [
-        { text: '快速开始', link: '/quick-start' },
-        { text: 'Docker / 飞牛 OS', link: '/deployment' },
-        { text: '任务与归档', link: '/usage' },
-        { text: '本地 Bot API 与凭据', link: '/telegram-api' },
-        { text: '提示与文件名模板', link: '/templates' },
-        { text: '配置备份与恢复', link: '/configuration-backup' },
-        { text: '维护与诊断日志', link: '/operations' },
-        { text: '常见问题', link: '/faq' },
+      { text: '开始使用', items: [
+        { text: 'Docker', link: '/deployment' },
+        { text: '第一次下载', link: '/quick-start' },
+        { text: 'Windows 本地运行', link: '/local-run' },
       ] },
-      { text: '开发与项目', items: [
+      { text: '日常使用', items: [
+        { text: '设置怎么用', link: '/settings' },
+        { text: '大文件与网络代理', link: '/telegram-api' },
+        { text: '任务、进度与归档', link: '/usage' },
+        { text: '提示与文件名模板', link: '/templates' },
+      ] },
+      { text: '维护与帮助', items: [
+        { text: '配置备份与恢复', link: '/configuration-backup' },
+        { text: '日志与故障处理', link: '/operations' },
+        { text: '常见问题', link: '/faq' },
+        { text: '更新日志', link: '/changelog' },
+      ] },
+      { text: '开发与项目', collapsed: true, items: [
         { text: '开发指南', link: '/development' },
         { text: '部署后验收', link: '/acceptance' },
         { text: 'Docker 隔离验收', link: '/docker-acceptance' },
@@ -57,7 +65,7 @@ export default defineConfig({
     sidebarMenuLabel: '目录',
     returnToTopLabel: '返回顶部',
     socialLinks: [{ icon: 'github', link: 'https://github.com/yebook/TGDL' }],
-    footer: { message: '按 MIT 许可证分发 · 文档描述当前源码，真实设备验收范围另列。',
+    footer: { message: `${release.version} · MIT 许可 · 文档对应当前源码`,
       copyright: 'Copyright © 2026 TGDL contributors' },
   },
 })

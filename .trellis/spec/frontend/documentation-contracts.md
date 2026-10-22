@@ -16,6 +16,17 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
 - Public pages describe actual application behavior and portable deployment
   commands. Keep internal plans, machine-specific runtime records and historical
   sessions outside the generated site and search index.
+- Describe generic Docker deployment, with NAS as an optional host scenario;
+  do not target a named NAS operating system. Real deployment-filesystem,
+  large-media and network acceptance still require evidence on the actual host.
+- Prioritize first download and ordinary settings, network/large-file choices,
+  maintenance and troubleshooting. Developer tooling/acceptance/Pages authoring
+  belongs in a secondary collapsed group. Remove obsolete system-page directions
+  when controls move; normal log/backup/recovery help remains discoverable.
+- Product numeric version comes from backend/app/version.json and matches
+  runtime. Publish the root CHANGELOG as single-source site content, with actual
+  record dates and no invented release/tag history. Shared metadata used by docs
+  must appear in the docs-only workflow paths without introducing application CI.
 - Root README is the open-source landing page: purpose, visible online docs,
   core workflow/features, executable deployment prerequisites, guide links,
   contribution/security and MIT attribution. Put detailed operational and docs

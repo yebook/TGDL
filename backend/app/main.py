@@ -51,10 +51,12 @@ from app.schemas.responses import (
     TaskPage,
     ValidationResponse,
 )
+from app.services import connection_waits as waits
 from app.services.config_backup import MAX_BACKUP_REQUEST_BYTES, ConfigBackupService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
+from app.version import VERSION
 from app.workers.runtime import Runtime
 
 
@@ -119,7 +121,7 @@ def create_app(config: Config | None = None) -> FastAPI:
                 db.engine.dispose()
             lock.release()
 
-    application = FastAPI(title="Telegram 媒体下载助手", version="0.1.0", lifespan=lifespan,
+    application = FastAPI(title="Telegram 媒体下载助手", version=VERSION, lifespan=lifespan,
                           responses={code: {"model": ErrorResponse} for code in (400, 401, 403, 404, 409, 422, 429, 500)})
 
     @application.middleware("http")
@@ -295,9 +297,9 @@ def create_app(config: Config | None = None) -> FastAPI:
             client = TelegramClient(candidate.bot_token, cfg, candidate)
             client.safety = runtime.safety
             try:
-                identity = await client.identity()
+                identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
             finally:
-                await client.close()
+                await waits.close_candidate(client)
         except AppError:
             raise
         except Exception as exc:
@@ -314,6 +316,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.post("/api/v1/settings/validate", dependencies=[Depends(auth)], response_model=ValidationResponse)
     async def validate_settings(payload: SettingsPatch) -> dict[str, Any]:
         candidate = await asyncio.to_thread(settings.candidate, payload)
+        if runtime.connection_lock.locked():
+            raise AppError("LOCAL_API_BUSY", "连接操作正在进行，请稍后校验", 409)
         async with runtime.connection_lock:
             await asyncio.to_thread(runtime.local_api.validate_allowed, candidate)
             identity = await validate_bot(candidate)
@@ -329,8 +333,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         candidate = await asyncio.to_thread(settings.candidate, payload)
         # Persist independently of Telegram availability. Runtime verifies identity
         # before activation; explicit /validate probes never save this candidate.
-        async with runtime.connection_lock:
-            result = await asyncio.to_thread(settings.save, payload, candidate)
+        result = await asyncio.to_thread(settings.save, payload, candidate)
         await asyncio.to_thread(runtime.maintain_diagnostics)
         return result
 
@@ -346,21 +349,18 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.post("/api/v1/settings/backup/restore", dependencies=[Depends(auth)], response_model=SettingsResponse)
     async def restore_configuration(payload: BackupRestore) -> dict[str, Any]:
         decoded = await asyncio.to_thread(backups.decrypt, payload.backup, payload.password)
-        async with runtime.connection_lock:
-            patch, candidate, _ = await asyncio.to_thread(backups.prepare, decoded, payload.revision)
-            result = await asyncio.to_thread(settings.save, patch, candidate)
+        patch, candidate, _ = await asyncio.to_thread(backups.prepare, decoded, payload.revision)
+        result = await asyncio.to_thread(settings.save, patch, candidate)
         await asyncio.to_thread(runtime.maintain_diagnostics)
         return result
 
     @application.post("/api/v1/system/local-api/restart", dependencies=[Depends(auth)], response_model=LocalApiStatus, status_code=202)
     async def restart_local_api() -> dict[str, Any]:
-        async with runtime.connection_lock:
-            return await asyncio.to_thread(runtime.local_api.action, True)
+        return await asyncio.to_thread(runtime.local_api.action, True)
 
     @application.post("/api/v1/system/local-api/retry", dependencies=[Depends(auth)], response_model=LocalApiStatus, status_code=202)
     async def retry_local_api(payload: LocalApiRetry | None = None) -> dict[str, Any]:
-        async with runtime.connection_lock:
-            return await asyncio.to_thread(runtime.local_api.action, False, bool(payload and payload.acknowledge_logout_uncertain))
+        return await asyncio.to_thread(runtime.local_api.action, False, bool(payload and payload.acknowledge_logout_uncertain))
 
     @application.get("/api/v1/system/logs", dependencies=[Depends(auth)])
     def export_logs() -> dict[str, Any]:
@@ -391,13 +391,18 @@ def create_app(config: Config | None = None) -> FastAPI:
         bot = dict(runtime.bot_status) | {"request_safety": safety}
         if safety["state"] != "ready":
             bot.update(state="error", message=safety["message"])
-        return {"version": "0.1.0", "diagnostic_log": runtime.diagnostics.status(), "bot": bot, "local_api": runtime.local_api.status(), "storage": {"roots": roots, "cache": cache},
+        return {"version": VERSION,
+                "diagnostic_log": runtime.diagnostics.status(), "bot": bot,
+                "local_api": runtime.local_api.status(),
+                "storage": {"selected_root_id": values.download_root_id, "roots": roots, "cache": cache},
                 "proxy": settings.proxy_status(revision, values),
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}
 
     @application.post("/api/v1/system/bot/retry", dependencies=[Depends(auth)], response_model=RequestSafetyStatus)
     async def retry_bot() -> dict[str, Any]:
+        if runtime.connection_lock.locked():
+            raise AppError("LOCAL_API_BUSY", "连接操作正在进行，请稍后恢复", 409)
         async with runtime.connection_lock:
             _, candidate, _ = await asyncio.to_thread(settings.read)
             candidate = await asyncio.to_thread(runtime.local_api.recovery_candidate, candidate)
@@ -407,14 +412,14 @@ def create_app(config: Config | None = None) -> FastAPI:
             client = TelegramClient(candidate.bot_token, cfg, candidate)
             client.safety = runtime.safety
             try:
-                identity = await client.identity(probe=True)
+                identity = await waits.network(client.identity(probe=True), waits.IDENTITY_TIMEOUT)
                 await asyncio.to_thread(runtime.remember_identity, identity)
             except AppError:
                 raise
             except Exception as exc:
                 raise AppError("BOT_VALIDATION_FAILED", "Bot 验证未成功，请检查凭据和连接后重试", 422) from exc
             finally:
-                await client.close()
+                await waits.close_candidate(client)
         return await asyncio.to_thread(runtime.safety.status, candidate.bot_token)
 
     @application.get("/{path:path}", include_in_schema=False)

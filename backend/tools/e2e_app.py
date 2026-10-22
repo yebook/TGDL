@@ -114,7 +114,7 @@ def main() -> None:
                         cookie_secure=False, minimum_free_bytes=1024)
         # A fixed test scenario is allowed; no caller-provided paths, secrets or real upstream.
         scenario = os.getenv("E2E_MANAGED_API", "")
-        if scenario in {"credentials", "restart", "uncertain", "cooldown"}:
+        if scenario in {"credentials", "restart", "uncertain", "cooldown", "connection"}:
             config.managed_local_api = True
             config.local_api_control_dir = root / "api-control"
         if not (config.static_dir / "index.html").is_file():
@@ -130,6 +130,14 @@ def main() -> None:
                 heartbeat = None
                 if config.managed_local_api:
                     service = application.state.runtime.local_api
+                    service.update(applied_mode="local", phase="idle", operation_id=None)
+                    if scenario == "connection":
+                        settings = application.state.settings
+                        patch = SettingsPatch(revision=settings.read()[0],
+                                              telegram_api_hash="0123456789abcdef0123456789abcdef",
+                                              bot_token="98765:offline-e2e-only-bot-token",
+                                              proxy={"enabled": False, "password": "offline-fixture-password"})
+                        settings.save(patch, settings.candidate(patch))
                     service.update(applied_mode="local", phase="idle", operation_id=None)
                     if scenario == "uncertain":
                         service.update(phase="logout_uncertain", logout_uncertain=True,
@@ -153,6 +161,16 @@ def main() -> None:
 
                     heartbeat = asyncio.create_task(fake_heartbeat())
                     await asyncio.sleep(0)
+                elif scenario in {"cloud-connection", "cloud-recovery"}:
+                    settings = application.state.settings
+                    patch = SettingsPatch(revision=settings.read()[0], bot_api_mode="cloud",
+                                          proxy={"enabled": True, "host": "offline.invalid", "port": 1080})
+                    settings.save(patch, settings.candidate(patch))
+                    application.state.runtime.local_api.update(applied_mode="cloud", phase="idle", operation_id=None)
+                    if scenario == "cloud-recovery":
+                        patch = SettingsPatch(revision=settings.read()[0], proxy={"enabled": False})
+                        settings.save(patch, settings.candidate(patch))
+                        application.state.runtime.local_api.update(phase="failed", error_code="LOCAL_API_PREFLIGHT_FAILED")
                 try:
                     yield
                 finally:

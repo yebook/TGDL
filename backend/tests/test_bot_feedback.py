@@ -141,7 +141,7 @@ def test_daily_destination_uses_creation_time_and_timezone(client: TestClient, k
         request_id, nonce = request.id, request.nonce
     state.tasks.freeze_due()
     destination = state.tasks.detail(request_id)["effective_destination"]
-    assert destination == (f"2026-11-01/movie1.mp4_{request_id[:8]}"
+    assert destination == ("2026-11-01/movie1.mp4"
                            if kind == "group" else "2026-11-01")
     patch = SettingsPatch(revision=2, timezone="UTC")
     state.settings.save(patch, state.settings.candidate(patch))

@@ -42,7 +42,7 @@ Good: one getFile is pending while cached updateFile snapshots produce increasin
 
 ## 6. Tests Required
 
-Actual production native cache tests cover aliases, Bot isolation through separate Clients, eviction/bounds, TTL, exact/estimated/unknown size and shared files. Compile pinned sources and verify absent-client/malformed progress routes in network isolation without client creation/egress. Backend controlled-clock/fake transport tests cover response bounds, single getFile, unavailable reads, speed/counter reset, cancellation, attempts/generation/staleness and DTO guards; preserve protection and ownership. Frontend tests cover measured zero versus unknown, exact versus estimated/unknown totals, cache hits, cancellation priority and transition to saving/cloud. Browser verification uses isolated synthetic state, not production media or credentials. Real Telegram/large-file/fnOS claims require separate evidence.
+Actual production native cache tests cover aliases, Bot isolation through separate Clients, eviction/bounds, TTL, exact/estimated/unknown size and shared files. Compile pinned sources and verify absent-client/malformed progress routes in network isolation without client creation/egress. Backend controlled-clock/fake transport tests cover response bounds, single getFile, unavailable reads, speed/counter reset, cancellation, attempts/generation/staleness and DTO guards; preserve protection and ownership. Frontend tests cover measured zero versus unknown, exact versus estimated/unknown totals, cache hits, cancellation priority and transition to saving/cloud. Browser verification uses isolated synthetic state, not production media or credentials. Real Telegram/large-file/Docker host claims require separate evidence.
 
 ## 7. Wrong vs Correct
 

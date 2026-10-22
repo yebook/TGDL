@@ -54,6 +54,7 @@ export interface LocalApiStatus {
   desired_mode: 'cloud' | 'local'; applied_mode: 'cloud' | 'local' | null
   operation_id: string | null
   phase: 'idle' | 'draining' | 'logging_out' | 'starting' | 'verifying' | 'cooldown' | 'blocked' | 'logout_uncertain' | 'failed'
+  drain_reason: 'connection' | 'downloads' | null
   message: string; generation: string | null; last_heartbeat_at: string | null
   cloud_available_at: string | null; can_restart: boolean; can_retry: boolean
 }
@@ -65,7 +66,7 @@ export interface SystemStatus {
   diagnostic_log?: DiagnosticLogStatus
   local_api: LocalApiStatus
   bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety }
-  storage: { roots: StorageRoot[]; cache: { free_bytes: number | null; total_bytes: number | null } }
+  storage: { selected_root_id: string; roots: StorageRoot[]; cache: { free_bytes: number | null; total_bytes: number | null } }
   proxy: Settings['proxy_status']; queue: { active: number; pending: number; concurrency: number }
   version: string; recovery: { blocked_jobs: number; message: string }
 }

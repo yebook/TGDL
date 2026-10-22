@@ -21,4 +21,4 @@ New-Item -ItemType Directory -Force data, downloads, bot-api
 
 需要代理时，在同一 WebUI 填写 Docker 可达的 `host.docker.internal` 和代理端口，不能填容器内的 `127.0.0.1`。两种 API 均使用所配代理，关闭则使用容器默认出口，不会自动读取系统/浏览器代理。无需更换 Compose 或另外开启宿主软件 TUN。两种模式仍需各自确认实际 Bot 连接。
 
-本地开发源码启动和自动测试见 [开发指南](development.md)，无凭据容器检查见 [Docker 隔离验收](docker-acceptance.md)。本机测试不代替飞牛 OS 或真实 Telegram 验收。
+本地开发源码启动和自动测试见 [开发指南](development.md)，无凭据容器检查见 [Docker 隔离验收](docker-acceptance.md)。本机测试不代替 Docker 宿主机或真实 Telegram 验收。

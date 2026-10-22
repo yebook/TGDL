@@ -18,6 +18,8 @@ from app.core.errors import AppError
 from app.core.security import digest
 from app.db.models import BotIdentity, Job, MediaRequest, Notification, uid
 from app.db.session import Database
+from app.schemas.contracts import UserSettings
+from app.services import connection_waits as waits
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.local_api import LocalApiService
@@ -147,8 +149,15 @@ class Runtime:
         if self.client:
             await self.client.close()
 
-    async def ensure_client(self) -> None:
+    async def ensure_client(self, *, reconnect_operation: str | None = None) -> None:
         revision, settings, _ = await asyncio.to_thread(self.settings.read)
+        transition = await asyncio.to_thread(self.local_api.read)
+        reconnecting = (reconnect_operation is not None and transition.get("operation_id") == reconnect_operation
+                        and transition.get("action") == "cloud_reconnect" and transition.get("phase") == "verifying")
+        if transition.get("phase") != "idle" and not reconnecting:
+            return
+        if settings.bot_api_mode == "cloud" and transition.get("cloud_available_at", 0) > time.time():
+            return
         if settings.bot_api_mode == "local":
             proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
             if proxy["state"] != ("active" if settings.proxy.enabled else "disabled"):
@@ -157,8 +166,8 @@ class Runtime:
         generation = ""
         if self.config.managed_local_api:
             state = await asyncio.to_thread(self.local_api.read)
-            if (state.get("phase") != "idle" or settings.bot_api_mode != state.get("applied_mode")
-                    or settings.bot_api_mode == "cloud" and state.get("cloud_available_at", 0) > time.time()):
+            if ((state.get("phase") != "idle" and not reconnecting)
+                    or settings.bot_api_mode != state.get("applied_mode")):
                 return
             if settings.bot_api_mode == "local":
                 applied = await asyncio.to_thread(self.local_api.applied)
@@ -166,7 +175,6 @@ class Runtime:
                     self.bot_status = {"state": "error", "username": "", "message": "本地 API 服务尚未就绪，请查看服务状态"}
                     return
                 generation = applied.get("generation") or ""
-        token_hash = digest(settings.bot_token)
         safety = await asyncio.to_thread(self.safety.status, settings.bot_token)
         if safety["state"] != "ready":
             self.bot_status.update(state="error", message=safety["message"])
@@ -175,7 +183,7 @@ class Runtime:
         if not settings.bot_token:
             self.bot_status = {"state": "unconfigured", "username": "", "message": "请配置 Bot Token 和用户白名单"}
             if self.client and not any(not task.done() for task in self.running.values()):
-                await self.client.close()
+                await waits.network(self.client.close(), waits.CLOSE_TIMEOUT)
                 self.client, self.bot_id, self.token_hash = None, None, ""
                 self.settings.cloud_applied_signature = ""
             return
@@ -185,7 +193,7 @@ class Runtime:
         if any(not task.done() for task in self.running.values()):
             return
         if self.client:
-            await self.client.close()
+            await waits.network(self.client.close(), waits.CLOSE_TIMEOUT)
             self.client = None
             self.settings.cloud_applied_signature = ""
         self.bot_status = {"state": "connecting", "username": "",
@@ -193,17 +201,36 @@ class Runtime:
         client = TelegramClient(settings.bot_token, self.config, settings)
         client.safety = self.safety
         try:
-            identity = await client.identity()
-            await asyncio.to_thread(self.remember_identity, identity)
+            identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
+            if not await asyncio.to_thread(self.publish_client, client, identity, settings, generation, transition):
+                await waits.close_candidate(client)
+                return
         except Exception:
-            await client.close()
+            await waits.close_candidate(client)
             raise
-        self.worker.credential_hash = token_hash
-        self.bot_id, self.token_hash, self.client = identity["id"], token_hash, client
-        self.client_signature = signature
-        self.client_generation = generation
-        self.settings.cloud_applied_signature = signature if settings.bot_api_mode == "cloud" else ""
-        self.bot_status = {"state": "online", "username": identity["username"], "message": ""}
+
+    def publish_client(self, client: TelegramClient, identity: dict[str, Any], settings: UserSettings,
+                       generation: str, transition: dict[str, Any]) -> bool:
+        """Only a current identity may become the active client. No network or await."""
+        signature = self.settings.client_signature(settings)
+        with self.settings.connection_publication_lock:
+            _, latest, _ = self.settings.read()
+            latest_transition = self.local_api.read()
+            if (self.settings.client_signature(latest) != signature
+                    or latest_transition.get("operation_id") != transition.get("operation_id")
+                    or latest_transition.get("phase") != transition.get("phase")):
+                return False
+            if settings.bot_api_mode == "local" and self.config.managed_local_api:
+                if self.local_api.applied().get("generation") != generation:
+                    return False
+            self.remember_identity(identity)
+            self.worker.credential_hash = digest(settings.bot_token)
+            self.bot_id, self.token_hash, self.client = identity["id"], digest(settings.bot_token), client
+            self.client_signature = signature
+            self.client_generation = generation
+            self.settings.cloud_applied_signature = signature if settings.bot_api_mode == "cloud" else ""
+            self.bot_status = {"state": "online", "username": identity["username"], "message": ""}
+            return True
 
     def remember_identity(self, identity: dict[str, Any]) -> None:
         with self.db.transaction() as session:
@@ -219,7 +246,8 @@ class Runtime:
         while not self.stopping:
             try:
                 async with self.poll_lock:
-                    if self.config.managed_local_api and (await asyncio.to_thread(self.local_api.read)).get("phase") != "idle":
+                    transition = await asyncio.to_thread(self.local_api.read)
+                    if (self.config.managed_local_api or transition.get("action") == "cloud_reconnect") and transition.get("phase") != "idle":
                         await asyncio.sleep(0.2)
                         continue
                     await self.ensure_client()
@@ -367,7 +395,8 @@ class Runtime:
         while not self.stopping:
             try:
                 async with self.notify_lock:
-                    if self.config.managed_local_api and (await asyncio.to_thread(self.local_api.read)).get("phase") != "idle":
+                    transition = await asyncio.to_thread(self.local_api.read)
+                    if (self.config.managed_local_api or transition.get("action") == "cloud_reconnect") and transition.get("phase") != "idle":
                         await asyncio.sleep(0.2)
                         continue
                     client, bot_id = self.client, self.bot_id

@@ -260,14 +260,16 @@ def run(image: str) -> dict:
     return {"schema_version": 1, "scope": "isolated_production_container",
             "result": "fail" if any(item["status"] == "fail" for item in smoke.checks) else "pass",
             "checks": smoke.checks,
-            "unverified": ["real_telegram_media", "video_over_20mb", "fnos_filesystem",
+            "unverified": ["real_telegram_media", "video_over_20mb", "deployment_filesystem",
                            "proxy_telegram_routing", "cross_device_storage_restore"]}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="Explicitly allow disposable Docker mutations")
-    parser.add_argument("--image", default="tgd-app:0.1.0", help="Already built local production image")
+    version_file = Path(__file__).resolve().parents[1] / "backend/app/version.json"
+    version = json.loads(version_file.read_text(encoding="utf-8"))["version"]
+    parser.add_argument("--image", default=f"tgd-app:{version}", help="Already built local production image")
     args = parser.parse_args(argv)
     if not args.run:
         parser.error("--run is required; this creates and removes isolated disposable containers")
