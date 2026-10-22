@@ -4,7 +4,7 @@
 
 ## 1. 安装并打开 WebUI
 
-尚未部署时，先按 [Docker 部署指南](deployment.md) 准备完整源码、目录与权限，再构建启动。部署只使用根目录的 `compose.yaml`，无需另外准备代理配置文件。
+尚未部署时，先按 [Docker 部署指南](deployment.md#部署前准备) 取得源码、准备 Docker、Bot Token 和用户 ID，再按 [最小启动步骤](deployment.md#最小启动步骤) 创建目录、授权并启动。完整的 `.env` 与 `compose.yaml` 注释示例见 [参数设置](deployment.md#参数设置)，无需另外准备代理配置文件。
 
 默认 WebUI 地址是 `http://127.0.0.1:8000`，仅部署主机可访问。其他设备通过内网访问须将 `.env` 中的 `TGD_BIND_IP` 改为部署主机的固定局域网 IP，再访问该地址。Windows 本机操作见 [本地运行](local-run.md)。
 

@@ -2,9 +2,9 @@
 
 把发送或转发给专属 Telegram Bot 的视频、图片，经确认后保存到本地或 NAS。通过中文 WebUI 配置 Bot、管理下载和维护服务，适合个人内网自托管。
 
-**[在线文档](https://yebook.github.io/TGDL/)** · [第一次下载](docs/quick-start.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/yebook/TGDL/issues)
+**[在线文档](https://yebook.github.io/TGDL/)** · [第一次下载](https://yebook.github.io/TGDL/quick-start.html) · [更新日志](https://yebook.github.io/TGDL/changelog.html) · [问题反馈](https://github.com/yebook/TGDL/issues)
 
-目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。采用源码构建，暂未提供可直接拉取的公开应用镜像；真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](docs/verification.md)。
+目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。采用源码构建，暂未提供可直接拉取的公开应用镜像；真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
 
 ## 怎么使用
 
@@ -29,19 +29,32 @@
 | 官方云端（默认） | 先开始使用，单文件不超过 **20 MB** | Bot Token |
 | 本地 Bot API | 下载超过 **20 MB** 的文件 | Bot Token、API ID 和 API Hash |
 
-两种模式均需配置允许使用的数字 Telegram 用户 ID。标准部署已包含本地 API 管理服务，之后在 WebUI 填写应用凭据、切换模式即可，日常无需重启容器。详见 [大文件与 API 配置](docs/telegram-api.md)。
+两种模式均需配置允许使用的数字 Telegram 用户 ID。标准部署已包含本地 API 管理服务，之后在 WebUI 填写应用凭据、切换模式即可，日常无需重启容器。详见 [大文件与 API 配置](https://yebook.github.io/TGDL/telegram-api.html)。
 
-## 部署
+## 快速部署
 
-需要完整项目源码、Docker Compose v2、Linux 容器环境、专属 Bot Token 和自己的 Telegram 用户 ID。下载目录需已挂载且允许非 root 用户写入，数据库使用可靠本地存储。
+需要完整项目源码、Docker Compose v2、Linux 容器环境、专属 Bot Token 和自己的数字 Telegram 用户 ID。源码获取与 Bot 准备方法见 [部署前准备](https://yebook.github.io/TGDL/deployment.html#部署前准备)。数据库使用可靠本地存储，媒体共享先挂载。
 
-根目录 [compose.yaml](compose.yaml) 是唯一部署入口，环境参数模板是 [.env.example](.env.example)。在项目根目录执行：
+### 1. 准备配置与目录
+
+根目录 [compose.yaml](compose.yaml) 是唯一部署入口，环境参数模板是 [.env.example](.env.example)。以下为 Linux / SSH 命令，在项目根目录执行。将示例 `1000:1000` 替换为实际非 root 用户与组，并在 `.env` 中填写相同的 `TGD_UID` / `TGD_GID`；若 `id` 显示 root，使用 `id 用户名` 查询普通用户，不能填 `0:0`。
 
 ```sh
 cp .env.example .env
+id
+mkdir -p data bot-api downloads
+sudo chown 1000:1000 data bot-api downloads
+sudo chmod 750 data bot-api downloads
+chmod 600 .env
 ```
 
-编辑 `.env`，设置持久目录、非 root UID/GID 和 WebUI 绑定地址，按 [部署指南](docs/deployment.md#目录和参数) 创建目录并授予权限。使用 NAS 等网络存储时，确认媒体共享已挂载后再启动：
+编辑 `.env`，设置持久目录、UID/GID 和 WebUI 绑定地址；完整的注释版 `.env` 与 `compose.yaml` 见 [参数设置](https://yebook.github.io/TGDL/deployment.html#参数设置)。修改宿主目录后，对实际目录创建并授权；已有共享还需允许该用户读写，这些命令不会递归修改已有媒体库。Windows 本机操作见 [本地运行](https://yebook.github.io/TGDL/local-run.html)。
+
+默认仅部署主机可访问 `http://127.0.0.1:8000`。其他设备内网访问时，将 `TGD_BIND_IP` 改为部署主机的固定局域网 IP，再访问该地址。不要直接对公网开放。
+
+### 2. 构建并启动
+
+确认路径、权限与共享挂载后，在项目根目录执行：
 
 ```sh
 docker compose --env-file .env -f compose.yaml config --quiet
@@ -49,26 +62,32 @@ docker compose --env-file .env -f compose.yaml up -d --build
 docker compose --env-file .env -f compose.yaml ps
 ```
 
-首次构建会编译本地 API，耗时较长。默认访问 `http://127.0.0.1:8000`；其他设备通过内网访问需将 `TGD_BIND_IP` 改为部署主机的固定局域网 IP。用应用数据目录的 `bootstrap.key`（默认 `data/bootstrap.key`）初始化管理员。
+即使先使用云端，首次构建也会下载依赖并编译本地 API，耗时较长、需要数 GB 内存。`init-volumes` 初始化成功后退出是正常现象，应用和 API 管理服务保持运行。
 
-进入「设置 → 连接 Telegram」，填入 Bot Token 和自己的用户 ID 并保存。保存无需在线校验；先发送 `/start` 和小于 20 MB 的媒体验证结果。本地模式显示「本地 API 可用」仅表示服务可响应，仍需实际收发消息确认 Telegram 连接。
+### 3. 初始化并验证
+
+打开 WebUI，从应用数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），创建管理员账号和 **6–20 位密码**。初始化密钥仅用于首次设置，不要分享。
+
+进入「设置 → 连接 Telegram」，先选择官方云端，填入 Bot Token 和自己的用户 ID 并保存；不能直连 Telegram 时，在这里配置容器可访问的代理。保存无需在线校验，可手动点击「校验配置」，在顶栏及连接设置中查看实际状态。
+
+向 Bot 发送 `/start` 检查回复，再发送小于 20 MB 的图片或视频，点击「确认下载」，检查保存结果与 Bot 反馈。本地模式显示「本地 API 可用」仅表示服务可响应，仍需实际收发消息确认连接。完整操作见 [第一次下载](https://yebook.github.io/TGDL/quick-start.html)。
 
 ## 使用指南
 
 | 想做什么 | 文档 |
 | --- | --- |
-| 完成安装与第一次下载 | [Docker](docs/deployment.md) · [首次使用](docs/quick-start.md) |
-| 修改保存、连接、日志等选项 | [设置怎么用](docs/settings.md) |
-| 下载大文件、获取应用凭据、配置代理 | [本地 API 与网络](docs/telegram-api.md) |
-| 查看进度、管理任务和目录 | [任务与归档](docs/usage.md) · [提示与命名](docs/templates.md) |
-| 迁移配置、处理故障 | [配置备份](docs/configuration-backup.md) · [维护](docs/operations.md) · [常见问题](docs/faq.md) |
+| 完成安装与第一次下载 | [Docker](https://yebook.github.io/TGDL/deployment.html) · [首次使用](https://yebook.github.io/TGDL/quick-start.html) |
+| 修改保存、连接、日志等选项 | [设置怎么用](https://yebook.github.io/TGDL/settings.html) |
+| 下载大文件、获取应用凭据、配置代理 | [本地 API 与网络](https://yebook.github.io/TGDL/telegram-api.html) |
+| 查看进度、管理任务和目录 | [任务与归档](https://yebook.github.io/TGDL/usage.html) · [提示与命名](https://yebook.github.io/TGDL/templates.html) |
+| 迁移配置、处理故障 | [配置备份](https://yebook.github.io/TGDL/configuration-backup.html) · [维护](https://yebook.github.io/TGDL/operations.html) · [常见问题](https://yebook.github.io/TGDL/faq.html) |
 
 ## 参与与安全
 
-欢迎通过 [Issues](https://github.com/yebook/TGDL/issues) 反馈问题或提交 Pull Request；开发与检查命令见 [开发指南](docs/development.md)，提交约定见 [贡献指南](CONTRIBUTING.md)。文档站的发布只更新静态文档，不部署应用。
+欢迎通过 [Issues](https://github.com/yebook/TGDL/issues) 反馈问题或提交 Pull Request；开发与检查命令见 [开发指南](https://yebook.github.io/TGDL/development.html)，提交约定见 [贡献指南](https://yebook.github.io/TGDL/project.html#参与贡献)。文档站的发布只更新静态文档，不部署应用。
 
-报告问题请提供版本、部署方式、复现步骤及脱敏错误码，不要发送 Bot Token、API Hash、初始化密钥、数据库或真实媒体。安全问题按 [安全报告指引](SECURITY.md) 处理。只保存自己有权处理的媒体；项目的节流、等待与认证暂停用于减少无效调用，无法保证 Telegram 不限制 Bot 或关联账号。
+报告问题请提供版本、部署方式、复现步骤及脱敏错误码，不要发送 Bot Token、API Hash、初始化密钥、数据库或真实媒体。安全问题按 [安全报告指引](https://yebook.github.io/TGDL/project.html#安全报告) 处理。只保存自己有权处理的媒体；项目的节流、等待与认证暂停用于减少无效调用，无法保证 Telegram 不限制 Bot 或关联账号。
 
 ## 许可与致谢
 
-采用 [MIT 许可证](LICENSE)。第三方组件适用各自许可证，见 [构建来源](deploy/sources.md)。感谢 [tg-bot-video-download](https://github.com/welkin621/tg-bot-video-download) 提供参考思路。
+采用 [MIT 许可证](https://yebook.github.io/TGDL/project.html#许可)。第三方组件适用各自许可证，见 [构建来源](https://yebook.github.io/TGDL/project.html#构建来源与第三方组件)。感谢 [tg-bot-video-download](https://github.com/welkin621/tg-bot-video-download) 提供参考思路。

@@ -19,6 +19,23 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
 - Describe generic Docker deployment, with NAS as an optional host scenario;
   do not target a named NAS operating system. Real deployment-filesystem,
   large-media and network acceptance still require evidence on the actual host.
+- Docker deployment instructions lead with source acquisition/build inputs,
+  Docker prerequisites and Bot Token/numeric user ID, followed by the shortest
+  supported cloud-first startup path. Keep optional local credentials and detailed
+  references later without implying the standard stack skips the local API build.
+- The deployment reference includes full `.env` and `compose.yaml` fenced blocks,
+  with Chinese `#` explanations immediately below each setting/configuration item.
+  Commented examples must parse to the same configuration as repository sources;
+  compare env key/value sets and YAML objects when updating either example.
+  Identify editable host settings versus fixed container paths and private mounts.
+  Check settings-source precedence before claiming a setting is WebUI-editable:
+  standard Compose sets `TGD_TIMEZONE`, so timezone is environment-controlled and
+  read-only there; changing `.env` requires recreating the app container.
+- Source cleanup advice distinguishes optional developer metadata from complete
+  build directories, license notices and persistent runtime state. Never suggest
+  deleting `.runtime`, real `.env`, data/cache/download directories or Docker
+  volumes as routine developer cleanup. Explain that removing `.git` removes
+  `git pull` updates; keep `.dockerignore` and all Dockerfile COPY inputs intact.
 - Prioritize first download and ordinary settings, network/large-file choices,
   maintenance and troubleshooting. Developer tooling/acceptance/Pages authoring
   belongs in a secondary collapsed group. Remove obsolete system-page directions
@@ -32,6 +49,13 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
   contribution/security and MIT attribution. Put detailed operational and docs
   toolchain instructions in the guides; never shorten setup into commands that
   omit required directory permissions or claim unverified NAS support.
+  Keep quick deployment in three steps: prepare configuration/directories,
+  build/start, initialize/verify. README documentation links target the published
+  `https://yebook.github.io/TGDL/` page and relevant anchor, including changelog
+  and project/contribution/security/license guidance. Actual source/configuration
+  downloads and GitHub actions such as Issues remain repository links. Validate
+  absolute site URLs against generated output/decoded anchors as local relative
+  link checks alone cannot detect broken external-looking documentation URLs.
 - Documentation dependencies and lockfile live in docs independently of frontend
   and the application Docker image. Keep release-age policy enabled.
 - Use strict missing-link checks; test the case-sensitive `/TGDL/` base, local

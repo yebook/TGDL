@@ -1,5 +1,17 @@
 # Telegram 媒体下载助手：实施与验证计划
 
+## README快速部署与链接（2026-10-22）
+
+- [x] 对照2c5aa92与当前部署文档，恢复准备/构建/初始化三步，补目录权限、非root/内网参数及参数站点锚点，保持默认云端和实际消息验证。
+- [x] README24条文档站URL统一到实际页面，project增加贡献/安全/许可/来源承接；独立核对24目标/6锚点与生成HTML，只有compose/.env源码链接及Issues/参考项目等非文档例外保留仓库来源。
+- [x] docs构建23文件/94相对链接/18输出通过，独立diffcheck/gate通过。文档规范同步，不操作应用容器、不自动提交推送。
+
+## Docker部署文档整理（2026-10-22）
+
+- [x] 核对两个Dockerfile的COPY依赖，保留完整backend/frontend/deploy及dockerignore/许可证；说明开发目录可省、git删除影响更新，运行数据不可清理。按源码/Docker/Bot材料→最小启动顺序重排。
+- [x] `.env`完整8项、compose完整95源行逐项下方中文注释，去注释逐行一致且Compose静态校验通过；补bootstrap读取/root UID说明，README/quick-start链接同步。
+- [x] 独立gate通过：env/YAML解析与真实文件一致，逐项下方注释完整，COPY/许可/数据及权限建议核对；修正TGD_TIMEZONE环境固定/WebUI只读及重建app说明并同步settings页。docs构建23文件/113链接/18输出及diffcheck通过，spec同步；纯文档改动未跑应用回归、未改容器、未提交推送。
+
 ## 切换流程与锁定恢复（2026-10-22）
 
 - [x] 审计后端各切换阶段及重启恢复：identity25s/logout35s/close5s协作截止，consumer分轮1s/累计45s、verify120s、generation150s；下载owner不强制释放，保护等待保留，退出未知需确认。组合177项直接关联回归通过（175先通过，唯一夹具问题修复后该文件22通过，独立新增generation1项），Ruff/Mypy35文件通过。
