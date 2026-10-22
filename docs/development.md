@@ -58,6 +58,17 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 
 该检查不证明真实代理认证、Telegram 大文件下载或飞牛 OS 已通过验收。
 
+## 本地下载进度隔离验证
+
+进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
+
+```sh
+docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api:0.1.0 -t tgd-native-progress-acceptance .
+docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-progress-acceptance
+```
+
+该检查覆盖生产缓存的别名、容量、完成保留与重试边界，并向实际原生服务发送缺少已有 Bot 客户端的进度查询，确认不会创建客户端或发起对外连接。后端的 `tests/test_local_download_progress.py` 覆盖进度传输、状态投影和下载生命周期；页面测试使用合成进度。真实 Telegram 的字节增长、速度和缓存命中仍需单独验收。
+
 ## 文档开发
 
 在 `docs/` 使用 `pnpm install --frozen-lockfile`、`pnpm docs:build` 和 `pnpm docs:preview`。构建会检查公开 Markdown 的相对链接、锚点与静态输出边界；不请求外部网站检查可达性。完整说明见 [文档站](pages.md)。

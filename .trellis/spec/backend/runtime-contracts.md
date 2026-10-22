@@ -53,6 +53,13 @@ bytes measure real downloading, even while the worker's internal state is
 `saving`. This presentation field changes no lifecycle or database schema.
 DTO/worker regressions assert each acquisition mode and null before job creation.
 
+The native read-only observation channel in
+[local-progress-contracts.md](local-progress-contracts.md) separately supplies
+nullable `MediaResponse.download_progress` during active local fetching. Its
+ephemeral bytes never overwrite destination counters, job state or recovery
+ownership. Clear availability on stage exit, stale observation or generation
+change; no database migration or data reset is needed for telemetry.
+
 New request destinations use `YYYY-MM-DD` for single files and
 `YYYY-MM-DD/<safe-message-summary-or-fallback>_<request-short-id>` for groups.
 Do not add `videos`, `images` or `groups` classification directories. Derive the date from

@@ -19,6 +19,7 @@ from app.core.security import digest
 from app.db.models import BotIdentity, Job, MediaRequest, Notification, uid
 from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
+from app.services.download_progress import DownloadProgress
 from app.services.local_api import LocalApiService
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.settings import SettingsService
@@ -55,7 +56,27 @@ class Runtime:
         self.notify_lock = asyncio.Lock()
         self.local_api = LocalApiService(settings)
         self.local_api.diagnostics = self.diagnostics
+        self.download_progress = DownloadProgress(generation=self.progress_generation)
+        self.worker.download_progress = self.download_progress
+        self.tasks.download_progress = self.download_progress
         self.connection_lock = asyncio.Lock()
+
+    def progress_generation(self) -> str:
+        applied = self.local_api.applied() if self.config.managed_local_api else {}
+        state = self.local_api.read() if applied else {}
+        _, configured, _ = self.settings.read()
+        generation = applied.get("generation")
+        return generation if (applied.get("state") == "running" and isinstance(generation, str)
+                              and self.client is not None and configured.bot_api_mode == "local"
+                              and self.client_signature == self.settings.client_signature(configured)
+                              and generation == self.client_generation and state.get("applied_mode") == "local"
+                              and state.get("phase") == "idle" and not state.get("command_id")
+                              # applied_generation records the last managed operation, not every
+                              # same-command child restart. ensure_client verifies the live generation.
+                              and applied.get("proxy_signature") == self.settings.proxy_signature(configured)
+                              and state.get("applied_command_id")
+                              and state.get("applied_command_id") == applied.get("command_id")
+                              and state.get("applied_credential_revision") == applied.get("credential_revision")) else ""
 
     async def start(self) -> None:
         await asyncio.to_thread(self.maintain_diagnostics)

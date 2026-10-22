@@ -32,6 +32,7 @@ from app.db.models import (
 )
 from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
+from app.services.download_progress import DownloadProgress, ProgressOwner
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.tasks import project
 from app.storage.files import (
@@ -63,6 +64,43 @@ class DownloadWorker:
         self.progress_times: dict[str, float] = {}
         self.credential_hash = ""
         self.diagnostics: DiagnosticLog | None = None
+        self.download_progress: DownloadProgress | None = None
+
+    def progress_job(self, job_id: str) -> tuple[Job, MediaItem] | None:
+        with self.db.sessions() as session:
+            job = session.get(Job, job_id)
+            item = session.get(MediaItem, job.item_id) if job else None
+            return (job, item) if job and item else None
+
+    def progress_owned(self, owner: ProgressOwner) -> bool:
+        with self.db.sessions() as session:
+            job = session.get(Job, owner.job_id)
+            item = session.get(MediaItem, job.item_id) if job else None
+            return bool(job and item and DownloadProgress.eligible(job, owner.boot_id)
+                        and job.attempt_sequence == owner.attempt
+                        and (job.item_id, item.bot_id, item.file_id) == (owner.item_id, owner.bot_id, owner.file_id))
+
+    async def observe_download(self, client: TelegramClient, file_id: str, owner: ProgressOwner) -> None:
+        registry = self.download_progress
+        assert registry
+        try:
+            while await asyncio.to_thread(self.progress_owned, owner):
+                result = await client.file_progress([file_id])
+                # Recheck ownership after I/O: cancellation/phase change may have committed while waiting.
+                if not await asyncio.to_thread(self.progress_owned, owner):
+                    return
+                if result and file_id in result[1]:
+                    registry.update(owner, result[0], result[1][file_id])
+                else:
+                    registry.unavailable(owner)
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Telemetry cannot change acquisition, protection or the durable job outcome.
+            pass
+        finally:
+            registry.clear(owner)
 
     def claim(self, bot_id: int | None = None, mode: str | None = None) -> str | None:
         outcomes: list[str] = []
@@ -282,12 +320,28 @@ class DownloadWorker:
         copy_stop = threading.Event()
         copy_task: asyncio.Task[tuple[int, str]] | None = None
         publish_task: asyncio.Task[None] | None = None
+        observer: asyncio.Task[None] | None = None
+        owner: ProgressOwner | None = None
         try:
             file_id, root_id, relative, expected = await asyncio.to_thread(self.prepare, job_id)
             if cloud:
                 cloud_size_check(expected)
+            elif hasattr(client, "file_progress"):
+                try:
+                    rows = await asyncio.to_thread(self.progress_job, job_id)
+                    # Register after the cancellable read: late thread results cannot orphan entries.
+                    owner = self.download_progress.begin(rows[0], self.boot_id, bot_id=rows[1].bot_id,
+                                                         file_id=rows[1].file_id) if rows and self.download_progress else None
+                except Exception:
+                    owner = None
+                if owner:
+                    observer = asyncio.create_task(self.observe_download(client, file_id, owner))
             # Never wrap in wait_for/cancel on user cancellation: request holds slot until it actually returns.
             source = await self.cloud_operation(client.get_file(file_id), job_id) if cloud else await client.get_file(file_id)
+            if observer:
+                observer.cancel()
+                await asyncio.gather(observer, return_exceptions=True)
+                observer = None
             phase = "saving"
             if await asyncio.to_thread(self.cancelled, job_id):
                 raise AppError("CANCELLED", "下载已取消")
@@ -348,6 +402,11 @@ class DownloadWorker:
             code, message, retry, delay = self.classify(exc)
             await asyncio.to_thread(self.failed, job_id, code, message, retry, uncertain, delay)
         finally:
+            if observer:
+                observer.cancel()
+                await asyncio.gather(observer, return_exceptions=True)
+            if owner and self.download_progress:
+                self.download_progress.clear(owner)
             self.progress_times.pop(job_id, None)
             if self.diagnostics:
                 try:

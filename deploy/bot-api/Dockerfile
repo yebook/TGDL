@@ -5,6 +5,9 @@ ARG TELEGRAM_BOT_API_REV=e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1
 RUN git init /src && cd /src && git remote add origin https://github.com/tdlib/telegram-bot-api.git && git fetch --depth 1 origin "$TELEGRAM_BOT_API_REV" && git checkout --detach FETCH_HEAD && git submodule update --init --recursive --depth 1
 COPY deploy/bot-api/native-proxy.patch /native-proxy.patch
 RUN cd /src && git apply --check /native-proxy.patch && git apply /native-proxy.patch && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/out && cmake --build build --parallel 2 && cmake --install build
+COPY deploy/bot-api/native-progress.patch /native-progress.patch
+COPY deploy/bot-api/ProgressCache.h /src/telegram-bot-api/ProgressCache.h
+RUN cd /src && git apply --check /native-progress.patch && git apply /native-progress.patch && cmake --build build --parallel 2 && cmake --install build
 RUN mkdir -p /out/licenses/tdlib && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587

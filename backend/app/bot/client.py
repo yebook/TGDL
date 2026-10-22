@@ -16,13 +16,14 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
 from aiogram.methods import GetFile, GetUpdates
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.config import Config
 from app.core.errors import AppError
 from app.core.security import digest
 from app.schemas.contracts import UserSettings
+from app.services.download_progress import decode_progress
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 
 CLOUD_FILE_LIMIT = 20 * 1024 * 1024
@@ -47,6 +48,40 @@ class TelegramClient:
         session = AiohttpSession(api=api, proxy=proxy, timeout=config.get_file_timeout)
         self.bot = Bot(token=token, session=session)
         self.timeout = config.get_file_timeout
+        self._progress_session: ClientSession | None = None
+        self._progress_retry_at = 0.0
+        self._progress_failures = 0
+
+    async def file_progress(self, file_ids: list[str]) -> tuple[str, dict[str, dict[str, Any]]] | None:
+        """Read our private local snapshot method. Never enter Telegram request/protection paths."""
+        if (self.mode != "local" or time.monotonic() < self._progress_retry_at
+                or not 1 <= len(file_ids) <= 16
+                or any(not isinstance(alias, str) or not 1 <= len(alias.encode("utf-8")) <= 4096 for alias in file_ids)):
+            return None
+        try:
+            if self._progress_session is None:
+                self._progress_session = ClientSession(timeout=ClientTimeout(total=1), trust_env=False)
+            url = self.bot.session.api.api_url(self.bot.token, "tgdGetFileProgress")
+            async with self._progress_session.post(url, data={"file_ids": json.dumps(file_ids, ensure_ascii=False)},
+                                                   allow_redirects=False) as response:
+                if response.status != 200:
+                    # Stock/external APIs should not receive one unsupported-method call per second.
+                    self._progress_failures += 1
+                    delay = 60 if response.status in {400, 404, 405, 501} else min(30, 2**min(self._progress_failures, 5))
+                    self._progress_retry_at = time.monotonic() + delay
+                    return None
+                body = bytearray()
+                async for block in response.content.iter_chunked(16384):
+                    body.extend(block)
+                    if len(body) > 512 * 1024:
+                        raise ValueError("Progress response too large")
+                decoded = decode_progress(json.loads(body), file_ids)
+            self._progress_failures = 0
+            return decoded
+        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError):
+            self._progress_failures += 1
+            self._progress_retry_at = time.monotonic() + min(30, 2**min(self._progress_failures, 5))
+            return None
 
     async def record(self, method: str, error: BaseException | None, started: float,
                      *, empty: bool = False) -> None:
@@ -194,6 +229,8 @@ class TelegramClient:
         await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15), method="answerCallbackQuery")
 
     async def close(self) -> None:
+        if self._progress_session:
+            await self._progress_session.close()
         await self.bot.session.close()
 
     async def logout(self) -> bool:

@@ -36,6 +36,8 @@ def service(tmp_path: Path) -> Any:
         "import os, socket\n"
         "assert os.environ['TELEGRAM_API_ID'] == '12345'\n"
         "assert os.environ['TELEGRAM_API_HASH'] == 'a' * 32\n"
+        "from pathlib import Path\n"
+        f"Path({str(tmp_path / 'child-generation')!r}).write_text(os.environ['TGD_PROGRESS_GENERATION'])\n"
         f"server=socket.socket(); server.bind(('127.0.0.1', {port})); server.listen()\n"
         "while True:\n"
         " client, address = server.accept(); client.close()\n",
@@ -140,6 +142,7 @@ def test_process_lifecycle_idempotency_and_generation(service: Any) -> None:
     command(supervisor, key, "start_1")
     settle(supervisor, "running")
     first_process, generation = supervisor.process, supervisor.generation
+    assert (supervisor.cache.parent / 'child-generation').read_text() == generation
     supervisor.tick()
     assert supervisor.process is first_process
     # Re-encryption has a fresh nonce, but an unchanged credential revision must
@@ -154,9 +157,32 @@ def test_process_lifecycle_idempotency_and_generation(service: Any) -> None:
     settle(supervisor, "running")
     assert first_process.poll() is not None
     assert supervisor.generation != generation
+    assert (supervisor.cache.parent / 'child-generation').read_text() == supervisor.generation
     command(supervisor, key, "stop_3", "stop", api_id=None, api_hash_encrypted=None)
     settle(supervisor, "stopped")
     assert supervisor.process is None
+
+
+def test_failed_spawn_does_not_publish_candidate_generation(service: Any, monkeypatch: Any) -> None:
+    supervisor, key = service
+    command(supervisor, key, "start")
+    settle(supervisor, "running")
+    supervisor.stop_process()
+    original = supervisor.generation
+    marker = (supervisor.cache / ".tgd-api-generation").read_bytes()
+    captured: dict[str, str] = {}
+
+    def fail_spawn(*args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs['env'])
+        assert supervisor.generation == original
+        raise OSError('synthetic spawn failure')
+
+    monkeypatch.setattr(module.subprocess, 'Popen', fail_spawn)
+    with pytest.raises(OSError):
+        supervisor.start_process()
+    assert captured['TGD_PROGRESS_GENERATION'] != original
+    assert supervisor.generation == original
+    assert (supervisor.cache / ".tgd-api-generation").read_bytes() == marker
 
 
 def test_credential_errors_ack_without_killing_previous_process(service: Any) -> None:

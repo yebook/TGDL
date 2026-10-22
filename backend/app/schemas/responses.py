@@ -72,6 +72,15 @@ class AttemptResponse(BaseModel):
     error_code: str | None
 
 
+class DownloadProgressResponse(BaseModel):
+    downloaded_bytes: int
+    total_bytes: int | None
+    total_kind: Literal["exact", "estimated", "unknown"]
+    speed_bps: float | None
+    active: bool
+    completed: bool
+
+
 class MediaResponse(BaseModel):
     id: str
     job_id: str | None
@@ -82,6 +91,7 @@ class MediaResponse(BaseModel):
     status: str
     phase: str
     acquisition_mode: Literal["cloud", "local"] | None
+    download_progress: DownloadProgressResponse | None = None
     completed_bytes: int
     total_bytes: int | None
     speed_bps: float | None

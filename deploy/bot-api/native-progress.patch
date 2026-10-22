@@ -1,0 +1,149 @@
+--- a/telegram-bot-api/ClientManager.cpp
++++ b/telegram-bot-api/ClientManager.cpp
+@@ -89,6 +89,13 @@
+   }
+ 
+   auto id_it = token_to_id_.find(token);
++  if (query->method() == "tgdgetfileprogress") {
++    if (!parameters_->local_mode_ || id_it == token_to_id_.end()) {
++      return fail_query(404, "Not Found: progress unavailable", std::move(query));
++    }
++    send_closure(clients_.get(id_it->second)->client_, &Client::send, std::move(query));
++    return;
++  }
+   if (id_it == token_to_id_.end()) {
+     auto method = query->method();
+     if (method == "close") {
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "telegram-bot-api/Query.h"
++#include "telegram-bot-api/ProgressCache.h"
+ #include "telegram-bot-api/Stats.h"
+ #include "telegram-bot-api/WebhookActor.h"
+ 
+@@ -1032,6 +1033,8 @@
+   td::Status process_set_webhook_query(PromisedQueryPtr &query);
+   td::Status process_get_webhook_info_query(PromisedQueryPtr &query);
+   td::Status process_get_file_query(PromisedQueryPtr &query);
++  void tgd_read_progress(PromisedQueryPtr query);
++  ProgressCache tgd_progress_;
+ 
+   void webhook_verified(td::string cached_ip_address) final;
+   void webhook_success() final;
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -8632,6 +8632,9 @@
+ }
+ 
+ void Client::send(PromisedQueryPtr query) {
++  if (query->method() == "tgdgetfileprogress") {
++    return tgd_read_progress(std::move(query));
++  }
+   if (!query->is_internal()) {
+     query->set_stat_actor(stat_actor_);
+     if (!parameters_->local_mode_ && !is_local_method(query->method()) &&
+@@ -9371,6 +9374,8 @@
+ }
+ 
+ void Client::on_update_file(object_ptr<td_api::file> file) {
++  tgd_progress_.update(file->id_, {file->local_->downloaded_size_, file->size_, file->expected_size_,
++                                 file->local_->is_downloading_active_, file->local_->is_downloading_completed_});
+   auto file_id = file->id_;
+   if (!is_file_being_downloaded(file_id)) {
+     return;
+@@ -17029,6 +17034,67 @@
+   return td::Status::OK();
+ }
+ 
++
++namespace {
++struct TgdProgressItem final : td::Jsonable {
++  td::string alias;
++  bool available = false;
++  ProgressCache::Snapshot snapshot;
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("file_id", alias);
++    o("available", td::JsonBool(available));
++    if (!available) return;
++    o("downloaded_bytes", td::max<std::int64_t>(0, snapshot.downloaded));
++    if (snapshot.size > 0) o("total_bytes", snapshot.size);
++    else if (snapshot.expected > 0) o("total_bytes", snapshot.expected);
++    else o("total_bytes", td::JsonNull());
++    o("total_kind", snapshot.size > 0 ? "exact" : snapshot.expected > 0 ? "estimated" : "unknown");
++    o("active", td::JsonBool(snapshot.active));
++    o("completed", td::JsonBool(snapshot.completed));
++  }
++};
++struct TgdProgressReply final : td::Jsonable {
++  td::string generation;
++  td::vector<TgdProgressItem> items;
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("generation", generation);
++    o("files", td::json_array(items, [](const TgdProgressItem &item) -> const TgdProgressItem & { return item; }));
++  }
++};
++}
++
++void Client::tgd_read_progress(PromisedQueryPtr query) {
++  const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++  if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
++      !generation || !*generation || td::Slice(generation).size() > 128) {
++    return fail_query(404, "Not Found: progress unavailable", std::move(query));
++  }
++  auto input = query->arg("file_ids");
++  if (input.empty() || input.size() > 81920 || !query->files().empty()) {
++    return fail_query(400, "Bad Request: invalid progress batch", std::move(query));
++  }
++  auto parsed = json_decode(input);
++  if (parsed.is_error() || parsed.ok().type() != td::JsonValue::Type::Array ||
++      parsed.ok().get_array().empty() || parsed.ok().get_array().size() > 16) {
++    return fail_query(400, "Bad Request: invalid progress batch", std::move(query));
++  }
++  TgdProgressReply reply;
++  reply.generation = generation;
++  for (const auto &value : parsed.ok().get_array()) {
++    if (value.type() != td::JsonValue::Type::String || value.get_string().empty() || value.get_string().size() > 4096) {
++      return fail_query(400, "Bad Request: invalid progress alias", std::move(query));
++    }
++    TgdProgressItem item;
++    item.alias = value.get_string().str();
++    auto snapshot = tgd_progress_.find(item.alias, td::Time::now());
++    if (snapshot) { item.available = true; item.snapshot = *snapshot; }
++    reply.items.push_back(std::move(item));
++  }
++  answer_query(reply, std::move(query));
++}
++
+ td::Status Client::process_get_file_query(PromisedQueryPtr &query) {
+   td::string file_id = query->arg("file_id").str();
+   check_remote_file_id(file_id, std::move(query), [this](object_ptr<td_api::file> file, PromisedQueryPtr query) {
+@@ -17044,6 +17110,11 @@
+   }
+ 
+   auto file_id = file->id_;
++  if (parameters_->local_mode_) {
++    tgd_progress_.bind(query->arg("file_id").str(), file_id,
++                       {file->local_->downloaded_size_, file->size_, file->expected_size_,
++                        file->local_->is_downloading_active_, file->local_->is_downloading_completed_}, td::Time::now());
++  }
+   file_download_listeners_[file_id].push_back(std::move(query));
+   send_request(make_object<td_api::downloadFile>(file_id, 1, 0, 0, false),
+                td::make_unique<TdOnDownloadFileCallback>(this, file_id));
+@@ -17058,6 +17129,12 @@
+   if (it == file_download_listeners_.end()) {
+     return;
+   }
++  if (r_file.is_ok()) {
++    const auto &f = r_file.ok();
++    tgd_progress_.update(file_id, {f->local_->downloaded_size_, f->size_, f->expected_size_,
++                                 f->local_->is_downloading_active_, f->local_->is_downloading_completed_});
++  }
++  tgd_progress_.finish(file_id, td::Time::now(), r_file.is_error());
+   auto queries = std::move(it->second);
+   file_download_listeners_.erase(it);
+   download_started_file_ids_.erase(file_id);

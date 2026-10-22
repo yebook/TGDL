@@ -205,6 +205,8 @@ class Supervisor:
         environment = {key: value for key, value in os.environ.items() if not key.startswith('TGD_NATIVE_PROXY_')}
         environment.update(TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash)
         environment.update(self.proxy_environment(self.desired))
+        generation = str(uuid.uuid4())
+        environment['TGD_PROGRESS_GENERATION'] = generation
         self.cache.joinpath("tmp").mkdir(exist_ok=True)
         # The previous process has been waited for before a new marker is visible.
         self.process = subprocess.Popen(
@@ -212,7 +214,7 @@ class Supervisor:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.active_credentials = hashlib.sha256(f"{api_id}:{api_hash}:{self.desired.proxy_signature}".encode()).digest()
-        self.generation = str(uuid.uuid4())
+        self.generation = generation
         try:
             atomic_write(self.cache / ".tgd-api-generation", (self.generation + "\n").encode(), 0o644)
         except OSError:

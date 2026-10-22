@@ -14,6 +14,7 @@ from app.core.templates import render_confirmation
 from app.db.models import Attempt, IngestUpdate, Job, MediaItem, MediaRequest, Notification, uid
 from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
+from app.services.download_progress import DownloadProgress
 from app.services.settings import SettingsService
 from app.storage.naming import fit_name, planned_name, request_summary, unique_name
 
@@ -91,6 +92,7 @@ class TaskService:
     def __init__(self, database: Database, settings: SettingsService) -> None:
         self.db, self.settings = database, settings
         self.diagnostics: DiagnosticLog | None = None
+        self.download_progress: DownloadProgress | None = None
 
     def destination(self, request: MediaRequest, summary: str, timezone: str) -> str:
         date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
@@ -212,6 +214,8 @@ class TaskService:
                     "duration_seconds": item.duration_seconds, "status": job.state if job else request.status,
                     "phase": job.phase if job else request.status, "completed_bytes": job.completed_bytes if job else 0,
                     "acquisition_mode": job.acquisition_mode if job else None,
+                    "download_progress": self.download_progress.project(job, bot_id=item.bot_id, file_id=item.file_id)
+                        if job and self.download_progress else None,
                     "total_bytes": item.size_bytes, "speed_bps": job.speed_bps if job else None,
                     "elapsed_seconds": max(0, (job.finished_at or time.time()) - job.started_at) if job and job.started_at else 0,
                     "relative_path": job.relative_path if job else None, "error_code": job.error_code if job else None,

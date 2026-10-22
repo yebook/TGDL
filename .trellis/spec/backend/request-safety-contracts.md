@@ -24,6 +24,14 @@ stream byte chunk. Key state by credential digest; never persist raw tokens,
 proxy passwords, token-bearing URLs or original upstream exception messages.
 Mode/proxy changes and client/application restarts cannot reset a cooldown.
 
+The private local `tgdGetFileProgress` snapshot read is an explicit exception to
+Telegram request accounting: it reads existing native Client memory only and
+must not initialize a Bot, invoke TDLib/network operations or alter flood/account
+statistics. Keep it outside TelegramClient.request and RequestSafetyService
+before/observe; its success cannot clear backoff/auth pause and its failure
+cannot consume attempts or stop an already-owned download. See
+[local-progress-contracts.md](local-progress-contracts.md).
+
 Conservative application defaults are one second between Bot request starts,
 1.1 seconds between sends to a private chat, and 3.1 seconds to a group. These
 are application choices, not official safe thresholds. Reserve starts atomically

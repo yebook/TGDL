@@ -33,10 +33,15 @@ export interface Task {
   effective_destination: string | null; notification_status: string; can_cancel: boolean; can_retry: boolean; can_delete: boolean
 }
 export interface Attempt { sequence: number; started_at: string; finished_at: string | null; error_code: string | null }
+export interface DownloadProgress {
+  downloaded_bytes: number; total_bytes: number | null; total_kind: 'exact' | 'estimated' | 'unknown'
+  speed_bps: number | null; active: boolean; completed: boolean
+}
 export interface MediaItem {
   id: string; job_id: string | null; media_type: string; original_name: string | null; size_bytes: number | null
   duration_seconds: number | null; status: string; phase: string | null; completed_bytes: number; total_bytes: number | null
   acquisition_mode: 'cloud' | 'local' | null
+  download_progress: DownloadProgress | null
   speed_bps: number | null; elapsed_seconds: number | null; relative_path: string | null
   error_code: string | null; error_message: string | null; linked_job_id: string | null; attempts: Attempt[]
 }

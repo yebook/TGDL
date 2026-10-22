@@ -15,3 +15,4 @@
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/unified-proxy-plan.md", "reason": "Review daily logs and unified routing against network barriers and fail-closed requirements"}
 {"file": ".trellis/spec/backend/config-backup-contracts.md", "reason": "Backup security and transaction verification"}
 {"file": ".trellis/tasks/10-19-telegram-media-downloader/research/proxy-native.md", "reason": "Compile pinned patch and credential-free routing evidence"}
+{"file": ".trellis/spec/backend/local-progress-contracts.md", "reason": "Read-only native acquisition telemetry, exact ownership/generation and honest stage progress"}

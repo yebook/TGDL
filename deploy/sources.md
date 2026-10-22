@@ -22,4 +22,6 @@ The Bot API image applies [native-proxy.patch](bot-api/native-proxy.patch) to th
 
 The image installs the Bot API and TDLib license files. Review their license requirements before redistribution. This source list records provenance; it is not a successful image-build report.
 
+The same pinned build additionally applies [native-progress.patch](bot-api/native-progress.patch) and includes [ProgressCache.h](bot-api/ProgressCache.h). This extension exposes bounded in-memory download observations from existing TDLib updates to the application through a private local-only method. It does not start downloads or create Bot clients when queried; ordinary upstream builds do not provide this extension.
+
 The source patch is checked by `git apply --check` before compilation. Keep its LF line endings (`.gitattributes` enforces this on Windows checkouts); changing the upstream pins requires rechecking and compiling the patch.

@@ -80,3 +80,11 @@
 - Restore must validate the complete settings before changing anything, respect environment-controlled fields, current storage roots, settings revision conflicts and existing safe API transition barriers. It must not contact Telegram merely to inspect a backup. Wrong passwords/corrupt/unsupported files must not change settings or expose secrets.
 - Remove unpublished-version compatibility in active application code, tests, UI and public documentation. Incompatible old test data may be cleaned; no migration bridge is required. Preserve upstream Telegram semantics, crash recovery, credential/cooldown protections and normal safe defaults. Historical journals remain historical records.
 - Proxy behavior is consistent across API modes: enabled uses the configured proxy, disabled uses the container's normal network. Investigate removing the host TUN requirement and simplify deployment without silent direct fallback when proxy setup fails.
+
+## Local API measured acquisition progress (authorized 2026-10-22)
+
+- Show true local Telegram download bytes, speed and a percentage when exact total size is known. Estimated totals must be visibly approximate; unknown totals remain indeterminate. Keep destination saving as a distinct later stage.
+- Observe the existing TDLib download, without another Telegram download request, personal-account login or cloud logout. Progress reads must not initialize a missing Bot/API client or change request protection.
+- Bind observations to the exact Bot/file/job/attempt/API generation. Cancellation, retries, process restart and late replies cannot overwrite another stage or attempt. A progress failure never cancels downloads or releases ownership.
+- Preserve unknown-progress fallback for unavailable/unsupported services and avoid exposing tokens, native file paths or TDLib IDs to WebUI/logs. Keep the service private in standard Compose with no additional user configuration.
+- Verify the actual patched native build in isolation plus scoped backend/UI regressions. Application readiness is not real Telegram/large-file acceptance.

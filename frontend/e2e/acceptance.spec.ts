@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
+import type { DownloadProgress } from '../src/api/types'
 
 async function login(page: Page) {
   await page.goto('/')
@@ -25,6 +26,64 @@ async function settle(page: Page, selector: string) {
     await Promise.all(element.getAnimations({ subtree: true })
       .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
       .map(animation => animation.finished.catch(() => {})))
+  })
+}
+
+for (const width of [1440, 390]) {
+  test(`local acquisition progress stays honest through live detail polling at ${width}px`, async ({ page }) => {
+    test.setTimeout(60000)
+    await page.setViewportSize({ width, height: 844 })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    let snapshot: DownloadProgress | null = { downloaded_bytes: 0, total_bytes: 1024, total_kind: 'exact', speed_bps: null, active: true, completed: false }
+    let state = 'fetching'
+    let copyBytes = 900
+    await page.route('**/api/v1/tasks/e2e-queued', async route => {
+      const response = await route.fetch()
+      const detail = await response.json()
+      await route.fulfill({ json: { ...detail, status: state, items: detail.items.map((item: object) => ({
+        ...item, status: state, phase: state === 'cancelling' ? 'fetching' : state,
+        acquisition_mode: 'local', completed_bytes: copyBytes, total_bytes: 1024, speed_bps: 999,
+        download_progress: snapshot,
+      })) } })
+    })
+    await login(page)
+    await page.getByLabel('搜索名称或任务编号').fill('E2E queued video')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.locator('.task-row .task-name').click()
+    const panel = page.locator('.media-progress')
+    const bar = panel.getByRole('progressbar')
+    await expect(panel).toContainText('已下载 0 B / 1.0 KB')
+    await expect(bar).toHaveAttribute('aria-valuenow', '0')
+
+    snapshot = { ...snapshot!, downloaded_bytes: 512, speed_bps: 128 }
+    await expect(panel).toContainText('已下载 512 B / 1.0 KB · 128 B/s')
+    await expect(bar).toHaveAttribute('aria-valuenow', '50')
+    snapshot = { ...snapshot, total_kind: 'estimated' }
+    await expect(panel).toContainText('已下载 512 B / 约 1.0 KB')
+    await expect(bar).not.toHaveAttribute('aria-valuenow')
+    expect(await panel.locator('.indeterminate-progress span').evaluate(element => getComputedStyle(element).animationName)).toBe('none')
+
+    snapshot = { ...snapshot, total_kind: 'unknown', total_bytes: null }
+    await expect(panel).toContainText('已下载 512 B · 128 B/s')
+    await expect(bar).not.toHaveAttribute('aria-valuenow')
+    snapshot = null
+    await expect(panel).toContainText('暂无法获取下载进度，任务仍在执行')
+    await expect(panel).not.toContainText('已下载')
+    await expect(bar).not.toHaveAttribute('aria-valuenow')
+
+    snapshot = { downloaded_bytes: 1024, total_bytes: 1024, total_kind: 'exact', speed_bps: null, active: false, completed: true }
+    await expect(panel).toContainText('媒体已下载，等待开始保存')
+    await expect(bar).toHaveAttribute('aria-valuenow', '100')
+    state = 'saving'; copyBytes = 0
+    await expect(panel).toContainText('保存中')
+    await expect(panel).toContainText('已保存 0 B / 1.0 KB')
+    await expect(bar).toHaveAttribute('aria-valuenow', '0')
+    state = 'cancelling'
+    await expect(panel).toContainText('取消中')
+    await expect(panel).toContainText('正在等待当前下载安全结束')
+    await expect(bar).not.toHaveAttribute('aria-valuenow')
+    await noOverflow(page)
+    await page.screenshot({ path: `test-results/local-progress-${width}.png` })
   })
 }
 

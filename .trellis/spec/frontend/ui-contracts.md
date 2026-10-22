@@ -73,8 +73,13 @@ so verify the actual source and rendered screenshots before shipping copy edits.
 Unknown progress stays unknown. Never invent percentages or demo tasks. Task can_cancel/can_retry are backend decisions; notification failure is separate from media failure. Vite must preserve Host with changeOrigin:false for backend Origin validation. Production assets have no external font/CDN dependency.
 
 Media stage presentation uses shared `mediaState(item)` and
-`mediaProgress(item)` from `api/mediaProgress.ts`. Label `fetching` as “下载中”;
-no percent is available for this API-wait phase. In `saving`, use each file's
+`mediaProgress(item)` from `api/mediaProgress.ts`. Label `fetching` as “下载中”.
+For local fetching, a fresh `download_progress` snapshot supplies measured bytes
+and speed; show percent only for an exact positive total. Estimated totals are
+visibly approximate without exact percentage; unknown totals keep measured
+bytes and an indeterminate bar. A null/unavailable snapshot remains unknown,
+never fake zero percent. Native completion still awaits getFile and destination
+saving, and cannot mark the task successful. In `saving`, use each file's
 `acquisition_mode` snapshot: cloud stream bytes are download progress (“已下载”),
 local cache-copy bytes are saving progress (“已保存”). Unknown totals keep real
 byte counts without percentage. Unknown-mode items must not claim verified
