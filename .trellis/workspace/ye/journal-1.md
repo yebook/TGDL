@@ -1072,3 +1072,24 @@ Consolidated first-release configuration backup, native proxy, grouping, validat
 ### Next Steps
 
 - Discuss the proposed local read-only progress bridge before implementation; complete separate fnOS and large-file acceptance.
+
+
+## Session 36: Local API progress implementation and deployment
+
+**Date**: 2026-10-22
+**Task**: Local API progress implementation and deployment
+**Branch**: `main`
+
+### Summary
+
+Implemented native read-only TDLib progress, guarded backend observations and user-facing measured progress; fixed same-command child restart generation handling. Native compile/network isolation, scoped regressions, desktop/mobile browser and final deployed source/data/health checks passed. Retained complete stopped backups and rollback images. User authorized publication before UX overhaul; UX remains planning-only, parent release acceptance remains open.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2c5aa92` | (see git log) |
+
+### Status
+
+[OK] **Completed**
