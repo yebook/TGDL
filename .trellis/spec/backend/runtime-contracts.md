@@ -182,7 +182,7 @@ application deployment smoke test.
 
 - Scope: standard single Compose on Linux containers, Windows preview documented in `docs/local-run.md`.
 - Command: `docker compose --env-file .env -f compose.yaml up -d --build`.
-- Contract: default loopback binding; isolated data/download/cache roots; internal API `http://bot-api:8081`. Missing API credentials are never replaced with fake values. Nonroot API supervisor waits until configured through WebUI.
+- Contract: standard WebUI port publication `${TGD_WEB_PORT:-8000}:8000`, using Docker's default host-interface binding without a separate `TGD_BIND_IP` setting or fixed-LAN-IP prerequisite; access via deployment host address and port. Keep isolated data/download/cache roots and internal API `http://bot-api:8081` unpublished. Test fixtures and documentation preview retain their loopback isolation. Missing API credentials are never replaced with fake values. Nonroot API supervisor waits until configured through WebUI.
 - Validation: Compose parses with blank credentials and starts app/API supervisor with private-volume initialization, no TUN or extra network privileges. Healthy UI does not mean Telegram-ready.
 - Cases: good = initialize UI then configure same deployment through WebUI; base = uninitialized UI with live/ready OK; bad = two instances writing one database or claiming real download success from readiness.
 - Required checks: app image build, Compose config quiet, live/ready OK, setup status and browser initialization page. Real Telegram >20MB remains a separate gate.

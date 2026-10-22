@@ -11,7 +11,7 @@ Copy-Item .env.example .env
 New-Item -ItemType Directory -Force data, downloads, bot-api
 ```
 
-用编辑器修改 `.env`，保持目录为项目相对路径，默认监听 `127.0.0.1:8000`。Telegram 凭据稍后在 WebUI 填写。私有控制目录使用 Docker 命名卷并自动初始化，无需在 Windows 手动设置 POSIX 权限；无需 TUN 设备。
+用编辑器修改 `.env`，保持目录为项目相对路径，默认发布 WebUI 端口 `8000`。本机访问 `http://localhost:8000`，其他设备使用 `http://部署主机IP:8000`；修改 `TGD_WEB_PORT` 时使用对应端口。Telegram 凭据稍后在 WebUI 填写。私有控制目录使用 Docker 命名卷并自动初始化，无需在 Windows 手动设置 POSIX 权限；无需 TUN 设备。
 
 按 [部署指南](deployment.md) 执行 `config --quiet` 与 `up -d --build`。在数据目录读取 `bootstrap.key` 初始化管理员，再在 WebUI 保存 Bot Token、自己的用户 ID，使用云端测试小文件。配置只保存在本机，不提交 `.env` 或运行数据。
 

@@ -23,6 +23,10 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
   Docker prerequisites and Bot Token/numeric user ID, followed by the shortest
   supported cloud-first startup path. Keep optional local credentials and detailed
   references later without implying the standard stack skips the local API build.
+  Describe ordinary WebUI access via the deployment host address and published
+  port; no loopback-only default, fixed-LAN-IP prerequisite or `TGD_BIND_IP`
+  configuration. Docker all-interface binding is not a browser destination URL.
+  Retain separate internal API ports and isolated test/document-preview listeners.
 - The deployment reference includes full `.env` and `compose.yaml` fenced blocks,
   with Chinese `#` explanations immediately below each setting/configuration item.
   Commented examples must parse to the same configuration as repository sources;

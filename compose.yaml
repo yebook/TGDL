@@ -6,7 +6,7 @@ services:
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     init: true
     restart: unless-stopped
-    ports: ["${TGD_BIND_IP:-127.0.0.1}:${TGD_WEB_PORT:-8000}:8000"]
+    ports: ["${TGD_WEB_PORT:-8000}:8000"]
     environment:
       TGD_DATA_DIR: /data
       TGD_DOWNLOAD_ROOT: /downloads

@@ -6,7 +6,7 @@
 
 尚未部署时，先按 [Docker 部署指南](deployment.md#部署前准备) 取得源码、准备 Docker、Bot Token 和用户 ID，再按 [最小启动步骤](deployment.md#最小启动步骤) 创建目录、授权并启动。完整的 `.env` 与 `compose.yaml` 注释示例见 [参数设置](deployment.md#参数设置)，无需另外准备代理配置文件。
 
-默认 WebUI 地址是 `http://127.0.0.1:8000`，仅部署主机可访问。其他设备通过内网访问须将 `.env` 中的 `TGD_BIND_IP` 改为部署主机的固定局域网 IP，再访问该地址。Windows 本机操作见 [本地运行](local-run.md)。
+启动后访问 `http://部署主机IP:8000`，本机也可使用 `http://localhost:8000`。若在 `.env` 中修改了 `TGD_WEB_PORT`，使用对应端口即可，无需另外配置绑定地址。Windows 本机操作见 [本地运行](local-run.md)。
 
 首次打开时，从应用数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），创建管理员账号和 **6–20 位密码**。初始化密钥只用于首次设置，不要上传、截图或发送到聊天。
 

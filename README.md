@@ -48,9 +48,9 @@ sudo chmod 750 data bot-api downloads
 chmod 600 .env
 ```
 
-编辑 `.env`，设置持久目录、UID/GID 和 WebUI 绑定地址；完整的注释版 `.env` 与 `compose.yaml` 见 [参数设置](https://yebook.github.io/TGDL/deployment.html#参数设置)。修改宿主目录后，对实际目录创建并授权；已有共享还需允许该用户读写，这些命令不会递归修改已有媒体库。Windows 本机操作见 [本地运行](https://yebook.github.io/TGDL/local-run.html)。
+编辑 `.env`，设置持久目录、UID/GID 和 WebUI 端口；完整的注释版 `.env` 与 `compose.yaml` 见 [参数设置](https://yebook.github.io/TGDL/deployment.html#参数设置)。修改宿主目录后，对实际目录创建并授权；已有共享还需允许该用户读写，这些命令不会递归修改已有媒体库。Windows 本机操作见 [本地运行](https://yebook.github.io/TGDL/local-run.html)。
 
-默认仅部署主机可访问 `http://127.0.0.1:8000`。其他设备内网访问时，将 `TGD_BIND_IP` 改为部署主机的固定局域网 IP，再访问该地址。不要直接对公网开放。
+启动后使用 `http://部署主机IP:8000` 访问，本机也可打开 `http://localhost:8000`。若修改 `TGD_WEB_PORT`，使用对应端口即可，无需另外配置绑定地址。
 
 ### 2. 构建并启动
 

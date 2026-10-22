@@ -21,7 +21,7 @@ cd TGDL
 | 必须保留 | 用途 |
 | --- | --- |
 | [compose.yaml](https://github.com/yebook/TGDL/blob/main/compose.yaml) | 唯一标准部署入口 |
-| [.env.example](https://github.com/yebook/TGDL/blob/main/.env.example) | 复制成 `.env`，填写路径、权限和访问地址 |
+| [.env.example](https://github.com/yebook/TGDL/blob/main/.env.example) | 复制成 `.env`，填写路径、权限和访问端口 |
 | `Dockerfile`、`.dockerignore` | 应用构建入口；排除本机配置、数据和依赖缓存 |
 | `backend/`、`frontend/` | 应用源码、版本信息、依赖清单和锁文件；保留完整目录 |
 | `deploy/` | 应用启动脚本、本地 API 构建文件、补丁、头文件和管理脚本；保留完整目录 |
@@ -71,7 +71,7 @@ chmod 600 .env
 
 这些命令只设置项目顶层目录，不递归修改已有媒体库。已有 NAS 共享的 ACL 也必须允许该 UID/GID 写入。API 控制信息使用私有 Docker 卷，初始化服务负责准备权限，不需要另建控制目录。
 
-编辑刚复制的 `.env`：将 `TGD_UID` / `TGD_GID` 与实际授权的用户对应；默认路径可直接用于测试。其他设备通过内网访问时，将 `TGD_BIND_IP` 从 `127.0.0.1` 改为部署主机的固定局域网 IP。若修改了三个宿主目录路径，也要为对应路径创建目录并授予权限，不能只给默认目录授权。完整配置见下方 [参数设置](#参数设置)。
+编辑刚复制的 `.env`：将 `TGD_UID` / `TGD_GID` 与实际授权的用户对应；默认路径和端口可直接用于测试，端口冲突时修改 `TGD_WEB_PORT`。若修改了三个宿主目录路径，也要为对应路径创建目录并授予权限，不能只给默认目录授权。完整配置见下方 [参数设置](#参数设置)。
 
 确认媒体共享已挂载后，构建并启动：
 
@@ -83,7 +83,7 @@ docker compose --env-file .env -f compose.yaml ps
 
 `config --quiet` 只验证配置，不打印展开后的内容。初始化服务正常完成后退出是预期行为；其他组件常驻。启动成功不表示 Telegram 已连接。
 
-访问 `http://127.0.0.1:8000`，或已配置的部署主机局域网地址。读取初始化密钥并创建管理员账号和 6–20 位密码。默认数据目录下执行：
+访问 `http://部署主机IP:8000`，本机也可使用 `http://localhost:8000`；修改了 `TGD_WEB_PORT` 时使用对应端口，无需另外配置绑定地址。读取初始化密钥并创建管理员账号和 6–20 位密码。默认数据目录下执行：
 
 ```sh
 cat data/bootstrap.key
@@ -93,7 +93,7 @@ cat data/bootstrap.key
 
 默认选择官方云端。在「设置 → 连接 Telegram」保存 Bot Token 和用户 ID 白名单，按需启用代理。保存只检查格式，不要求在线；在顶部查看连接概况，必要时手动校验。先发送 `/start` 检查回复，再发送小于 20 MB 的图片或视频，确认下载后检查文件。操作细节见 [第一次下载](quick-start.md)。
 
-仅 WebUI 端口对宿主开放，本地 API 的 8081 不对外发布。内网 HTTP 适用于可信网络，HTTPS 可由自己的反向代理终止；不要将 WebUI 或本地 API 直接暴露到公网。
+仅 WebUI 端口对宿主开放，本地 API 的 8081 不对外发布。WebUI 仍需初始化管理员并登录；HTTPS 可由自己的反向代理终止。
 
 ## 参数设置
 
@@ -114,8 +114,6 @@ TGD_UID=1000
 # 应用与本地 API 的非 root 数字用户 ID；按主机用户及目录权限修改，可用 id 命令查询。
 TGD_GID=1000
 # 对应的数字组 ID；按实际用户组和目录权限修改，不一定与 UID 相同。
-TGD_BIND_IP=127.0.0.1
-# WebUI 监听的宿主 IP；默认仅本机，需内网访问时改为部署主机的固定局域网 IP。
 TGD_WEB_PORT=8000
 # WebUI 的宿主端口；被占用时可改，容器内部仍使用 8000。
 TGD_TIMEZONE=Asia/Shanghai
@@ -151,8 +149,8 @@ services:
     # 启用轻量 init，协助转发信号、回收子进程；保留。
     restart: unless-stopped
     # 异常退出自动重启，手动停止后保持停止；保留。
-    ports: ["${TGD_BIND_IP:-127.0.0.1}:${TGD_WEB_PORT:-8000}:8000"]
-    # 仅发布 WebUI；宿主 IP 与端口在 .env 设置，内部 8000 保留。
+    ports: ["${TGD_WEB_PORT:-8000}:8000"]
+    # 按 Docker 默认方式发布 WebUI；宿主端口在 .env 设置，内部 8000 保留，无需绑定 IP 参数。
     environment:
     # 以下是容器内部配置；不是需要填写 Telegram 密钥的位置。
       TGD_DATA_DIR: /data
