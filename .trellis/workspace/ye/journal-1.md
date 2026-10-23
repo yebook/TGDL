@@ -1306,3 +1306,36 @@ One shared compose.yaml supports local source builds and digest-pinned image dep
 ### Next Steps
 
 - Actual build/startup unexecuted; Docker image-only dry-run stalled and was cancelled. No current containers or data changed. Parent implementation task remains active.
+
+
+## Session 39: Fix final runtime script permissions and diagnose stale initializer
+
+**Date**: 2026-10-23
+**Task**: Fix final runtime script permissions and diagnose stale initializer
+**Branch**: `main`
+
+### Summary
+
+Explicit final-stage chmod protects app/API scripts from restrictive copied modes. User nonroot-ID exception confirms deployed API initializer is outdated.
+
+### Main Changes
+
+- Normalize only image-owned code, check API parent traversal, retain mounted state and native input identity. Update source rebuild guidance.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8ecea7b` | (see git log) |
+
+### Testing
+
+- [OK] Independent 88 passed and 1 Windows symlink skip; implement Docker4 passed with actual UID1000 Errno13 before chmod and verifier success afterward; private0600 preserved. Ruff, mypy36, version, diff and docs build passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Commit remains local until requested push. User must update actual source and rebuild/recreate containers; no user deployment or native compilation performed.

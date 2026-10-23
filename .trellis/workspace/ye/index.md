@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 38
+- **Total Sessions**: 39
 - **Last Active**: 2026-10-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1308 | Active |
+| `journal-1.md` | ~1341 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 39 | 2026-10-23 | Fix final runtime script permissions and diagnose stale initializer | `8ecea7b` | `main` |
 | 38 | 2026-10-23 | Unify source and image Compose deployment | HEAD | `main` |
 | 37 | 2026-10-23 | Simplify image publication to app and API | `4678435` | `main` |
 | 36 | 2026-10-22 | Local API progress implementation and deployment | `2c5aa92` | `main` |
