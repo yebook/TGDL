@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 36
-- **Last Active**: 2026-10-22
+- **Total Sessions**: 37
+- **Last Active**: 2026-10-23
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1095 | Active |
+| `journal-1.md` | ~1275 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 37 | 2026-10-23 | Simplify image publication to app and API | `4678435` | `main` |
 | 36 | 2026-10-22 | Local API progress implementation and deployment | `2c5aa92` | `main` |
 | 35 | 2026-10-21 | Encrypted backups, native proxy and media workflow verification | `46fa1ca` | `main` |
 | 34 | 2026-10-21 | Update local containers to unified deployment | `62cd5ff` | `main` |

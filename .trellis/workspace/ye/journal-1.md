@@ -1240,3 +1240,36 @@ network reproduced the old import failure and passed the fixed script under
 1000:1000 and 12345:23456. Evidence is .runtime/image-import-check/evidence.json.
 Production application layout/startup remains unchanged. Hosted workflow must be
 rerun from the new commit, not rerun an old revision's job.
+
+
+## Session 37: Simplify image publication to app and API
+
+**Date**: 2026-10-23
+**Task**: Simplify image publication to app and API
+**Branch**: `main`
+
+### Summary
+
+Removed independent native registry publication; final Bot API uses the verified bundled artifact. Documentation and build contracts updated.
+
+### Main Changes
+
+- Publish and mirror only app/API; preserve native input and artifact fingerprints and immutable alias safety.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4678435` | (see git log) |
+
+### Testing
+
+- [OK] 72 scoped tests, Ruff, mypy, version check and diff check passed; docs build validated 23 Markdown files, 104 links and 18 pages.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- User manually runs the image workflow on main; no hosted publication, remote repository deletion or local container update performed.
