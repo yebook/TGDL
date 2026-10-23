@@ -21,6 +21,10 @@ image release automation and distribution docs. User authorized this scope on
 - Image workflow: manual `workflow_dispatch`, trusted main only, linux/amd64.
   Immutable full-revision image tags and digest-pinned deployment artifact;
   numeric publication must be intentional and must not overwrite a release.
+- Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (read/write),
+  with public `tgdl-app`, `tgdl-bot-api`, `tgdl-bot-api-native` repositories.
+  GHCR remains authenticated build/cache storage. Mirror the same manifests,
+  never perform duplicate native compilation per registry.
 
 ## 3. Contracts
 
@@ -40,14 +44,13 @@ bind native identity and scripts. A precompiled native registry hit must permit
 lightweight runtime packaging even on a builder with no native layer cache.
 Avoid unnecessary native compilation on ordinary app or supervisor changes.
 
-Freshness is enforced, not inferred from tag names: native artifacts carry
-versioned provenance with exact Bot API/TDLib source pins and native input
-fingerprint. One shared standard-library helper under `deploy/bot-api/` computes
-the identity for publication and Docker builds. Native packaging records it;
-runtime packaging recomputes the expected identity and refuses missing or
-mismatched metadata before accepting an external base. Source builds use the
-same check. Pin and verify the actual upstream TDLib submodule revision before
-compilation. No manual version bump or floating tag substitutes for these gates.
+Image code permissions must not depend on host checkout modes or NAS ACL export.
+Normalize packaged application code, dependency/static trees and startup scripts
+for arbitrary configured runtime UID/GID: readable files, traversable directories,
+and preserved required executable bits. Verify with restrictive Linux build
+contexts, because Windows contexts can mask this failure. Apply permissions only
+to image-owned code; never broaden mounted data, keys or control-file permissions.
+Runtime packaging permission fixes must not invalidate native input identity.
 
 Freshness is enforced, not inferred from tag names: native artifacts carry
 versioned provenance with exact Bot API/TDLib source pins and native input
@@ -71,6 +74,16 @@ actual API build input. Existing immutable tags cannot silently change meaning.
 No actual published image or speedup may be claimed from local configuration
 validation. Arm64 requires real architecture-specific build/smoke evidence.
 
+Check immutable alias conflicts in both registries before expensive builds.
+Copy complete manifest indexes and attestations without changing digests;
+interrupted copies must remain safely retryable. Actual production-image
+permission checks and offline smoke precede release aliases. Anonymous Docker
+Hub manifest pulls for app/API/native are required before publication succeeds.
+Deployment bundles default to Docker Hub digest-pinned references and retain
+`images.ghcr.env` as an alternative; GHCR package visibility may remain private.
+Never print Docker Hub Tokens or require deployment-host credentials for public
+Docker Hub pulls. Neither image publication nor Pages updates deployed containers.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Behavior |
@@ -80,7 +93,6 @@ validation. Arm64 requires real architecture-specific build/smoke evidence.
 | Management script edit | Repackage API using the same precompiled native base |
 | Native artifact available, builder cache empty | Pull base; never compile TDLib as runtime dependency |
 | Native source/patch/toolchain/dependency change | Build a new native input artifact |
-| Explicit old/unversioned native base | Reject mismatched or missing native provenance; do not package stale binaries |
 | Explicit old/unversioned native base | Reject mismatched or missing native provenance; do not package stale binaries |
 | Invalid compile concurrency | Fail before compilation |
 | First GHCR publication not complete | Explain prerequisite and working source fallback |
@@ -113,10 +125,6 @@ Wrong: `--no-cache` or Docker prune as routine upgrade steps; a floating latest
 tag as proof of a compatible API; enabling privileged containers to fix builds.
 Correct: existing-image recreation for config, explicit source builds for code,
 fixed verified image pairs and unchanged runtime permission/storage boundaries.
-
-Wrong: a source edit leaves a manually configured native digest silently usable.
-Correct: recompute native inputs during runtime packaging and fail on mismatch;
-runtime-script/product-version-only changes leave native identity unchanged.
 
 Wrong: a source edit leaves a manually configured native digest silently usable.
 Correct: recompute native inputs during runtime packaging and fail on mismatch;

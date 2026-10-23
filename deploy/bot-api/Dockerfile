@@ -45,10 +45,9 @@ FROM ${TGD_NATIVE_IMAGE} AS runtime
 RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
     python3 /tgd-source/deploy/bot-api/native_identity.py verify --root /tgd-source --manifest /usr/local/share/tgdl-native.json
 LABEL org.opencontainers.image.version="0.1.0"
-COPY deploy/bot-api/entrypoint.sh /entrypoint.sh
-COPY deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
-COPY deploy/bot-api/init-volumes.py /usr/local/lib/tgd-init-volumes.py
-RUN chmod 755 /entrypoint.sh
+COPY --chmod=0755 deploy/bot-api/entrypoint.sh /entrypoint.sh
+COPY --chmod=0644 deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
+COPY --chmod=0644 deploy/bot-api/init-volumes.py /usr/local/lib/tgd-init-volumes.py
 WORKDIR /var/lib/telegram-bot-api
 EXPOSE 8081
 ENTRYPOINT ["/entrypoint.sh"]

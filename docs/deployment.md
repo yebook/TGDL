@@ -299,7 +299,7 @@ networks:
 
 **此方式待首次镜像发布后可用，目前不要直接拉取默认标签。** 初期仅提供 `linux/amd64`，可用 `uname -m` 核对主机；`x86_64` 对应 amd64。ARM 主机请等待对应架构经过构建和运行验证，不要强行使用 amd64 镜像。
 
-手动镜像发布流程成功后，维护者可从对应 GitHub Actions 运行下载 `tgdl-deployment-amd64-完整提交编号` 部署包。它包含 `compose.yaml`、`.env.example`、配套 `images.env`、`images.json`、`SHA256SUMS` 和 `START.txt`，不包含业务数据或凭据。部署包尚未生成时不能据此认为已有 Release 或公开镜像。
+手动镜像发布流程成功后，维护者可从对应 GitHub Actions 运行下载 `tgdl-deployment-amd64-完整提交编号` 部署包。它包含 `compose.yaml`、`.env.example`、配套 `images.env`、备用 `images.ghcr.env`、`images.json`、`SHA256SUMS` 和 `START.txt`，不包含业务数据或凭据。`images.env` 默认使用经过匿名拉取检查的 Docker Hub 镜像；部署包尚未生成时不能据此认为已有 Release 或公开镜像。
 
 把部署包解压到固定目录，按上文创建并授权三个持久目录，首次安装时将 `.env.example` 复制为自己的 `.env` 后修改路径、权限和端口。更新已有部署时保留原 `.env`、挂载位置、数据与私有卷，不用模板覆盖。在该目录执行：
 
@@ -310,7 +310,7 @@ docker compose --env-file .env --env-file images.env -f compose.yaml pull
 docker compose --env-file .env --env-file images.env -f compose.yaml up -d --no-build
 ```
 
-自己的 `.env` 保存主机参数；第二份 `images.env` 只固定本次发布的应用/API 镜像摘要，后加载的同名变量优先。不要将它覆盖成自己的 `.env`，也不要单独替换其中一个镜像。`init-volumes` 与 `bot-api` 自动使用同一 API 镜像。默认数字版本是 `0.1.0`，工作流也可发布提交标签；优先使用部署包中经过配对记录的摘要，避免开发期间标签变化带来误更新。所有镜像须可由部署主机拉取；仓库未公开时还需相应的 GHCR 读取权限。
+自己的 `.env` 保存主机参数；第二份 `images.env` 只固定本次发布的应用/API 镜像摘要，后加载的同名变量优先。不要将它覆盖成自己的 `.env`，也不要单独替换其中一个镜像。`init-volumes` 与 `bot-api` 自动使用同一 API 镜像。当前数字版本是 `0.1.0`，工作流也可发布提交标签；优先使用部署包中经过配对记录的摘要，避免开发期间标签变化带来误更新。若需改用 GHCR，将命令中的 `images.env` 换为 `images.ghcr.env`；GHCR 包未公开时还需相应的读取权限。根目录 Compose 的默认 GHCR 引用不等同于 Docker Hub 部署包，使用部署包时务必加载配套的镜像环境文件。
 
 镜像部署无需上传 `backend/`、`frontend/` 或安装编译器，用户只需两个最终运行镜像；维护者单独预编译的 Bot API / TDLib 基础镜像已在最终 API 镜像中使用，不额外部署服务。公开镜像发布不会自动更新用户的容器，升级仍需用户主动拉取、备份并重新部署，见 [升级与回滚](operations.md#升级与回滚)。
 

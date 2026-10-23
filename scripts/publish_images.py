@@ -1,4 +1,4 @@
-"""Manual GHCR publication helper. Never reads application settings/runtime data."""
+"""Build once in GHCR and mirror verified artifacts to Docker Hub."""
 import argparse
 import hashlib
 import json
@@ -7,6 +7,7 @@ import re
 import runpy
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +56,12 @@ def remote_digest(reference: str) -> str | None:
     )
     if result.returncode:
         # Authentication, rate limits and network failure must never mean 'absent'.
-        if re.search(r"manifest unknown|: not found(?:\s|$)", result.stderr, re.IGNORECASE):
+        blocked = re.search(
+            r"unauthorized|denied|insufficient_scope|authentication|toomanyrequests|too many requests|429|"
+            r"certificate|tls|no such host|connection|timeout|timed out",
+            result.stderr, re.IGNORECASE,
+        )
+        if not blocked and re.search(r"manifest unknown|: not found(?:\s|$)", result.stderr, re.IGNORECASE):
             return None
         raise RuntimeError(f"Registry inspection failed for {reference}: {result.stderr.strip()}")
     digest = json.loads(result.stdout)["digest"]
@@ -64,23 +70,36 @@ def remote_digest(reference: str) -> str | None:
     return digest
 
 
-def bundle(root: Path, destination: Path, app: str, api: str, revision: str, identity: str, native: str) -> None:
-    for reference in (app, api, native):
+def bundle(
+    root: Path, destination: Path, app: str, api: str, revision: str, identity: str, native: str,
+    mirrors: list[str] | None = None,
+) -> None:
+    for reference in (app, api, native, *(mirrors or [])):
         if "@" not in reference or not DIGEST.fullmatch(reference.rsplit("@", 1)[1]):
             raise ValueError("Deployment bundles require immutable digest references")
     destination.mkdir(parents=True, exist_ok=False)
     for filename in ("compose.yaml", ".env.example"):
         shutil.copyfile(root / filename, destination / filename)
+    alternate: dict[str, str] = {}
+    if mirrors:
+        (destination / "images.ghcr.env").write_text(
+            f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8",
+        )
+        alternate = dict(zip(("app", "bot_api", "native_source"), (app, api, native), strict=True))
+        app, api, native = mirrors
     (destination / "images.env").write_text(f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8")
     (destination / "images.json").write_text(json.dumps({
         "revision": revision, "platform": "linux/amd64", "api_input_sha256": identity,
         "app": app, "bot_api": api, "native_source": native,
+        "ghcr_alternate": alternate,
     }, indent=2) + "\n", encoding="utf-8")
     (destination / "START.txt").write_text(
         "Copy .env.example to .env and configure directories/UID/GID.\n"
         "docker compose --env-file .env --env-file images.env pull\n"
         "docker compose --env-file .env --env-file images.env up -d --no-build\n"
         "images.env pins the compatible pair. Keep it for upgrades/redeployment.\n"
+        "images.env uses public Docker Hub images when mirrored.\n"
+        "Optional images.ghcr.env requires public GHCR packages or registry read access.\n"
         "linux/amd64 only. This bundle contains no user configuration or media.\n",
         encoding="utf-8",
     )
@@ -96,7 +115,39 @@ def ensure_alias(target: str, source: str) -> None:
         return
     if existing is not None:
         raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
-    subprocess.run(["docker", "buildx", "imagetools", "create", "-t", target, source], check=True)
+    subprocess.run([
+        "docker", "buildx", "imagetools", "create", "--prefer-index=false", "-t", target, source,
+    ], check=True)
+
+
+def mirror_image(target: str, source: str) -> str:
+    """Copy all platform/attestation manifests and require byte-identical digests."""
+    expected = source.rsplit("@", 1)[1]
+    existing = remote_digest(target)
+    if existing is not None and existing != expected:
+        raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
+    if existing is None:
+        subprocess.run([
+            "skopeo", "copy", "--all", "--preserve-digests", "--authfile",
+            str(Path(os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))) / "config.json"),
+            f"docker://{source}", f"docker://{target}",
+        ], check=True)
+    if remote_digest(target) != expected:
+        raise RuntimeError(f"Registry mirror digest mismatch: {target}")
+    return f"{target.rsplit(':', 1)[0]}@{expected}"
+
+
+def verify_public(reference: str) -> None:
+    """Ignore runner login credentials; deployment images must be anonymously readable."""
+    with tempfile.TemporaryDirectory(prefix="tgdl-public-registry-") as directory:
+        authfile = Path(directory) / "auth.json"
+        authfile.write_text('{"auths":{}}', encoding="utf-8")
+        result = subprocess.run([
+            "skopeo", "inspect", "--raw", "--no-creds", "--authfile", str(authfile),
+            f"docker://{reference}",
+        ], check=True, capture_output=True)
+    if "sha256:" + hashlib.sha256(result.stdout).hexdigest() != reference.rsplit("@", 1)[1]:
+        raise RuntimeError(f"Anonymous registry digest mismatch: {reference}")
 
 
 def ensure_native(root: Path, repository: str, revision: str, common: list[str]) -> str:
@@ -130,6 +181,10 @@ def publish(release: bool) -> None:
     run("python", "scripts/version.py", "--check")
     version = json.loads((ROOT / "backend/app/version.json").read_text())["version"]
     repos = [f"ghcr.io/{repository}-app", f"ghcr.io/{repository}-bot-api"]
+    namespace = os.environ.get("DOCKERHUB_USERNAME", "")
+    if namespace and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,38}", namespace):
+        raise ValueError("Invalid Docker Hub namespace")
+    mirror_repos = [f"docker.io/{namespace}/tgdl-{name}" for name in ("app", "bot-api", "bot-api-native")]
     commit_refs = [f"{repo}:sha-{revision}" for repo in repos]
     release_refs = [f"{repo}:{version}" for repo in repos] if release else []
     identity = api_identity(ROOT)
@@ -144,6 +199,20 @@ def publish(release: bool) -> None:
             existing = remote_digest(target)
             if existing is not None and existing != expected:
                 raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
+    # Include mirror content/native/commit/release conflicts in preflight as well.
+    # Never discover an occupied Docker Hub release after a lengthy native build.
+    if namespace:
+        native_digest = remote_digest(f"ghcr.io/{repository}-bot-api-native:input-{native_identity(ROOT)}")
+        for repo, expected, key in zip(
+            mirror_repos, [*digests, native_digest], [*identities, native_identity(ROOT)], strict=True,
+        ):
+            tags = [f"input-{key}", f"sha-{revision}"]
+            if release:
+                tags.append(version)
+            for tag in tags:
+                existing = remote_digest(f"{repo}:{tag}")
+                if existing is not None and existing != expected:
+                    raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {repo}:{tag}")
     common = ["--platform", "linux/amd64", "--provenance", "mode=max", "--sbom", "true", "--push"]
     native = ensure_native(ROOT, repository, revision, common)
     for index in (1, 0):
@@ -173,6 +242,17 @@ def publish(release: bool) -> None:
     # No-secret, offline smoke of the actual production pair before user-facing aliases.
     for source in pinned:
         subprocess.run(["docker", "pull", "--platform", "linux/amd64", source], check=True)
+    permissions = ROOT / "deploy/verify-image-permissions.py"
+    for kind, source in zip(("app", "api"), pinned, strict=True):
+        for user in ("1000:1000", "12345:23456"):
+            subprocess.run([
+                "docker", "run", "--rm", "--network", "none", "--read-only", "--user", user,
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-e", "TGD_DATA_DIR=/tmp/tgd-check",
+                "--mount", f"type=bind,src={permissions},dst=/verify-permissions.py,readonly",
+                "--entrypoint", "python" if kind == "app" else "python3", source,
+                "/verify-permissions.py", kind,
+            ], check=True)
     subprocess.run(["python", "scripts/docker_acceptance.py", "--run", "--image", pinned[0]], check=True)
     verifier = ROOT / "deploy/bot-api/verify-runtime-identity.py"
     subprocess.run(["docker", "run", "--rm", "--init", "--network", "none", "--read-only",
@@ -185,9 +265,26 @@ def publish(release: bool) -> None:
                     "--entrypoint", "python3", pinned[1], "/verify.py"], check=True)
     subprocess.run(["docker", "run", "--rm", "--network", "none", "--read-only",
                     "--entrypoint", "/usr/local/bin/telegram-bot-api", pinned[1], "--version"], check=True)
+    mirrors: list[str] = []
+    if namespace:
+        for repo, source, key in zip(
+            mirror_repos, [*pinned, native], [*identities, native_identity(ROOT)], strict=True,
+        ):
+            mirrors.append(mirror_image(f"{repo}:input-{key}", source))
+        # Neither registry gets user-facing aliases if public pulls are unavailable.
+        for source in mirrors:
+            verify_public(source)
+        for repo, source in zip(mirror_repos, mirrors, strict=True):
+            aliases.append((f"{repo}:sha-{revision}", source))
+            if release:
+                aliases.append((f"{repo}:{version}", source))
+    for target, source in aliases:
+        existing = remote_digest(target)
+        if existing is not None and existing != source.rsplit("@", 1)[1]:
+            raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
     for target, source in aliases:
         ensure_alias(target, source)
-    bundle(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity, native)
+    bundle(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity, native, mirrors)
 
 
 if __name__ == "__main__":

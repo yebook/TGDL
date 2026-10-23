@@ -39,6 +39,10 @@ def test_api_identity_covers_native_runtime_and_exclusions(tmp_path: Path) -> No
     ("lookup ghcr.io: no such host", False),
     ("certificate not found in trust store", False),
     ("429 Too Many Requests", False),
+    ("insufficient_scope: authorization failed; docker.io/example/repo: not found", False),
+    ("unauthorized: manifest unknown", False),
+    ("denied: requested access; manifest unknown", False),
+    ("connection refused; example/image: not found", False),
 ])
 def test_only_manifest_absence_is_treated_as_buildable(error: str, absent: bool) -> None:
     response = subprocess.CompletedProcess([], 1, "", error)
@@ -346,3 +350,153 @@ def test_native_manifest_rejects_unsupported_architecture_before_io(tmp_path: Pa
             helper["write_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "source.json")
         with pytest.raises(ValueError, match="linux/amd64 only"):
             helper["verify_manifest"](tmp_path, tmp_path / "native.json")
+
+
+@pytest.mark.parametrize("state", ["missing", "matching", "conflict", "wrong-copy"])
+def test_mirror_requires_exact_digest_and_never_rebuilds(state: str) -> None:
+    namespace = TOOL["mirror_image"].__globals__
+    digest = "sha256:" + "a" * 64
+    target = "docker.io/example/tgdl-app:input-abc"
+    source = "ghcr.io/yebook/tgdl-app@" + digest
+    existing = digest if state == "matching" else "sha256:" + "b" * 64 if state == "conflict" else None
+    values = [existing, "sha256:" + "c" * 64 if state == "wrong-copy" else digest]
+    with patch.dict(namespace, {"remote_digest": lambda ref: values.pop(0)}), patch("subprocess.run") as command:
+        if state == "conflict":
+            with pytest.raises(ValueError, match="conflicting immutable"):
+                TOOL["mirror_image"](target, source)
+            command.assert_not_called()
+        elif state == "wrong-copy":
+            with pytest.raises(RuntimeError, match="mirror digest mismatch"):
+                TOOL["mirror_image"](target, source)
+        else:
+            assert TOOL["mirror_image"](target, source) == "docker.io/example/tgdl-app@" + digest
+            assert command.call_count == (0 if state == "matching" else 1)
+        if command.called:
+            arguments = command.call_args.args[0]
+            assert arguments[:5] == ["skopeo", "copy", "--all", "--preserve-digests", "--authfile"]
+            assert arguments[-2:] == [f"docker://{source}", f"docker://{target}"]
+
+
+def test_anonymous_verification_uses_no_runner_credentials() -> None:
+    raw = b'{"schemaVersion":2}'
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+
+    def inspect(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert "--no-creds" in arguments
+        authfile = Path(arguments[arguments.index("--authfile") + 1])
+        assert json.loads(authfile.read_text()) == {"auths": {}}
+        return subprocess.CompletedProcess(arguments, 0, raw, b"")
+
+    with patch("subprocess.run", side_effect=inspect):
+        TOOL["verify_public"]("docker.io/example/tgdl-app@" + digest)
+        with pytest.raises(RuntimeError, match="Anonymous registry digest mismatch"):
+            TOOL["verify_public"]("docker.io/example/tgdl-app@sha256:" + "a" * 64)
+
+
+def test_mirror_uses_explicit_docker_login_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    namespace = TOOL["mirror_image"].__globals__
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
+    digest = "sha256:" + "a" * 64
+    values = [None, digest]
+    with patch.dict(namespace, {"remote_digest": lambda ref: values.pop(0)}), patch("subprocess.run") as command:
+        TOOL["mirror_image"]("docker.io/example/tgdl-app:input-abc", "ghcr.io/example/image@" + digest)
+    arguments = command.call_args.args[0]
+    assert arguments[arguments.index("--authfile") + 1] == str(tmp_path / "config.json")
+
+
+def test_bundle_includes_independently_pinned_dockerhub_pair(tmp_path: Path) -> None:
+    (tmp_path / "compose.yaml").write_text("services: {}\n")
+    (tmp_path / ".env.example").write_text("TGD_UID=1000\n")
+    primary = [f"ghcr.io/yebook/tgdl-{name}@sha256:" + "a" * 64 for name in ("app", "bot-api", "native")]
+    mirrors = [reference.replace("ghcr.io/yebook/", "docker.io/example/") for reference in primary]
+    output = tmp_path / "bundle"
+    TOOL["bundle"](tmp_path, output, *primary[:2], "c" * 40, "d" * 64, primary[2], mirrors)
+    assert (output / "images.env").read_text() == (
+        f"TGD_APP_IMAGE={mirrors[0]}\nTGD_API_IMAGE={mirrors[1]}\n"
+    )
+    assert (output / "images.ghcr.env").read_text() == (
+        f"TGD_APP_IMAGE={primary[0]}\nTGD_API_IMAGE={primary[1]}\n"
+    )
+    metadata = json.loads((output / "images.json").read_text())
+    assert metadata["native_source"] == mirrors[2]
+    assert metadata["ghcr_alternate"]["native_source"] == primary[2]
+    expected_names = {
+        "compose.yaml", ".env.example", "images.env", "images.ghcr.env", "images.json", "START.txt",
+    }
+    assert {path.name for path in output.iterdir()} == expected_names | {"SHA256SUMS"}
+    checksums = dict(line.split("  ")[::-1] for line in (output / "SHA256SUMS").read_text().splitlines())
+    assert set(checksums) == expected_names
+    for name, checksum in checksums.items():
+        assert hashlib.sha256((output / name).read_bytes()).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("failure", ["none", "mirror", "private", "collision", "permission"])
+def test_dual_registry_publication_resumes_without_rebuilding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    namespace = TOOL["publish"].__globals__
+    metadata = tmp_path / "backend/app/version.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"version":"0.1.0"}')
+    revision = "c" * 40
+    for name, value in {
+        "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": revision,
+        "GITHUB_REPOSITORY": "yebook/TGDL", "DOCKERHUB_USERNAME": "example",
+    }.items():
+        monkeypatch.setenv(name, value)
+    registry: dict[str, str] = {}
+    if failure == "collision":
+        registry["docker.io/example/tgdl-app:0.1.0"] = "sha256:" + "9" * 64
+    calls: list[list[str]] = []
+    bundles: list[tuple[object, ...]] = []
+    public: list[str] = []
+    pending_failure = failure
+
+    def command(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal pending_failure
+        calls.append(args)
+        if args[:3] == ["docker", "buildx", "build"]:
+            tag = args[args.index("-t") + 1]
+            registry[tag] = "sha256:" + hashlib.sha256(tag.encode()).hexdigest()
+        elif args[:2] == ["skopeo", "copy"]:
+            if pending_failure == "mirror" and "tgdl-bot-api:input" in args[-1]:
+                pending_failure = "none"
+                raise subprocess.CalledProcessError(1, args)
+            registry[args[-1].removeprefix("docker://")] = args[-2].rsplit("@", 1)[1]
+        elif args[:4] == ["docker", "buildx", "imagetools", "create"]:
+            registry[args[args.index("-t") + 1]] = args[-1].rsplit("@", 1)[1]
+        elif "/verify-permissions.py" in args and pending_failure == "permission":
+            pending_failure = "none"
+            raise subprocess.CalledProcessError(1, args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def check_public(reference: str) -> None:
+        nonlocal pending_failure
+        public.append(reference)
+        if pending_failure == "private":
+            pending_failure = "none"
+            raise RuntimeError("repository is private")
+
+    with patch.dict(namespace, {
+        "ROOT": tmp_path, "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
+        "app_identity": lambda root: "e" * 64, "api_identity": lambda root: "d" * 64,
+        "native_identity": lambda root: "f" * 64, "remote_digest": registry.get,
+        "bundle": lambda *args: bundles.append(args), "verify_public": check_public,
+    }), patch("subprocess.run", side_effect=command):
+        if failure != "none":
+            with pytest.raises((ValueError, RuntimeError, subprocess.CalledProcessError)):
+                TOOL["publish"](True)
+            assert not bundles
+            assert not any(":sha-" in reference for reference in registry)
+            if failure == "collision":
+                assert not calls  # No native compilation or other expensive subprocess.
+                return
+        TOOL["publish"](True)
+        TOOL["publish"](True)
+    builds = [args for args in calls if args[:3] == ["docker", "buildx", "build"]]
+    assert len(builds) == 3  # Native/app/API each built only once, including retries.
+    assert len([args for args in calls if args[:2] == ["skopeo", "copy"]]) == (4 if failure == "mirror" else 3)
+    assert len(bundles) == 2 and len(bundles[0][-1]) == 3
+    assert len(set(public)) == 3
+    for name in ("app", "bot-api", "bot-api-native"):
+        assert f"docker.io/example/tgdl-{name}:0.1.0" in registry

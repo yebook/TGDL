@@ -154,6 +154,18 @@
 ## Artifact Status
 
 需求 v1.0 与技术设计/实施计划已获用户确认，已执行 task.py start，状态为 in_progress。后端、WebUI、部署实现按 ownership 分派给 Trellis 子代理，随后进行集成与独立检查；真实 Bot/NAS/代理实验仍需部署环境，不能把文档研究或模拟测试标为真实验证。
+
+## Runtime image code permissions (2026-10-23)
+
+- Fix startup failures reading `/app/entrypoint.py` and `/usr/local/lib/tgd-api-supervisor.py` when restrictive NAS checkout permissions are preserved by Docker COPY.
+- Package code, dependencies and static assets with explicit runtime-readable/traversable permissions for configured UID/GID; preserve executable dependency files. Never change mounted data, secrets or media permissions as part of this repair.
+- Verify restrictive Linux source permissions and representative non-root/mixed IDs without real Telegram, production container mutation or a full native compile. Runtime-only packaging fixes must not invalidate the native source fingerprint.
+
+## First Docker Hub image publication (2026-10-23)
+
+- User configured GitHub Repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` and authorized completing, committing/pushing and attempting the production image workflow, including the startup permission fix. User chose to click Run workflow personally because this workstation has no GitHub Actions authentication.
+- Compile once on GitHub, retain independently reusable native artifacts and GHCR build/cache, mirror the same manifests to Docker Hub, and provide Docker Hub digest-pinned deployment files with GHCR alternatives. Do not update NAS or local running containers.
+- Preserve immutable-tag collision checks, interrupted-run recovery and provenance; verify real-image permissions/offline smoke before version tags, and anonymous Docker Hub pulls before claiming publication usable. Three Docker Hub repositories must be public and the Token must permit writes; never expose credentials in source or logs.
 ## Saved local media cache cleanup (2026-10-23)
 
 - After successful durable final publication, remove that media's local API cache through TDLib; preserve API authentication/runtime data. Cross-volume copying remains necessary, but retained double storage must not be normal successful behavior.

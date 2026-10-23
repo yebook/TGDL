@@ -1161,3 +1161,45 @@ files, 104 links and 18 pages; env/YAML examples and version metadata match.
 User authorized commit/push; publication workflow remains manual and has not
 been triggered. Public GHCR availability and authenticated media acceptance are
 not claimed. Running deployment and user buildlog remain untouched.
+
+## 2026-10-23: NAS runtime script permission repair
+
+User reported Python Errno 13 opening the app entrypoint and API supervisor.
+Docker COPY preserved restrictive Linux checkout modes. Normalize application
+code/dependencies and built assets in producer stages, preserving executable
+tools and avoiding a duplicate final payload layer; explicitly set runtime
+startup script COPY modes. Mounted data and private control permissions remain
+unchanged. Added offline image permission verifier and troubleshooting guidance.
+
+Independent review passed: 54 distribution/identity tests, Ruff, mypy (36 files),
+version/diff checks and docs build (23 Markdown, 104 links, 18 pages).
+Restrictive Linux tar contexts (0600 files/0700 dirs) and deliberately restricted
+real app dependencies/assets passed ten offline read-only disposable checks:
+app/API times 1000:1000, 12345:23456, 1000:0, 0:1000 and 0:0. Checks read image
+content, import app/dependencies and API scripts, and inspect executable tools.
+Both negative controls reproduced the exact reported Errno 13 paths. Cached
+production dependencies/native fixtures avoided network installs and native
+compilation; native input identity is unchanged. Evidence remains private under
+`.runtime/permission-check/`. No live deployment, Telegram, data or user buildlog
+was changed; this repair has not been committed or pushed.
+
+### Docker Hub publication preparation
+
+User subsequently authorized including the permission repair in a commit/push
+and completing the first production image publication workflow. They configured
+DOCKERHUB_USERNAME/TOKEN repository secrets and chose to click Run workflow
+personally; this workstation has no GitHub Actions login. User confirmed the
+three public Docker Hub repositories and read/write token scope are ready.
+GHCR builds/cache stay authenticated; Skopeo mirrors complete indexes and
+attestations to Docker Hub without compiling twice. Both registries are checked
+for immutable-tag conflicts before expensive builds. Real-image permission
+checks/offline smoke and anonymous Docker Hub manifest checks precede aliases.
+Deployment bundle defaults to Docker Hub with images.ghcr.env as an alternate;
+private GHCR packages do not block Docker Hub deployment.
+
+Implementation scoped distribution/version tests: 65 passed; independent final
+distribution/version/runtime-ID tests: 79 passed. Ruff and mypy (36 files)
+passed. Documentation build, env/YAML synchronization, version and diff
+checks passed. Remote workflow execution, credentials/scope verification and
+actual registry pushes are pending the user's manual trigger; no successful
+publication or public numeric tags are claimed. No runtime deployment changed.
