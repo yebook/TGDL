@@ -33,7 +33,7 @@ def verify_bundled_native(root: Path) -> None:
 
 
 def api_identity(root: Path) -> str:
-    """Runtime scripts/version reuse the independently compiled native input identity."""
+    """Runtime identity binds scripts/version to the actual verified Git bundle."""
     _, runtime = dockerfile_sections(root)
     files = [f"deploy/bot-api/{name}" for name in ("entrypoint.sh", "supervisor.py", "init-volumes.py")]
     return input_identity(root, files, (bundled_artifact_identity(root) + "\n" + runtime).encode())
@@ -83,12 +83,17 @@ def remote_digest(reference: str) -> str | None:
 
 
 def bundle(
-    root: Path, destination: Path, app: str, api: str, revision: str, identity: str, native: str,
+    root: Path, destination: Path, app: str, api: str, revision: str, identity: str,
+    native_inputs: str, native_artifact: str,
     mirrors: list[str] | None = None,
 ) -> None:
-    for reference in (app, api, native, *(mirrors or [])):
+    for reference in (app, api, *(mirrors or [])):
         if "@" not in reference or not DIGEST.fullmatch(reference.rsplit("@", 1)[1]):
             raise ValueError("Deployment bundles require immutable digest references")
+    if mirrors is not None and len(mirrors) != 2:
+        raise ValueError("Deployment bundles require exactly two mirrored images")
+    if any(not re.fullmatch(r"[0-9a-f]{64}", key) for key in (native_inputs, native_artifact)):
+        raise ValueError("Deployment bundles require native source and artifact SHA256 identities")
     destination.mkdir(parents=True, exist_ok=False)
     for filename in ("compose.yaml", ".env.example"):
         shutil.copyfile(root / filename, destination / filename)
@@ -97,12 +102,13 @@ def bundle(
         (destination / "images.ghcr.env").write_text(
             f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8",
         )
-        alternate = dict(zip(("app", "bot_api", "native_source"), (app, api, native), strict=True))
-        app, api, native = mirrors
+        alternate = dict(zip(("app", "bot_api"), (app, api), strict=True))
+        app, api = mirrors
     (destination / "images.env").write_text(f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8")
     (destination / "images.json").write_text(json.dumps({
         "revision": revision, "platform": "linux/amd64", "api_input_sha256": identity,
-        "app": app, "bot_api": api, "native_source": native,
+        "app": app, "bot_api": api,
+        "native_input_sha256": native_inputs, "native_artifact_sha256": native_artifact,
         "ghcr_alternate": alternate,
     }, indent=2) + "\n", encoding="utf-8")
     (destination / "START.txt").write_text(
@@ -162,25 +168,6 @@ def verify_public(reference: str) -> None:
         raise RuntimeError(f"Anonymous registry digest mismatch: {reference}")
 
 
-def ensure_native(root: Path, repository: str, revision: str, common: list[str]) -> str:
-    repo = f"ghcr.io/{repository}-bot-api-native"
-    reference = f"{repo}:input-{bundled_artifact_identity(root)}"
-    digest = remote_digest(reference)
-    if digest is None:
-        cache = f"type=registry,ref={repo}:buildcache-amd64"
-        subprocess.run([
-            "docker", "buildx", "build", ".", "-f", "deploy/bot-api/Dockerfile",
-            "--target", "bundled-native", "-t", reference,
-            "--label", f"org.opencontainers.image.source=https://github.com/{repository}",
-            "--label", f"io.tgdl.build.revision={revision}",
-            "--cache-from", cache, "--cache-to", cache + ",mode=max", *common,
-        ], check=True)
-        digest = remote_digest(reference)
-    if digest is None:
-        raise RuntimeError("Native publication did not produce a manifest")
-    return f"{repo}@{digest}"
-
-
 def publish(release: bool) -> None:
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ValueError("Publication is permitted only from main")
@@ -197,7 +184,7 @@ def publish(release: bool) -> None:
     namespace = os.environ.get("DOCKERHUB_USERNAME", "")
     if namespace and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,38}", namespace):
         raise ValueError("Invalid Docker Hub namespace")
-    mirror_repos = [f"docker.io/{namespace}/tgdl-{name}" for name in ("app", "bot-api", "bot-api-native")]
+    mirror_repos = [f"docker.io/{namespace}/tgdl-{name}" for name in ("app", "bot-api")]
     commit_refs = [f"{repo}:sha-{revision}" for repo in repos]
     release_refs = [f"{repo}:{version}" for repo in repos] if release else []
     identity = api_identity(ROOT)
@@ -205,19 +192,17 @@ def publish(release: bool) -> None:
     content_refs = [f"{repo}:input-{key}" for repo, key in zip(repos, identities, strict=True)]
     # Content keys make partial failures resumable without overwriting commit tags.
     digests = [remote_digest(reference) for reference in content_refs]
-    # Reject occupied immutable aliases before spending time compiling TDLib.
+    # Reject occupied immutable aliases before spending time building images.
     # A missing content artifact cannot prove that an existing alias matches.
     for references in (commit_refs, release_refs):
         for target, expected in zip(references, digests, strict=False):
             existing = remote_digest(target)
             if existing is not None and existing != expected:
                 raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
-    # Include mirror content/native/commit/release conflicts in preflight as well.
-    # Never discover an occupied Docker Hub release after a lengthy native build.
+    # Include mirror content/commit/release conflicts in preflight as well.
     if namespace:
-        native_digest = remote_digest(f"ghcr.io/{repository}-bot-api-native:input-{bundled_artifact_identity(ROOT)}")
         for repo, expected, key in zip(
-            mirror_repos, [*digests, native_digest], [*identities, bundled_artifact_identity(ROOT)], strict=True,
+            mirror_repos, digests, identities, strict=True,
         ):
             tags = [f"input-{key}", f"sha-{revision}"]
             if release:
@@ -227,7 +212,6 @@ def publish(release: bool) -> None:
                 if existing is not None and existing != expected:
                     raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {repo}:{tag}")
     common = ["--platform", "linux/amd64", "--provenance", "mode=max", "--sbom", "true", "--push"]
-    native = ensure_native(ROOT, repository, revision, common)
     for index in (1, 0):
         if digests[index] is not None:
             continue
@@ -238,7 +222,7 @@ def publish(release: bool) -> None:
                    "--label", f"io.tgdl.build.revision={revision}",
                    "--cache-from", cache, "--cache-to", cache + ",mode=max", *common]
         if index:
-            command += ["--build-arg", f"TGD_NATIVE_IMAGE={native}"]
+            command += ["--build-arg", "TGD_NATIVE_IMAGE=bundled-native"]
         else:
             command += ["--label", f"org.opencontainers.image.revision={revision}"]
         subprocess.run(command, check=True)
@@ -281,7 +265,7 @@ def publish(release: bool) -> None:
     mirrors: list[str] = []
     if namespace:
         for repo, source, key in zip(
-            mirror_repos, [*pinned, native], [*identities, bundled_artifact_identity(ROOT)], strict=True,
+            mirror_repos, pinned, identities, strict=True,
         ):
             mirrors.append(mirror_image(f"{repo}:input-{key}", source))
         # Neither registry gets user-facing aliases if public pulls are unavailable.
@@ -297,7 +281,8 @@ def publish(release: bool) -> None:
             raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
     for target, source in aliases:
         ensure_alias(target, source)
-    bundle(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity, native, mirrors)
+    bundle(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity,
+           native_identity(ROOT), bundled_artifact_identity(ROOT), mirrors or None)
 
 
 if __name__ == "__main__":

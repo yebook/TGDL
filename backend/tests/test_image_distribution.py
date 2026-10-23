@@ -74,6 +74,36 @@ def test_invalid_local_bundle_is_rejected_before_any_registry_cache_lookup(
             TOOL["publish"](False)
 
 
+@pytest.mark.parametrize("changed", ["source", "archive"])
+def test_actual_source_or_archive_drift_rejected_before_registry_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str,
+) -> None:
+    api = tmp_path / "deploy/bot-api"
+    shutil.copytree(ROOT / "deploy/bot-api", api, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / ".dockerignore", tmp_path / ".dockerignore")
+    if changed == "source":
+        with (api / "CacheCleanup.h").open("ab") as stream:
+            stream.write(b"\n// changed native source\n")
+        error = "stale"
+    else:
+        with (api / "prebuilt/linux-amd64.tar.gz").open("ab") as stream:
+            stream.write(b"changed native archive")
+        error = "archive checksum mismatch"
+    revision = "c" * 40
+    for name, value in {
+        "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": revision, "GITHUB_REPOSITORY": "yebook/TGDL",
+    }.items():
+        monkeypatch.setenv(name, value)
+    namespace = TOOL["publish"].__globals__
+    with patch.dict(namespace, {
+        "ROOT": tmp_path,
+        "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
+        "remote_digest": lambda ref: pytest.fail("Registry reuse must not hide actual bundle drift"),
+    }):
+        with pytest.raises(ValueError, match=error):
+            TOOL["publish"](True)
+
+
 @pytest.mark.parametrize("error,absent", [
     ("ERROR: ghcr.io/yebook/tgdl-app:version: not found", True),
     ("manifest unknown", True),
@@ -103,19 +133,27 @@ def test_bundle_pins_pair_and_includes_only_deployment_inputs(tmp_path: Path) ->
     app = "ghcr.io/yebook/tgdl-app@sha256:" + "a" * 64
     api = "ghcr.io/yebook/tgdl-bot-api@sha256:" + "b" * 64
     output = tmp_path / "bundle"
-    native = "ghcr.io/yebook/tgdl-bot-api-native@sha256:" + "e" * 64
-    TOOL["bundle"](tmp_path, output, app, api, "c" * 40, "d" * 64, native)
+    TOOL["bundle"](tmp_path, output, app, api, "c" * 40, "d" * 64, "e" * 64, "f" * 64)
     assert {path.name for path in output.iterdir()} == {
         "compose.yaml", ".env.example", "images.env", "images.json", "START.txt", "SHA256SUMS",
     }
     assert (output / "images.env").read_text() == f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n"
     assert json.loads((output / "images.json").read_text())["platform"] == "linux/amd64"
-    assert json.loads((output / "images.json").read_text())["native_source"] == native
+    metadata = json.loads((output / "images.json").read_text())
+    assert metadata["native_input_sha256"] == "e" * 64
+    assert metadata["native_artifact_sha256"] == "f" * 64
+    assert "native_source" not in metadata
     for line in (output / "SHA256SUMS").read_text().splitlines():
         checksum, name = line.split("  ")
         assert hashlib.sha256((output / name).read_bytes()).hexdigest() == checksum
+    second = tmp_path / "same-inputs"
+    TOOL["bundle"](tmp_path, second, app, api, "c" * 40, "d" * 64, "e" * 64, "f" * 64)
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == {
+        path.name: path.read_bytes() for path in second.iterdir()
+    }
     with pytest.raises(ValueError, match="immutable digest"):
-        TOOL["bundle"](tmp_path, tmp_path / "bad", "image:latest", api, "c" * 40, "d" * 64, native)
+        TOOL["bundle"](tmp_path, tmp_path / "bad", "image:latest", api,
+                       "c" * 40, "d" * 64, "e" * 64, "f" * 64)
 
 
 @pytest.mark.parametrize("existing,conflict", [(None, False), ("a", False), ("b", True)])
@@ -179,8 +217,7 @@ def test_partial_build_failure_resumes_using_completed_api(tmp_path: Path, monke
         assert sum("tgdl-bot-api:" in tag for tag in builds) == 1
         assert sum("tgdl-app:" in tag for tag in builds) == 2
         TOOL["publish"](True)
-        assert sum("tgdl-bot-api-native:" in tag for tag in builds) == 1
-        assert len(builds) == 4
+        assert len(builds) == 3  # One API build and failed+retried app, no standalone native build.
         assert len(bundles) == 2
         registry["ghcr.io/yebook/tgdl-app:0.1.0"] = "sha256:" + "f" * 64
         with pytest.raises(ValueError, match="conflicting immutable"):
@@ -301,7 +338,7 @@ def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) 
     assert TOOL["native_identity"](tmp_path) != before
 
 
-def test_cached_native_artifact_is_explicit_base_when_runtime_missing(
+def test_api_build_uses_git_bundle_without_consulting_standalone_native_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     namespace = TOOL["publish"].__globals__
@@ -312,12 +349,17 @@ def test_cached_native_artifact_is_explicit_base_when_runtime_missing(
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv("GITHUB_SHA", revision)
     monkeypatch.setenv("GITHUB_REPOSITORY", "yebook/TGDL")
-    native = "ghcr.io/yebook/tgdl-bot-api-native@sha256:" + "b" * 64
     registry = {
         "ghcr.io/yebook/tgdl-bot-api-native:input-" + "f" * 64: "sha256:" + "b" * 64,
         "ghcr.io/yebook/tgdl-app:input-" + "e" * 64: "sha256:" + "a" * 64,
     }
     commands: list[list[str]] = []
+    inspected: list[str] = []
+
+    def inspect(reference: str) -> str | None:
+        inspected.append(reference)
+        assert "-bot-api-native" not in reference
+        return registry.get(reference)
 
     def fake_command(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(args)
@@ -332,14 +374,16 @@ def test_cached_native_artifact_is_explicit_base_when_runtime_missing(
         "bundled_artifact_identity": lambda root: "f" * 64,
         "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "api_identity": lambda root: "d" * 64, "native_identity": lambda root: "f" * 64,
-        "app_identity": lambda root: "e" * 64, "remote_digest": registry.get, "bundle": lambda *args: None,
+        "app_identity": lambda root: "e" * 64, "remote_digest": inspect, "bundle": lambda *args: None,
     }), patch("subprocess.run", side_effect=fake_command):
         TOOL["publish"](False)
     builds = [call for call in commands if call[:3] == ["docker", "buildx", "build"]]
     assert len(builds) == 1
     assert "--target" not in builds[0]
-    assert f"TGD_NATIVE_IMAGE={native}" in builds[0]
+    assert "TGD_NATIVE_IMAGE=bundled-native" in builds[0]
     assert "TGD_BUILD_JOBS=2" not in builds[0]
+    assert inspected
+    assert not any("-bot-api-native" in argument for command in commands for argument in command)
 
 @pytest.mark.parametrize("case", ["matching", "missing", "stale", "wrong-parent", "wrong-tdlib", "invalid-format"])
 def test_native_manifest_requires_current_sources_and_both_pinned_revisions(tmp_path: Path, case: str) -> None:
@@ -464,10 +508,10 @@ def test_mirror_uses_explicit_docker_login_directory(tmp_path: Path, monkeypatch
 def test_bundle_includes_independently_pinned_dockerhub_pair(tmp_path: Path) -> None:
     (tmp_path / "compose.yaml").write_text("services: {}\n")
     (tmp_path / ".env.example").write_text("TGD_UID=1000\n")
-    primary = [f"ghcr.io/yebook/tgdl-{name}@sha256:" + "a" * 64 for name in ("app", "bot-api", "native")]
+    primary = [f"ghcr.io/yebook/tgdl-{name}@sha256:" + "a" * 64 for name in ("app", "bot-api")]
     mirrors = [reference.replace("ghcr.io/yebook/", "docker.io/example/") for reference in primary]
     output = tmp_path / "bundle"
-    TOOL["bundle"](tmp_path, output, *primary[:2], "c" * 40, "d" * 64, primary[2], mirrors)
+    TOOL["bundle"](tmp_path, output, *primary, "c" * 40, "d" * 64, "e" * 64, "f" * 64, mirrors)
     assert (output / "images.env").read_text() == (
         f"TGD_APP_IMAGE={mirrors[0]}\nTGD_API_IMAGE={mirrors[1]}\n"
     )
@@ -475,8 +519,10 @@ def test_bundle_includes_independently_pinned_dockerhub_pair(tmp_path: Path) -> 
         f"TGD_APP_IMAGE={primary[0]}\nTGD_API_IMAGE={primary[1]}\n"
     )
     metadata = json.loads((output / "images.json").read_text())
-    assert metadata["native_source"] == mirrors[2]
-    assert metadata["ghcr_alternate"]["native_source"] == primary[2]
+    assert metadata["native_input_sha256"] == "e" * 64
+    assert metadata["native_artifact_sha256"] == "f" * 64
+    assert metadata["ghcr_alternate"] == dict(zip(("app", "bot_api"), primary, strict=True))
+    assert "native_source" not in metadata
     expected_names = {
         "compose.yaml", ".env.example", "images.env", "images.ghcr.env", "images.json", "START.txt",
     }
@@ -509,6 +555,10 @@ def test_dual_registry_publication_resumes_without_rebuilding(
     public: list[str] = []
     pending_failure = failure
 
+    def inspect(reference: str) -> str | None:
+        assert "-bot-api-native" not in reference  # Covers preflight and every retry/cache lookup.
+        return registry.get(reference)
+
     def command(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         nonlocal pending_failure
         calls.append(args)
@@ -538,7 +588,7 @@ def test_dual_registry_publication_resumes_without_rebuilding(
         "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
         "bundled_artifact_identity": lambda root: "f" * 64, "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "app_identity": lambda root: "e" * 64, "api_identity": lambda root: "d" * 64,
-        "native_identity": lambda root: "f" * 64, "remote_digest": registry.get,
+        "native_identity": lambda root: "f" * 64, "remote_digest": inspect,
         "bundle": lambda *args: bundles.append(args), "verify_public": check_public,
     }), patch("subprocess.run", side_effect=command):
         if failure != "none":
@@ -547,14 +597,16 @@ def test_dual_registry_publication_resumes_without_rebuilding(
             assert not bundles
             assert not any(":sha-" in reference for reference in registry)
             if failure == "collision":
-                assert not calls  # No native compilation or other expensive subprocess.
+                assert not calls  # No image build or other expensive subprocess.
                 return
         TOOL["publish"](True)
         TOOL["publish"](True)
     builds = [args for args in calls if args[:3] == ["docker", "buildx", "build"]]
-    assert len(builds) == 3  # Native/app/API each built only once, including retries.
-    assert len([args for args in calls if args[:2] == ["skopeo", "copy"]]) == (4 if failure == "mirror" else 3)
-    assert len(bundles) == 2 and len(bundles[0][-1]) == 3
-    assert len(set(public)) == 3
-    for name in ("app", "bot-api", "bot-api-native"):
+    assert len(builds) == 2  # Only final app/API images, each built once including retries.
+    assert len([args for args in calls if args[:2] == ["skopeo", "copy"]]) == (3 if failure == "mirror" else 2)
+    assert len(bundles) == 2 and len(bundles[0][-1]) == 2
+    assert len(set(public)) == 2
+    assert len(public) == (5 if failure == "private" else 4)  # Two public checks per complete run.
+    assert not any("-bot-api-native" in argument for command in calls for argument in command)
+    for name in ("app", "bot-api"):
         assert f"docker.io/example/tgdl-{name}:0.1.0" in registry

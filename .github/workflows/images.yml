@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
-            echo "::error::Configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets; create public tgdl-app, tgdl-bot-api and tgdl-bot-api-native repositories."
+            echo "::error::Configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets; create public tgdl-app and tgdl-bot-api repositories."
             exit 1
           fi
       - name: Install digest-preserving registry copy tool
@@ -50,7 +50,7 @@ jobs:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Reuse native binary and publish the production pair
+      - name: Verify bundled native binary and publish the production pair
         env:
           PUBLISH_NUMERIC_VERSION: ${{ inputs.publish_numeric_version }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}

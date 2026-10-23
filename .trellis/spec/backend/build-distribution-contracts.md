@@ -26,7 +26,7 @@ image release automation and distribution docs. User authorized this scope on
   Immutable full-revision image tags and digest-pinned deployment artifact;
   numeric publication must be intentional and must not overwrite a release.
 - Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (read/write),
-  with public `tgdl-app`, `tgdl-bot-api`, `tgdl-bot-api-native` repositories.
+  with public `tgdl-app` and `tgdl-bot-api` repositories only.
   GHCR remains authenticated build/cache storage. Mirror the same manifests,
   never perform duplicate native compilation per registry.
 
@@ -40,13 +40,15 @@ patched API. Preserve native patch source verification, licenses, proxy/progress
 cleanup behavior and supervisor protocol. Runtime scripts remain isolated from
 expensive native compile layers. Caches never include runtime data or credentials.
 
-Publish the native artifact by its own input fingerprint. Native keys exclude
-management scripts, product-version-only runtime labels and application code;
-include native source pin, patches/headers, toolchain/runtime dependency setup,
-platform and all actual native-target build inputs. API runtime keys additionally
-bind native identity and scripts. A precompiled native registry hit must permit
-lightweight runtime packaging even on a builder with no native layer cache.
-Avoid unnecessary native compilation on ordinary app or supervisor changes.
+Publish only the application and final API images. Never build, inspect, alias,
+mirror or require anonymous access to a separate native image repository.
+API builds directly consume bundled-native and reuse final API content artifacts.
+Native source identity excludes management scripts, product-version-only runtime
+labels and application code; includes source pins, patches/headers, toolchain and
+native dependency setup, platform and all native-target build inputs. API keys
+additionally bind actual checked-in bundle bytes and runtime scripts. Record
+native source/artifact identities in deployment metadata instead of a third
+image reference. Avoid native compilation on ordinary app/supervisor updates.
 
 Source deployment must work without a published native image or a surviving
 compiler cache: use the checked-in native bundle by default. Missing, corrupt,
@@ -107,7 +109,7 @@ Check immutable alias conflicts in both registries before expensive builds.
 Copy complete manifest indexes and attestations without changing digests;
 interrupted copies must remain safely retryable. Actual production-image
 permission checks and offline smoke precede release aliases. Anonymous Docker
-Hub manifest pulls for app/API/native are required before publication succeeds.
+Hub manifest pulls for app/API are required before publication succeeds.
 Deployment bundles default to Docker Hub digest-pinned references and retain
 `images.ghcr.env` as an alternative; GHCR package visibility may remain private.
 Never print Docker Hub Tokens or require deployment-host credentials for public
@@ -120,14 +122,14 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 | Configuration-only change | `up -d --no-build`, recreate containers without compiling |
 | App-only source edit | Build app only; keep API artifact unchanged |
 | Management script edit | Repackage API using the same precompiled native base |
-| Native artifact available, builder cache empty | Pull base; never compile TDLib as runtime dependency |
+| Bundled native artifact valid, builder cache empty | Extract verified bundle; never compile TDLib as runtime dependency |
 | Native source/patch/toolchain/dependency change | Build a new native input artifact |
 | Explicit old/unversioned native base | Reject mismatched or missing native provenance; do not package stale binaries |
 | Invalid compile concurrency | Fail before compilation |
 | First GHCR publication not complete | Explain prerequisite and working source fallback |
 | Non-main workflow invocation | Refuse publication |
 | Existing numeric release tag | Refuse replacement |
-| Unchanged API inputs | Reuse verified content artifact or native cache |
+| Unchanged API inputs | Reuse verified final API content artifact |
 | Runtime secrets or user data | Never copied into build context/artifacts/cache |
 
 ## 5. Good / Base / Bad Cases

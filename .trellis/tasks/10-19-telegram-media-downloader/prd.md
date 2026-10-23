@@ -173,6 +173,12 @@
 - Bundle deterministic linux/amd64 precompiled archive, licenses and source/checksum metadata as ordinary Git files (not LFS). Default source builds and image publication use the verified bundle, while preserving an explicit full-native compile/update path.
 - Establish actual binary provenance from the original compiled builder, not synthetic test metadata. Check pinned upstream commits, all native patch/header inputs and the exported production binary; record reuse honestly.
 - Changed native code/toolchain inputs, corrupt bytes, missing metadata or unsupported architecture must fail clearly without silently compiling or accepting stale artifacts. Runtime-only edits do not invalidate the native identity. No live deployment or Telegram interaction is authorized.
+
+## Two-image publication simplification (2026-10-23)
+
+- User confirms there are no released versions and authorizes directly removing the independent native image repository requirement. Publish only app and final Bot API images to GHCR/Docker Hub; no separate native registry build, lookup, aliases, mirroring or public-access checks.
+- API builds use the checked-in precompiled native bundle. Preserve provenance, artifact/source fingerprints, pre-cache local verification, permission/offline smoke and immutable paired image publication. Deployment metadata records native identities instead of a third image reference. No compatibility branches for old three-image bundles.
+- Update workflow messages, tests, docs and specs. Preserve full-source native build/regeneration tools. No real container update or account credential changes.
 ## Saved local media cache cleanup (2026-10-23)
 
 - After successful durable final publication, remove that media's local API cache through TDLib; preserve API authentication/runtime data. Cross-volume copying remains necessary, but retained double storage must not be normal successful behavior.
