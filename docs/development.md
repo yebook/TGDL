@@ -61,20 +61,19 @@ pnpm test:e2e
 
 ## 源码构建与缓存
 
-默认 `compose.yaml` 仅拉取生产镜像；源码开发叠加 `compose.build.yaml`，由它指定构建上下文、本地标签和 `pull_policy: never`。首次构建：
+源码构建与镜像部署共用 `compose.yaml`。文件内已定义构建上下文和本机镜像标签，默认不会从远程拉取应用/API 镜像。首次构建：
 
-从镜像部署切换到源码构建时，不要加载配套的 `images.env`。同时移除自己 `.env` 和终端环境中已有的 `TGD_APP_IMAGE` / `TGD_API_IMAGE` 覆盖，使用源码覆盖文件的默认本地标签；摘要引用（`镜像名@sha256:...`）不能作为构建输出标签。若确实需要自定义构建标签，请使用可写的本地标签。
+从镜像部署切换到源码构建时，不要加载配套的 `images.env`。同时移除自己 `.env` 和终端环境中已有的 `TGD_APP_IMAGE` / `TGD_API_IMAGE` / `TGD_PULL_POLICY` 覆盖，使用默认本机标签和构建策略；摘要引用（`镜像名@sha256:...`）不能作为构建输出标签。若确实需要自定义构建标签，请使用可写的本地标签。
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml build
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build
+docker compose up -d --build
 ```
 
 仅前后端源码改变、本地 API 未改动时：
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml build app
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build --no-deps app
+docker compose build app
+docker compose up -d --no-build --no-deps app
 ```
 
 维护前先等待下载和 API 切换结束，备份配置及数据；`--no-deps` 不是绕过所有权恢复的手段。修改本地 API 管理脚本后，只需重新打包轻量 API 运行镜像；修改原生源码、补丁、头文件、编译工具链或原生依赖后，才需重新编译原生组件。两种情况都须让 `bot-api`、`init-volumes` 保持同一最终镜像。应用与 API 私有协议有变动时应成对验证，不随意混装。

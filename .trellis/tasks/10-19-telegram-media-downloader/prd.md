@@ -1,5 +1,12 @@
 # Telegram 媒体下载助手：需求与实施
 
+## Single-file Compose deployment (2026-10-23)
+
+- User requires one shared `compose.yaml` for source build and image deployment; remove the source override file without compatibility branches.
+- Default source startup: `docker compose up -d --build`, using local tags and bundled native binary, with no remote app/API image pull.
+- Published bundles use the same Compose file with digest-pinned environment overrides and explicit image-only startup; no source checkout required.
+- Update README, public guides, version tooling and scoped deployment checks; do not change running containers or runtime data.
+
 ## 构建和镜像部署优化（用户授权实施，2026-10-23）
 
 - 普通部署支持直接拉取项目生产镜像，避免 NAS 编译依赖和 TDLib；保留可实际使用的源码构建入口。镜像首次发布前如实说明尚不可拉取，不虚构已发布版本。

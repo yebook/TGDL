@@ -100,11 +100,13 @@ def bundle(
     alternate: dict[str, str] = {}
     if mirrors:
         (destination / "images.ghcr.env").write_text(
-            f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8",
+            f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\nTGD_PULL_POLICY=missing\n", encoding="utf-8",
         )
         alternate = dict(zip(("app", "bot_api"), (app, api), strict=True))
         app, api = mirrors
-    (destination / "images.env").write_text(f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n", encoding="utf-8")
+    (destination / "images.env").write_text(
+        f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\nTGD_PULL_POLICY=missing\n", encoding="utf-8",
+    )
     (destination / "images.json").write_text(json.dumps({
         "revision": revision, "platform": "linux/amd64", "api_input_sha256": identity,
         "app": app, "bot_api": api,
@@ -116,6 +118,7 @@ def bundle(
         "docker compose --env-file .env --env-file images.env pull\n"
         "docker compose --env-file .env --env-file images.env up -d --no-build\n"
         "images.env pins the compatible pair. Keep it for upgrades/redeployment.\n"
+        "The shared compose.yaml supports source builds too; this bundle uses --no-build.\n"
         "images.env uses public Docker Hub images when mirrored.\n"
         "Optional images.ghcr.env requires public GHCR packages or registry read access.\n"
         "linux/amd64 only. This bundle contains no user configuration or media.\n",

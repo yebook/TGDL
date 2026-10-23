@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 version_tool = runpy.run_path(str(ROOT / "scripts/version.py"))
 MANIFESTS = (
     "backend/app/version.py", "backend/app/version.json", "backend/pyproject.toml", "backend/uv.lock",
-    "frontend/package.json", "compose.yaml", "compose.build.yaml", ".env.example", "Dockerfile", "deploy/bot-api/Dockerfile",
+    "frontend/package.json", "compose.yaml", ".env.example", "Dockerfile", "deploy/bot-api/Dockerfile",
     "deploy/bot-api/Dockerfile.verify-native", "deploy/bot-api/Dockerfile.verify-progress",
 )
 
@@ -61,7 +61,7 @@ def test_bump_plans_all_mirrors_without_touching_dependencies(tmp_path: Path) ->
     metadata = tmp_path / "backend/app/version.json"
     metadata.write_text(json.dumps({"version": "0.2.0"}), encoding="utf-8")
     changes = version_tool["planned_updates"](tmp_path)
-    assert len(changes) == 10
+    assert len(changes) == 9
     for path, content in changes.items():
         path.write_bytes(content.encode("utf-8"))
     assert version_tool["planned_updates"](tmp_path) == {}

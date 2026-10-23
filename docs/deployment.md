@@ -1,6 +1,6 @@
 # Docker 部署
 
-先用默认的**官方云端模式**完成第一次下载：只需 Bot Token 和自己的 Telegram 数字用户 ID，无需申请 API ID / Hash。根目录 **`compose.yaml`** 定义运行服务；源码构建叠加 `compose.build.yaml`。后续代理配置、本地 API 切换都在 WebUI 完成。**公开镜像尚待首次发布，目前请使用下方源码构建步骤。**
+先用默认的**官方云端模式**完成第一次下载：只需 Bot Token 和自己的 Telegram 数字用户 ID，无需申请 API ID / Hash。源码构建与镜像部署共用根目录 **`compose.yaml`**，图形化部署也只需选择这一个文件。后续代理配置、本地 API 切换都在 WebUI 完成。**公开镜像尚待首次发布，目前请使用下方源码构建步骤。**
 
 ## 部署前准备
 
@@ -20,8 +20,7 @@ cd TGDL
 
 | 必须保留 | 用途 |
 | --- | --- |
-| [compose.yaml](https://github.com/yebook/TGDL/blob/main/compose.yaml) | 运行服务定义，默认拉取配套镜像 |
-| [compose.build.yaml](https://github.com/yebook/TGDL/blob/main/compose.build.yaml) | 源码构建覆盖文件，与 `compose.yaml` 一起使用 |
+| [compose.yaml](https://github.com/yebook/TGDL/blob/main/compose.yaml) | 共用服务与构建定义；默认使用本机标签进行源码构建 |
 | [.env.example](https://github.com/yebook/TGDL/blob/main/.env.example) | 复制成 `.env`，填写路径、权限和访问端口 |
 | `Dockerfile`、`.dockerignore` | 应用构建入口；排除本机配置、数据和依赖缓存 |
 | `backend/`、`frontend/` | 应用源码、版本信息、依赖清单和锁文件；保留完整目录 |
@@ -77,16 +76,15 @@ chmod 600 .env
 
 确认媒体共享已挂载后，使用源码构建并启动：
 
-源码构建不要加载镜像部署包的 `images.env`；若此前已在自己的 `.env` 或终端环境中设置 `TGD_APP_IMAGE` / `TGD_API_IMAGE`，先移除覆盖以使用默认本地构建标签。`@sha256:...` 摘要引用不能作为构建输出标签。
+源码构建不要加载镜像部署包的 `images.env`；若此前已在自己的 `.env` 或终端环境中设置 `TGD_APP_IMAGE` / `TGD_API_IMAGE` / `TGD_PULL_POLICY`，先移除覆盖以使用默认本机标签和构建策略。`@sha256:...` 摘要引用不能作为构建输出标签。
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml config --quiet
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml build
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml ps
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
 ```
 
-`config --quiet` 只验证配置，不打印展开后的内容。源码部署后续的更新/启动命令也要带上两份 Compose 文件，避免误用默认远程镜像引用。初始化服务正常完成后退出是预期行为；其他组件常驻。启动成功不表示 Telegram 已连接。
+`config --quiet` 只验证配置，不打印展开后的内容。源码部署后续也只使用同一份 `compose.yaml`；仅修改 `.env` 时执行 `docker compose up -d --no-build`，无需重新构建。初始化服务正常完成后退出是预期行为；其他组件常驻。启动成功不表示 Telegram 已连接。
 
 访问 `http://部署主机IP:8000`，本机也可使用 `http://localhost:8000`；修改了 `TGD_WEB_PORT` 时使用对应端口，无需另外配置绑定地址。读取初始化密钥并创建管理员账号和 6–20 位密码。默认数据目录下执行：
 
@@ -124,9 +122,11 @@ TGD_WEB_PORT=8000
 TGD_TIMEZONE=Asia/Shanghai
 # 应用时区，影响日期归档和日志清理；标准部署由此环境变量固定，WebUI 中只读，修改后需重建 app 容器。
 # TGD_APP_IMAGE=ghcr.io/yebook/tgdl-app:0.1.0
-# 可选应用镜像覆盖，支持标签或摘要；默认不设置，发布后优先使用配套 images.env。
+# 可选远程应用镜像示例，需确认已发布；源码构建不设置，镜像部署优先由配套 images.env 指定摘要。
 # TGD_API_IMAGE=ghcr.io/yebook/tgdl-bot-api:0.1.0
 # 可选 API 镜像覆盖；bot-api 与 init-volumes 共用，必须与应用配套。
+# TGD_PULL_POLICY=missing
+# 可选远程拉取策略示例；默认不设置时为 never，镜像部署的 images.env 会设为 missing，允许拉取缺失镜像。
 TGD_BUILD_JOBS=2
 # 仅手动选择完整原生编译时使用，范围 1–64；默认部署使用附带产物，无需编译 TDLib。
 # TGD_NATIVE_IMAGE=bundled-native
@@ -138,12 +138,12 @@ WebUI 的下载根目录对应容器中的 `/downloads`，宿主实际位置由 
 已运行实例修改 `TGD_TIMEZONE` 后，等待任务和 API 切换结束，按 [维护指南](operations.md) 备份，再执行以下命令重建应用容器以载入新环境变量；只执行 `restart` 不会更新环境变量，无需重新构建镜像：
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build --no-deps app
+docker compose up -d --no-build --no-deps app
 ```
 
 ### compose.yaml：服务与挂载配置
 
-以下对应根目录 [compose.yaml](https://github.com/yebook/TGDL/blob/main/compose.yaml)。`${变量:-默认值}` 表示优先采用环境文件中的值，未设置时使用默认值；一般无需改这些表达式。镜像默认标签尚待首次发布，不能据此认为已经可以拉取。源码覆盖文件会改用本机镜像标签。
+以下对应根目录 [compose.yaml](https://github.com/yebook/TGDL/blob/main/compose.yaml)。`${变量:-默认值}` 表示优先采用环境文件中的值，未设置时使用默认值；一般无需改这些表达式。默认使用本机标签，不从远程拉取应用/API 镜像；`build` 部分用于源码构建，镜像部署时通过 `--no-build` 跳过。
 
 ```yaml
 name: tgd
@@ -152,8 +152,16 @@ services:
 # 三个服务：WebUI/下载应用、本地 API 管理服务、一次性权限初始化。
   app:
   # 应用服务，承载 WebUI、Bot 消息处理和下载任务。
-    image: ${TGD_APP_IMAGE:-ghcr.io/yebook/tgdl-app:0.1.0}
-    # 应用生产镜像引用；公开镜像待首次发布，可用配套 images.env 固定摘要。
+    image: ${TGD_APP_IMAGE:-tgd-app:0.1.0}
+    # 默认本机应用标签；镜像部署由配套 images.env 固定摘要。
+    pull_policy: ${TGD_PULL_POLICY:-never}
+    # 默认不拉取远程应用镜像；镜像部署由 images.env 设置为 missing。
+    build:
+    # 源码构建定义，镜像部署使用 --no-build 跳过。
+      context: .
+      # 完整项目根目录作为构建上下文；源码部署不要删构建依赖目录。
+      dockerfile: Dockerfile
+      # 应用镜像的构建文件。
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     # 运行身份（支持 UID/GID 为 0）；在 .env 修改 UID/GID，不必改这里。
     init: true
@@ -218,8 +226,22 @@ services:
       # 每个容器日志文件最多 10 MiB、最多 3 个；按需调整容量。
   bot-api:
   # 常驻本地 API 管理服务；初次使用云端也会启动，但无需填写本地凭据。
-    image: ${TGD_API_IMAGE:-ghcr.io/yebook/tgdl-bot-api:0.1.0}
+    image: ${TGD_API_IMAGE:-tgd-bot-api:0.1.0}
     # 配套 API 镜像引用，必须与初始化服务完全相同；不可换成普通第三方镜像。
+    pull_policy: ${TGD_PULL_POLICY:-never}
+    # 与应用采用相同拉取策略；源码构建无需访问 GHCR。
+    build: &api-build
+    # 与初始化服务共用同一份 API 构建定义。
+      context: .
+      # 完整项目根目录作为构建上下文。
+      dockerfile: deploy/bot-api/Dockerfile
+      # 使用项目定制的 API 构建文件。
+      args:
+      # 以下仅在源码构建时使用。
+        TGD_BUILD_JOBS: ${TGD_BUILD_JOBS:-2}
+        # 仅完整原生编译时的线程数；默认使用预编译包。
+        TGD_NATIVE_IMAGE: ${TGD_NATIVE_IMAGE:-bundled-native}
+        # 默认校验并使用仓库附带的 Bot API／TDLib 产物。
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     # 与应用相同的 UID/GID，便于共享缓存；在 .env 设置。
     init: true
@@ -258,8 +280,12 @@ services:
     # 复用 app 中定义的 Docker 日志轮转策略。
   init-volumes:
   # 只准备私有控制卷权限，成功退出是正常现象。
-    image: ${TGD_API_IMAGE:-ghcr.io/yebook/tgdl-bot-api:0.1.0}
+    image: ${TGD_API_IMAGE:-tgd-bot-api:0.1.0}
     # 与 bot-api 使用同一镜像引用；不独立选择版本。
+    pull_policy: ${TGD_PULL_POLICY:-never}
+    # 与 bot-api 保持一致。
+    build: *api-build
+    # 共用 API 构建定义，不维护另一份镜像。
     entrypoint: ["python3", "/usr/local/lib/tgd-init-volumes.py"]
     # 执行镜像内权限初始化脚本，不启动 Telegram 服务；保留。
     restart: "no"
@@ -311,7 +337,7 @@ docker compose --env-file .env --env-file images.env -f compose.yaml pull
 docker compose --env-file .env --env-file images.env -f compose.yaml up -d --no-build
 ```
 
-自己的 `.env` 保存主机参数；第二份 `images.env` 只固定本次发布的应用/API 镜像摘要，后加载的同名变量优先。不要将它覆盖成自己的 `.env`，也不要单独替换其中一个镜像。`init-volumes` 与 `bot-api` 自动使用同一 API 镜像。当前数字版本是 `0.1.0`，工作流也可发布提交标签；优先使用部署包中经过配对记录的摘要，避免开发期间标签变化带来误更新。若需改用 GHCR，将命令中的 `images.env` 换为 `images.ghcr.env`；GHCR 包未公开时还需相应的读取权限。根目录 Compose 的默认 GHCR 引用不等同于 Docker Hub 部署包，使用部署包时务必加载配套的镜像环境文件。
+自己的 `.env` 保存主机参数；配套 `images.env` 固定本次发布的应用/API 镜像摘要，并将 `TGD_PULL_POLICY` 设为 `missing`，后加载的同名变量优先。不要将它覆盖成自己的 `.env`，也不要单独替换其中一个镜像。`init-volumes` 与 `bot-api` 自动使用同一 API 镜像。两种部署方式使用完全相同的 `compose.yaml`；镜像部署无需完整源码，但必须使用 `--no-build` 跳过构建。当前数字版本是 `0.1.0`，工作流也可发布提交标签；优先使用部署包中经过配对记录的摘要，避免开发期间标签变化带来误更新。若需改用 GHCR，将命令中的 `images.env` 换为 `images.ghcr.env`；GHCR 包未公开时还需相应的读取权限。
 
 镜像部署无需上传 `backend/`、`frontend/` 或安装编译器，用户只需两个最终运行镜像；维护者单独预编译的 Bot API / TDLib 基础镜像已在最终 API 镜像中使用，不额外部署服务。公开镜像发布不会自动更新用户的容器，升级仍需用户主动拉取、备份并重新部署，见 [升级与回滚](operations.md#升级与回滚)。
 
@@ -346,7 +372,7 @@ TGD_API_IMAGE=tgdl-bot-api:offline-amd64
 改 `.env` 中的目录、端口、UID/GID 或时区后，等待任务结束并备份，用原部署方式重新创建容器即可。源码部署：
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build
+docker compose up -d --no-build
 ```
 
 镜像部署改用 `--env-file .env --env-file images.env -f compose.yaml up -d --no-build`，保持原配套镜像。单纯 `restart` 不会更新环境变量和目录挂载。更换媒体宿主目录须先停服，迁移原目录全部内容（包括隐藏的存储标识），保证权限和原文件仍可访问；不要通过换空目录绕过存储保护。
@@ -380,7 +406,7 @@ docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-
 ## 使用 Docker 图形管理工具
 
 1. 将完整源码放到部署主机的项目目录，按上文准备 `.env` 和业务目录。
-2. 在 Docker 管理工具中新建 Compose 项目，工作目录选择项目根目录；源码部署同时使用 `compose.yaml` 与 `compose.build.yaml`，镜像部署仅使用 `compose.yaml` 并加载配套镜像清单。
+2. 在 Docker 管理工具中新建 Compose 项目，选择项目根目录的 `compose.yaml`。源码部署启用构建；镜像部署加载配套镜像清单并禁止构建。两种方式均只需要这一个 Compose 文件。
 3. 确认环境文件、挂载与用户权限可用。源码部署先构建再启动；镜像部署拉取后启动。以后只修改 `.env` 时，重新部署容器即可，无需重新构建镜像；单纯“重启”不会更新挂载或环境变量。
 4. 打开 WebUI 完成初始化，后续只在设置页管理代理与 API。
 

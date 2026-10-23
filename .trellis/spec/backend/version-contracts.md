@@ -16,8 +16,8 @@ Use0.1.1 for fixes,0.2.0 for meaningful features,1.0.0 for first formal release;
 
 Image distribution exception authorized 2026-10-23: a separate main-only manual
 workflow may publish production images; Pages stays independent and NAS is not
-automatically deployed. Default GHCR image references and source-override local
-tags are owned version mirrors; preserve custom operator references. Full-commit
+automatically deployed. Shared Compose local image tags and commented GHCR
+examples are owned version mirrors; preserve custom operator references. Full-commit
 and digest identities identify builds without adding English stage labels to the
 numeric product version. Numeric image tags require deliberate publication and
 must not silently overwrite existing releases. See build-distribution contracts.

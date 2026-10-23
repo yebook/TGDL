@@ -137,7 +137,9 @@ def test_bundle_pins_pair_and_includes_only_deployment_inputs(tmp_path: Path) ->
     assert {path.name for path in output.iterdir()} == {
         "compose.yaml", ".env.example", "images.env", "images.json", "START.txt", "SHA256SUMS",
     }
-    assert (output / "images.env").read_text() == f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\n"
+    assert (output / "images.env").read_text() == (
+        f"TGD_APP_IMAGE={app}\nTGD_API_IMAGE={api}\nTGD_PULL_POLICY=missing\n"
+    )
     assert json.loads((output / "images.json").read_text())["platform"] == "linux/amd64"
     metadata = json.loads((output / "images.json").read_text())
     assert metadata["native_input_sha256"] == "e" * 64
@@ -513,10 +515,10 @@ def test_bundle_includes_independently_pinned_dockerhub_pair(tmp_path: Path) -> 
     output = tmp_path / "bundle"
     TOOL["bundle"](tmp_path, output, *primary, "c" * 40, "d" * 64, "e" * 64, "f" * 64, mirrors)
     assert (output / "images.env").read_text() == (
-        f"TGD_APP_IMAGE={mirrors[0]}\nTGD_API_IMAGE={mirrors[1]}\n"
+        f"TGD_APP_IMAGE={mirrors[0]}\nTGD_API_IMAGE={mirrors[1]}\nTGD_PULL_POLICY=missing\n"
     )
     assert (output / "images.ghcr.env").read_text() == (
-        f"TGD_APP_IMAGE={primary[0]}\nTGD_API_IMAGE={primary[1]}\n"
+        f"TGD_APP_IMAGE={primary[0]}\nTGD_API_IMAGE={primary[1]}\nTGD_PULL_POLICY=missing\n"
     )
     metadata = json.loads((output / "images.json").read_text())
     assert metadata["native_input_sha256"] == "e" * 64

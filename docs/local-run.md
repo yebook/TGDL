@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force data, downloads, bot-api
 
 用编辑器修改 `.env`，保持目录为项目相对路径，默认发布 WebUI 端口 `8000`。本机访问 `http://localhost:8000`，其他设备使用 `http://部署主机IP:8000`；修改 `TGD_WEB_PORT` 时使用对应端口。Telegram 凭据稍后在 WebUI 填写。私有控制目录使用 Docker 命名卷并自动初始化，无需在 Windows 手动设置 POSIX 权限；无需 TUN 设备。
 
-按 [部署指南](deployment.md) 选择启动方式：公开镜像尚待首次发布，目前使用 `compose.yaml` 与 `compose.build.yaml` 先 `build` 再 `up -d --no-build`；镜像发布后可改用配套 `images.env` 拉取启动。在数据目录读取 `bootstrap.key` 初始化管理员，再在 WebUI 保存 Bot Token、自己的用户 ID，使用云端测试小文件。只修改 `.env` 时重新创建容器，无需重新编译。配置只保存在本机，不提交 `.env` 或运行数据。
+按 [部署指南](deployment.md) 选择启动方式：公开镜像尚待首次发布，目前在完整源码根目录使用 `docker compose up -d --build`；镜像发布后仍使用同一份 `compose.yaml`，加载配套 `images.env` 拉取启动。在数据目录读取 `bootstrap.key` 初始化管理员，再在 WebUI 保存 Bot Token、自己的用户 ID，使用云端测试小文件。只修改 `.env` 时重新创建容器，无需重新编译。配置只保存在本机，不提交 `.env` 或运行数据。
 
 ## 2. 接入本地 API
 

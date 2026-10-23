@@ -37,7 +37,7 @@
 
 ### 1. 准备配置与目录
 
-根目录 [compose.yaml](compose.yaml) 定义运行服务，[compose.build.yaml](compose.build.yaml) 添加源码构建，环境参数模板是 [.env.example](.env.example)。以下为 Linux / SSH 命令，在完整项目根目录执行。将示例 `1000:1000` 替换为有目录权限的用户与组，并在 `.env` 中填写相同的 `TGD_UID` / `TGD_GID`。推荐使用普通用户；也支持 `0:0` 或单独将 UID、GID 设为 `0`，但目录权限仍需匹配。
+源码构建与镜像部署共用根目录 [compose.yaml](compose.yaml)，环境参数模板是 [.env.example](.env.example)。以下为 Linux / SSH 命令，在完整项目根目录执行。将示例 `1000:1000` 替换为有目录权限的用户与组，并在 `.env` 中填写相同的 `TGD_UID` / `TGD_GID`。推荐使用普通用户；也支持 `0:0` 或单独将 UID、GID 设为 `0`，但目录权限仍需匹配。
 
 ```sh
 cp .env.example .env
@@ -57,13 +57,12 @@ chmod 600 .env
 确认路径、权限与共享挂载后，在项目根目录执行：
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml config --quiet
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml build
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build
-docker compose --env-file .env -f compose.yaml -f compose.build.yaml ps
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
 ```
 
-源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，用同样两份 Compose 文件执行 `up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。配套镜像发布后可按 [镜像部署](https://yebook.github.io/TGDL/deployment.html#镜像部署) 连应用构建也省去；预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
+源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，执行 `docker compose up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。配套镜像发布后可按 [镜像部署](https://yebook.github.io/TGDL/deployment.html#镜像部署) 连应用构建也省去；预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
 
 ### 3. 初始化并验证
 

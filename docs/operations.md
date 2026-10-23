@@ -1,6 +1,6 @@
 # 运维与故障处理
 
-日常沿用部署时的 Compose 与环境文件：源码部署使用 `compose.yaml` 加 `compose.build.yaml`，镜像部署使用 `compose.yaml` 加配套 `images.env`；直连、代理及 API 模式都在 WebUI 设置。Windows Docker 的隔离应用重建及同文件系统停服备份恢复已验证，见 [Docker 隔离验收](docker-acceptance.md)；真实 NAS、完整内置代理、跨设备恢复和升级演练尚未验收。
+日常沿用部署时的 Compose 与环境文件：源码与镜像部署共用 `compose.yaml`，镜像部署额外加载配套 `images.env` 固定镜像版本；直连、代理及 API 模式都在 WebUI 设置。Windows Docker 的隔离应用重建及同文件系统停服备份恢复已验证，见 [Docker 隔离验收](docker-acceptance.md)；真实 NAS、完整内置代理、跨设备恢复和升级演练尚未验收。
 
 标准栈启动应用与 API 管理服务；无凭据时 API 进程等待，私有卷由一次性初始化服务准备。日常凭据、代理开关、模式切换及 API 子进程重启在 WebUI 完成，页面显示等待、切换、冷却和失败状态。下文缓存和不确定获取针对本地模式；云端流式下载不保留本地 API 获取槽。不能同时运行多个 Bot 消费者，详见 [部署指南](deployment.md#后续接入本地-api)。
 
@@ -105,7 +105,7 @@ NAS 目录与容器目录不同：WebUI 根目录是 `/downloads`。检查宿主
 
 1. 暂停入口并等待任务完成；停止 Compose 栈，保证 SQLite 与加密设置一致。
 2. 一起备份 `.env`、应用数据目录（数据库及 WAL/SHM 若有、加密密钥、配置）、媒体目录及需要保留的 API 缓存，同时备份 `api-control` 私有命名卷。实际卷名可通过 Compose 的卷列表核实；使用支持 Docker 卷的停服备份工具。控制卷含独立交接密钥和加密指令，不能公开或与不匹配的数据混用；勿将命名卷遗漏或执行 `down -v`。
-3. 记录应用和本地 API 镜像 ID 或仓库 digest、架构、Compose 文件与源码 revision。镜像部署还需保留配套 `images.env` / `images.json`，源码部署保留 `compose.build.yaml`。密钥丢失无法恢复加密凭据。
+3. 记录应用和本地 API 镜像 ID 或仓库 digest、架构、Compose 文件与源码 revision。镜像部署还需保留配套 `images.env` / `images.json`，源码部署保留对应完整源码。密钥丢失无法恢复加密凭据。
 4. 恢复到相同容器路径及 UID/GID，先检查挂载与权限，再启动单实例。用测试文件验证队列、通知、去重和原文件存在性。
 
 不要在应用运行时只复制 `*.db` 而忽略 WAL，或只恢复数据库而丢失对应加密密钥。未提供跨版本任意数据库降级保证。

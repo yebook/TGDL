@@ -8,10 +8,13 @@ image release automation and distribution docs. User authorized this scope on
 
 ## 2. Signatures
 
-- `compose.yaml`: production image-only services; `TGD_APP_IMAGE` and
-  `TGD_API_IMAGE` override default versioned GHCR image references.
-- `compose.build.yaml`: explicit source build override; local application/API
-  tags; API and initializer share one artifact.
+- `compose.yaml`: one shared source/image deployment file with build definitions,
+  local versioned application/API tags and default pull policy `never`.
+  Source startup is `docker compose up -d --build`; no override Compose file.
+  `TGD_APP_IMAGE` / `TGD_API_IMAGE` override tags for image deployment, and
+  generated `images.env` / `images.ghcr.env` set `TGD_PULL_POLICY=missing`.
+  Image deployment uses explicit pull then `up -d --no-build`, even without a
+  source checkout. API and initializer share build definition and image reference.
 - `TGD_BUILD_JOBS`: source-only compilation setting, integer 1..64, default 2;
   unrelated to application download concurrency.
 - Independent `native` target: compiled Bot API/TDLib, runtime libraries and
@@ -110,7 +113,11 @@ Copy complete manifest indexes and attestations without changing digests;
 interrupted copies must remain safely retryable. Actual production-image
 permission checks and offline smoke precede release aliases. Anonymous Docker
 Hub manifest pulls for app/API are required before publication succeeds.
-Deployment bundles default to Docker Hub digest-pinned references and retain
+Deployment bundles copy the identical root Compose file, include pull policy with
+both image environment files, and must configure successfully without source
+Dockerfiles. Never rebuild from a digest-pinned deployment bundle. Source startup
+must not query remote application/API repositories; base image/package network
+access remains necessary. Deployment bundles default to Docker Hub digest-pinned references and retain
 `images.ghcr.env` as an alternative; GHCR package visibility may remain private.
 Never print Docker Hub Tokens or require deployment-host credentials for public
 Docker Hub pulls. Neither image publication nor Pages updates deployed containers.
@@ -120,6 +127,8 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 | Condition | Behavior |
 | --- | --- |
 | Configuration-only change | `up -d --no-build`, recreate containers without compiling |
+| Source startup with default env | `up -d --build` uses local tags; no remote production-image lookup |
+| Source-free deployment bundle | Same Compose config resolves digest pair with `missing`; explicit `--no-build` skips source |
 | App-only source edit | Build app only; keep API artifact unchanged |
 | Management script edit | Repackage API using the same precompiled native base |
 | Bundled native artifact valid, builder cache empty | Extract verified bundle; never compile TDLib as runtime dependency |
@@ -134,7 +143,7 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 
 ## 5. Good / Base / Bad Cases
 
-Good: use digest-pinned tested app/API references; source override remains usable.
+Good: use digest-pinned tested app/API references; the same Compose supports source builds.
 Base: default 2 compiler jobs and warm dependency/native caches.
 Bad: download-directory edit triggers TDLib compilation; publishing a new app
 silently replaces a numeric API tag; docs present unavailable images as deployed.
@@ -147,6 +156,10 @@ validation; actual isolated package-cache install and runtime source checks wher
 possible. Review workflow permissions, main gate, tag collision/retry behavior,
 content input hash and exact deployment image pair. Document unexecuted hosted
 build/publication and native cold compile separately from passing local checks.
+Parse actual Compose configuration and source build plan; assert local tags,
+shared API build, default `never` policy and bundled-native. Validate byte-identical
+Compose in source-free bundles using both image env files with digest pairs and
+`missing` policy; exercise image-only startup via read-only dry-run when available.
 Docs build validates current code blocks and links. No live Telegram or current
 deployment/data mutations are needed.
 
