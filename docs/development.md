@@ -84,6 +84,18 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 
 该检查覆盖生产缓存的别名、容量、完成保留与重试边界，并向实际原生服务发送缺少已有 Bot 客户端的进度查询，确认不会创建客户端或发起对外连接。后端的 `tests/test_local_download_progress.py` 覆盖进度传输、状态投影和下载生命周期；页面测试使用合成进度。真实 Telegram 的字节增长、速度和缓存命中仍需单独验收。
 
+## 本地媒体缓存清理隔离验证
+
+清理扩展在最终文件保存后调用 TDLib 的离线缓存删除方法。修改原生实现后，先构建 API，再构建专用验证镜像：
+
+```sh
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api:cache-cleanup .
+docker build -f deploy/bot-api/Dockerfile.verify-cache-cleanup --build-arg TGDL_API_IMAGE=tgd-bot-api:cache-cleanup -t tgd-native-cache-cleanup-acceptance .
+docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-cache-cleanup-acceptance
+```
+
+验证复用生产代码中的可删除条件、并发保护与文件消失检查，并确认缺少已有客户端时，实际服务不创建客户端、不对外连接。后端 `tests/test_cache_cleanup.py` 覆盖发布与恢复、取消、存储不足、校验失败、并发等待和独立重试。隔离检查不包含真实授权客户端的 TDLib 删除，实际文件删除和空间释放仍需真实环境验收；不得把成功回调直接视为磁盘空间已释放。
+
 ## 文档开发
 
 在 `docs/` 使用 `pnpm install --frozen-lockfile`、`pnpm docs:build` 和 `pnpm docs:preview`。构建会检查公开 Markdown 的相对链接、锚点与静态输出边界；不请求外部网站检查可达性。完整说明见 [文档站](pages.md)。

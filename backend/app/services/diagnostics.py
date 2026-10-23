@@ -29,7 +29,7 @@ from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 from app.core.errors import AppError
 
 EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
-          "request_deferred", "task_result", "local_api_transition", "event_summary", "request_protection"}
+          "request_deferred", "task_result", "local_api_transition", "event_summary", "request_protection", "cache_cleanup"}
 METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut"}
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
@@ -40,7 +40,7 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "ACQUISITION_UNCERTAIN", "SIZE_MISMATCH", "CLOUD_FILE_TOO_LARGE", "CLOUD_DOWNLOAD_FAILED",
           "CLOUD_DOWNLOAD_REJECTED", "INVALID_API_PATH", "PUBLISH_COLLISION", "PUBLISH_UNCERTAIN",
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
-          "BOT_UNAUTHORIZED"}
+          "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY"}
 Scalar = str | int | float | bool | None
 
 

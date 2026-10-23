@@ -20,6 +20,7 @@ from app.db.models import BotIdentity, Job, MediaRequest, Notification, uid
 from app.db.session import Database
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
+from app.services.cache_cleanup import CacheCleanupService
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.local_api import LocalApiService
@@ -27,7 +28,7 @@ from app.services.request_safety import RequestSafetyService, SafetyDeferred
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
-from app.workers.download import DownloadWorker
+from app.workers.download import DownloadWorker, owned_thread
 
 
 class Runtime:
@@ -42,7 +43,7 @@ class Runtime:
         self.safety.diagnostics = self.diagnostics
         tasks.diagnostics = self.diagnostics
         self.ingest = IngestService(db, settings, tasks)
-        self.worker = DownloadWorker(db, storage, config, uid())
+        self.worker = DownloadWorker(db, storage, config, uid(), secrets=settings.secrets)
         self.worker.diagnostics = self.diagnostics
         self.client: TelegramClient | None = None
         self.token_hash = ""
@@ -62,6 +63,7 @@ class Runtime:
         self.worker.download_progress = self.download_progress
         self.tasks.download_progress = self.download_progress
         self.connection_lock = asyncio.Lock()
+        self.cache_cleanup = CacheCleanupService(db, storage, self.diagnostics, settings.secrets)
 
     def progress_generation(self) -> str:
         applied = self.local_api.applied() if self.config.managed_local_api else {}
@@ -299,6 +301,55 @@ class Runtime:
                 Job.state.in_(["queued", "retry_wait", "waiting_existing"]))) or 0
             return active, blocked, pending
 
+    async def cleanup_cache(self) -> bool:
+        """Return true while draining/cleaning; every failure releases dispatch for backoff."""
+        client, bot_id = self.client, self.bot_id
+        if client is None or bot_id is None or client.mode != "local" or not self.progress_generation():
+            return False
+        row = await asyncio.to_thread(self.cache_cleanup.due, bot_id)
+        if row is None:
+            return False
+        self.worker.cleanup_paused = True
+        try:
+            # Set the claim barrier before inspecting durable ownership. A claim already
+            # inside its transaction is then visible to the following owner query.
+            if (any(not task.done() for task in self.running.values())
+                    or await asyncio.to_thread(self.cache_cleanup.local_owners)):
+                return True
+            generation = self.progress_generation()
+            try:
+                fingerprint = await owned_thread(self.cache_cleanup.verify_final, row)
+                if fingerprint is None:
+                    await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
+                    return True
+            except (OSError, AppError, ValueError):
+                await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
+                return True
+            async with self.connection_lock:
+                # Hashing can take time. Do not use an obsolete generation/client or
+                # run housekeeping while an API/proxy operation is underway.
+                if (not generation or self.progress_generation() != generation or self.client is not client or self.bot_id != bot_id
+                        or await asyncio.to_thread(self.cache_cleanup.local_owners)):
+                    return True
+                try:
+                    if not await owned_thread(self.cache_cleanup.final_unchanged, row, fingerprint):
+                        await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
+                        return True
+                except (OSError, AppError, ValueError):
+                    await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
+                    return True
+                try:
+                    source = self.cache_cleanup.source_path(row)
+                    await client.delete_file_cache(row.file_id, source, row.size_bytes, generation)
+                except Exception:
+                    await owned_thread(self.cache_cleanup.retry, row.job_id)
+                else:
+                    await owned_thread(self.cache_cleanup.complete, row.job_id)
+            # One item per tick bounds connection-lock/network ownership to one request.
+            return True
+        finally:
+            self.worker.cleanup_paused = False
+
     async def tick_loop(self) -> None:
         while not self.stopping:
             try:
@@ -322,6 +373,8 @@ class Runtime:
                 if self.config.managed_local_api and settings.bot_api_mode == "local":
                     applied = await asyncio.to_thread(self.local_api.applied)
                     can_dispatch = can_dispatch and applied.get("state") == "running" and applied.get("generation") == self.client_generation
+                if await self.cleanup_cache():
+                    can_dispatch = False
                 if can_dispatch:
                     for _ in range(max(0, settings.download_concurrency - active)):
                         job_id = await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)

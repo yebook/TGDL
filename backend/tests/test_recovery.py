@@ -156,6 +156,8 @@ async def test_dispatcher_global_three_and_dynamic_lowering(client: TestClient, 
     entered = []
 
     class ControlledClient:
+        mode = "local"
+
         async def get_file(self, file_id: str) -> str:
             slot = len(entered)
             entered.append(file_id)

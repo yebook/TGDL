@@ -18,3 +18,5 @@
 {"file": ".trellis/spec/backend/local-progress-contracts.md", "reason": "Read-only native acquisition telemetry, exact ownership/generation and honest stage progress"}
 {"file": ".trellis/spec/frontend/workspace-experience-contracts.md", "reason": "Approved user-centered shell/settings/debug UX contracts"}
 {"file": ".trellis/spec/backend/version-contracts.md", "reason": "Canonical numeric product metadata and runtime/build/docs parity"}
+{"file": ".trellis/spec/backend/cache-cleanup-contracts.md", "reason": "Durable local cache cleanup after safe publication, native exclusion and retry"}
+{"file": ".trellis/tasks/10-19-telegram-media-downloader/research/local-cache-cleanup.md", "reason": "Pinned TDLib offline deleteFile semantics, ignored unlink and source identity evidence"}

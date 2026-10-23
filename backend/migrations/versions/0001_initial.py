@@ -159,6 +159,7 @@ def upgrade() -> None:
     sa.Column('stage', sa.String(), nullable=False),
     sa.Column('size_bytes', sa.Integer(), nullable=True),
     sa.Column('sha256', sa.String(), nullable=True),
+    sa.Column('api_source_path_encrypted', sa.String(), nullable=True),
     sa.ForeignKeyConstraint(['job_id'], ['jobs.id'], ),
     sa.PrimaryKeyConstraint('job_id')
     )
@@ -180,9 +181,24 @@ def upgrade() -> None:
                     sa.Column('values', sa.JSON(), nullable=False))
     op.create_table('request_safety', sa.Column('credential', sa.String(64), primary_key=True),
                     sa.Column('values', sa.JSON(), nullable=False))
+    op.create_table('cache_cleanup',
+                    sa.Column('job_id', sa.String(), sa.ForeignKey('jobs.id'), primary_key=True),
+                    sa.Column('bot_id', sa.Integer(), nullable=False),
+                    sa.Column('file_id', sa.String(), nullable=False),
+                    sa.Column('source_path_encrypted', sa.String(), nullable=False),
+                    sa.Column('root_id', sa.String(), nullable=False),
+                    sa.Column('relative_path', sa.String(), nullable=False),
+                    sa.Column('size_bytes', sa.Integer(), nullable=False),
+                    sa.Column('sha256', sa.String(), nullable=False),
+                    sa.Column('attempts', sa.Integer(), nullable=False),
+                    sa.Column('next_run_at', sa.Double(), nullable=False),
+                    sa.Column('error_code', sa.String(), nullable=True))
+    op.create_index('ix_cache_cleanup_next_run_at', 'cache_cleanup', ['next_run_at'])
 
 
 def downgrade() -> None:
+    op.drop_index('ix_cache_cleanup_next_run_at', table_name='cache_cleanup')
+    op.drop_table('cache_cleanup')
     op.drop_table('request_safety')
     op.drop_table('local_api_runtime')
     op.drop_table('stored_files')

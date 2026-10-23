@@ -13,9 +13,9 @@ from urllib.parse import quote
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramUnauthorizedError
 from aiogram.methods import GetFile, GetUpdates
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import File, InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import ClientError, ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
@@ -51,6 +51,38 @@ class TelegramClient:
         self._progress_session: ClientSession | None = None
         self._progress_retry_at = 0.0
         self._progress_failures = 0
+        self._cleanup_session: ClientSession | None = None
+
+    async def delete_file_cache(self, file_id: str, expected_path: str, expected_size: int, generation: str) -> str:
+        """Offline local TDLib housekeeping. Never call Telegram or alter request protection."""
+        if (self.mode != "local" or not 1 <= len(file_id.encode("utf-8")) <= 4096
+                or not 1 <= len(expected_path.encode("utf-8")) <= 4096
+                or not 1 <= len(generation.encode("utf-8")) <= 128
+                or type(expected_size) is not int or not 0 <= expected_size <= 2**63 - 1):
+            raise AppError("CACHE_CLEANUP_UNAVAILABLE", "媒体缓存清理暂不可用")
+        try:
+            if self._cleanup_session is None:
+                self._cleanup_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
+            url = self.bot.session.api.api_url(self.bot.token, "tgdDeleteFileCache")
+            async with self._cleanup_session.post(url, data={"file_id": file_id, "expected_path": expected_path,
+                    "expected_size": str(expected_size), "generation": generation}, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError("Cleanup unavailable")
+                body = bytearray()
+                async for block in response.content.iter_chunked(4096):
+                    body.extend(block)
+                    if len(body) > 8192:
+                        raise ValueError("Cleanup response too large")
+                payload = json.loads(body)
+                if not isinstance(payload, dict) or set(payload) != {"ok", "result"} or payload["ok"] is not True:
+                    raise ValueError("Invalid cleanup response")
+                result = payload["result"]
+                if (not isinstance(result, dict) or set(result) != {"generation", "status"}
+                        or result["generation"] != generation or result["status"] not in ("deleted", "absent")):
+                    raise ValueError("Invalid cleanup identity")
+                return str(result["status"])
+        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError) as exc:
+            raise AppError("CACHE_CLEANUP_UNAVAILABLE", "媒体缓存待清理，将自动重试") from exc
 
     async def file_progress(self, file_ids: list[str]) -> tuple[str, dict[str, dict[str, Any]]] | None:
         """Read our private local snapshot method. Never enter Telegram request/protection paths."""
@@ -111,7 +143,7 @@ class TelegramClient:
             raise
         except Exception as exc:
             await self.record(method, exc, started)
-            if self.safety:
+            if self.safety and not (isinstance(exc, AppError) and exc.code == "CACHE_CLEANUP_BUSY"):
                 await asyncio.to_thread(self.safety.observe, self.bot.token, exc)
                 if isinstance(exc, (TelegramRetryAfter, TelegramUnauthorizedError)):
                     raise SafetyDeferred("Telegram 请求已暂停，请等待或检查 Bot 凭据", sent=True) from exc
@@ -131,7 +163,14 @@ class TelegramClient:
         return [item.model_dump(mode="json", exclude_none=True) for item in result]
 
     async def get_file(self, file_id: str) -> str:
-        result = await self.request(lambda: self.bot(GetFile(file_id=file_id), request_timeout=self.timeout), method="getFile")
+        async def acquire() -> File:
+            try:
+                return await self.bot(GetFile(file_id=file_id), request_timeout=self.timeout)
+            except TelegramBadRequest as exc:
+                if self.mode == "local" and exc.message in {"TGD_CACHE_CLEANUP_BUSY", "Bad Request: TGD_CACHE_CLEANUP_BUSY"}:
+                    raise AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在清理，稍后自动继续下载") from exc
+                raise
+        result = await self.request(acquire, method="getFile")
         if self.mode == "cloud":
             cloud_size_check(result.file_size)
         return result.file_path or ""
@@ -229,6 +268,8 @@ class TelegramClient:
         await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15), method="answerCallbackQuery")
 
     async def close(self) -> None:
+        if self._cleanup_session:
+            await self._cleanup_session.close()
         if self._progress_session:
             await self._progress_session.close()
         await self.bot.session.close()

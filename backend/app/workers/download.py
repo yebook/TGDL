@@ -18,8 +18,10 @@ from sqlalchemy import delete, select
 from app.bot.client import TelegramClient, cloud_size_check
 from app.core.config import Config
 from app.core.errors import AppError
+from app.core.security import Secrets
 from app.db.models import (
     Attempt,
+    CacheCleanup,
     FileReservation,
     Job,
     LocalApiRuntime,
@@ -59,12 +61,15 @@ async def owned_thread[T](operation: Callable[..., T], *args: Any) -> T:
 
 
 class DownloadWorker:
-    def __init__(self, db: Database, storage: StorageManager, config: Config, boot_id: str) -> None:
+    def __init__(self, db: Database, storage: StorageManager, config: Config, boot_id: str,
+                 *, secrets: Secrets | None = None) -> None:
         self.db, self.storage, self.config, self.boot_id = db, storage, config, boot_id
         self.progress_times: dict[str, float] = {}
         self.credential_hash = ""
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
+        self.cleanup_paused = False
+        self.secrets = secrets or Secrets(config.data_dir)
 
     def progress_job(self, job_id: str) -> tuple[Job, MediaItem] | None:
         with self.db.sessions() as session:
@@ -115,6 +120,8 @@ class DownloadWorker:
 
     def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str]) -> str | None:
         with self.db.transaction() as session:
+            if self.cleanup_paused:
+                return None
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
             if safety and RequestSafetyService.blocked(safety.values, time.time()):
                 return None
@@ -245,7 +252,7 @@ class DownloadWorker:
             assert item
             return item.file_id, job.root_id, job.relative_path, item.size_bytes
 
-    def journal_copying(self, job_id: str, temporary: str, final: str) -> None:
+    def journal_copying(self, job_id: str, temporary: str, final: str, api_source: str | None = None) -> None:
         with self.db.transaction() as session:
             job = session.get(Job, job_id)
             assert job
@@ -256,7 +263,8 @@ class DownloadWorker:
             if row:
                 session.delete(row)
                 session.flush()
-            session.add(PublishJournal(job_id=job_id, temporary_path=temporary, final_path=final, stage="copying"))
+            session.add(PublishJournal(job_id=job_id, temporary_path=temporary, final_path=final,
+                                       stage="copying", api_source_path_encrypted=self.secrets.encrypt(api_source) if api_source else None))
             request = session.get(MediaRequest, job.request_id)
             assert request
             project(session, request)
@@ -305,6 +313,11 @@ class DownloadWorker:
         job.state, job.phase, job.finished_at = "succeeded", "succeeded", time.time()
         job.relative_path, job.completed_bytes = journal.final_path, journal.size_bytes or 0
         job.error_code, job.error_message = None, None
+        if job.acquisition_mode == "local" and journal.api_source_path_encrypted:
+            session.add(CacheCleanup(job_id=job.id, bot_id=item.bot_id, file_id=item.file_id,
+                                     source_path_encrypted=journal.api_source_path_encrypted, root_id=job.root_id,
+                                     relative_path=journal.final_path, size_bytes=journal.size_bytes,
+                                     sha256=journal.sha256))
         session.execute(delete(FileReservation).where(FileReservation.job_id == job.id))
         session.delete(journal)
         attempt = session.scalar(select(Attempt).where(Attempt.job_id == job.id, Attempt.sequence == job.attempt_sequence))
@@ -351,7 +364,10 @@ class DownloadWorker:
             final = await asyncio.to_thread(contained, storage.root, relative, create_parent=True)
             temporary = final.with_name(f".part.{job_id}")
             temp_relative = temporary.relative_to(storage.root.resolve()).as_posix()
-            await owned_thread(self.journal_copying, job_id, temp_relative, relative)
+            if not cloud:
+                # Validate before recording the exact native API identity, never a user path.
+                await asyncio.to_thread(source_file, self.config.bot_api_root, source)
+            await owned_thread(self.journal_copying, job_id, temp_relative, relative, None if cloud else source)
             if cloud:
                 copy_task = asyncio.create_task(self.cloud_operation(
                     self.cloud_copy(client, source, temporary, expected, job_id), job_id))
@@ -424,7 +440,10 @@ class DownloadWorker:
                 return
             fields: dict[str, Any] = {"task_id": job.request_id, "job_id": job.id, "mode": job.acquisition_mode,
                       "outcome": job.state, "error_code": job.error_code}
+            pending_cleanup = session.get(CacheCleanup, job_id) is not None
         self.diagnostics.emit("task_result", level="info" if fields["outcome"] == "succeeded" else "warning", **fields)
+        if pending_cleanup:
+            self.diagnostics.emit("cache_cleanup", level="info", mode="local", job_id=job_id, outcome="queued")
 
     async def cloud_operation[T](self, operation: Any, job_id: str) -> T:
         task = asyncio.create_task(operation)
@@ -518,9 +537,9 @@ class DownloadWorker:
                 job.error_message = "本地 Bot API 可能仍在获取文件；请重启该服务以安全恢复并发槽"
             elif job.cancel_requested or code == "CANCELLED":
                 job.state, job.phase, job.finished_at = "cancelled", "cancelled", time.time()
-            elif code == "BOT_REQUEST_PAUSED":
+            elif code in {"BOT_REQUEST_PAUSED", "CACHE_CLEANUP_BUSY"}:
                 job.state, job.phase = "retry_wait", "retry_wait"
-                job.next_run_at = time.time() + max(1, delay)
+                job.next_run_at = time.time() + max(2, delay)
             elif retry and job.auto_retries < job.max_auto_retries:
                 job.auto_retries += 1
                 job.state, job.phase = "retry_wait", "retry_wait"

@@ -32,6 +32,14 @@ before/observe; its success cannot clear backoff/auth pause and its failure
 cannot consume attempts or stop an already-owned download. See
 [local-progress-contracts.md](local-progress-contracts.md).
 
+The private local `tgdDeleteFileCache` is a separate offline housekeeping
+exception: only getRemoteFile/deleteFile in an existing authorized Client,
+without network requests or accounting/protection changes. See
+[cache-cleanup-contracts.md](cache-cleanup-contracts.md). Its known fixed local
+getFile rejection `Bad Request: TGD_CACHE_CLEANUP_BUSY` means no download was
+started; defer without uncertain ownership or spending download retry budget.
+Never generalize this treatment to Telegram errors or cloud responses.
+
 Conservative application defaults are one second between Bot request starts,
 1.1 seconds between sends to a private chat, and 3.1 seconds to a group. These
 are application choices, not official safe thresholds. Reserve starts atomically

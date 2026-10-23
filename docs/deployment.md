@@ -45,7 +45,7 @@ cd TGDL
 
 - 安装 Docker Engine 和 **Docker Compose v2**，使用 Linux 容器。运行 `docker version` 和 `docker compose version` 确认引擎可访问；Windows 使用 Docker Desktop，见 [本地运行](local-run.md)。
 - 首次构建需要访问 Docker Hub、GitHub、Debian、PyPI 和 npm。**即使先使用云端，标准 Compose 也会构建本地 API 镜像**，编译可能耗时较长并占用数 GB 内存；运行时尚未填写本地凭据也可先用云端。
-- 准备应用数据、下载、API 缓存三个目录，并允许所选非 root UID/GID 写入。数据库使用可靠本地文件系统，不放在 SMB/NFS 上；媒体共享应先挂载。API 缓存与最终文件会各占空间，预留至少两份大文件及并发临时空间。
+- 准备应用数据、下载、API 缓存三个目录，并允许所选非 root UID/GID 写入。数据库使用可靠本地文件系统，不放在 SMB/NFS 上；媒体共享应先挂载。本地下载保存期间，API 缓存与目标文件会暂时各占一份空间；最终文件安全保存后自动清理对应媒体缓存，API 运行数据保留。仍需预留两份大文件及并发临时空间，详见 [缓存维护](operations.md#api-缓存维护)。
 - 云端和本地均可在 WebUI 配置 HTTP CONNECT / SOCKS5，无需 TUN 设备或 NET_ADMIN 权限。Docker 不会自动继承宿主的系统或浏览器代理。
 
 ### 3. Bot Token 与自己的用户 ID
@@ -109,7 +109,7 @@ TGD_HOST_DATA=./data
 TGD_HOST_DOWNLOADS=./downloads
 # 最终媒体的宿主目录；可改为已挂载的媒体共享，必须允许下面的 UID/GID 写入。
 TGD_HOST_API_CACHE=./bot-api
-# 本地 API 数据和媒体缓存的宿主目录；可改，注意与最终文件同时占用磁盘空间。
+# 本地 API 运行数据和媒体缓存的宿主目录；可改。保存期间临时占两份空间，成功后自动清理对应媒体缓存，保留运行数据。
 TGD_UID=1000
 # 应用与本地 API 的非 root 数字用户 ID；按主机用户及目录权限修改，可用 id 命令查询。
 TGD_GID=1000

@@ -179,6 +179,23 @@ class PublishJournal(Base):
     stage: Mapped[str] = mapped_column(default="copying")
     size_bytes: Mapped[int | None]
     sha256: Mapped[str | None]
+    api_source_path_encrypted: Mapped[str | None]
+
+
+class CacheCleanup(Base):
+    """Independent durable housekeeping; task soft deletion must retain this row."""
+    __tablename__ = "cache_cleanup"
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), primary_key=True)
+    bot_id: Mapped[int]
+    file_id: Mapped[str]
+    source_path_encrypted: Mapped[str]
+    root_id: Mapped[str]
+    relative_path: Mapped[str]
+    size_bytes: Mapped[int]
+    sha256: Mapped[str]
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_run_at: Mapped[float] = mapped_column(default=time.time, index=True)
+    error_code: Mapped[str | None]
 
 
 class Notification(Base):

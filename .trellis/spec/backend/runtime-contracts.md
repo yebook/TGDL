@@ -39,6 +39,12 @@ After token changes, gate new polling/dispatch/notifications on the connected to
 
 Persist updates/cursor before advancing polling. Confirmation precedes getFile. Download and notification retries are independent. Stream into a part file, hash and fsync, publish using non-overwriting hard link and persist journal through uncertain boundaries. Existing successful files are not fetched again. Local HTTP cancellation does not prove Telegram stopped getFile: uncertain jobs retain global slots until reconciliation. Root marker/device changes block storage without fallback.
 
+Local publication also atomically enqueues independent `CacheCleanup` work using
+`PublishJournal.api_source_path_encrypted`. See [cache-cleanup-contracts.md](cache-cleanup-contracts.md).
+Successful media cleanup uses offline TDLib deletion after final-output verification,
+never app-side moves or writes into the shared read-only API mount. Journal recovery
+must preserve this cleanup obligation; cloud publication never creates one.
+
 Bot confirmation messages display file sizes using the same 1024-based B/KB/MB/GB/TB
 convention as the WebUI: integer bytes, one decimal for larger units, `0 B` for zero
 and `未知` for missing size. Do not append a literal byte unit after a formatted

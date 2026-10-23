@@ -138,6 +138,13 @@
 ## Artifact Status
 
 需求 v1.0 与技术设计/实施计划已获用户确认，已执行 task.py start，状态为 in_progress。后端、WebUI、部署实现按 ownership 分派给 Trellis 子代理，随后进行集成与独立检查；真实 Bot/NAS/代理实验仍需部署环境，不能把文档研究或模拟测试标为真实验证。
+## Saved local media cache cleanup (2026-10-23)
+
+- After successful durable final publication, remove that media's local API cache through TDLib; preserve API authentication/runtime data. Cross-volume copying remains necessary, but retained double storage must not be normal successful behavior.
+- Persist cleanup work atomically with job success, recover after restart, and retry bounded failures independently without redownloading saved media. Never clean on failed/cancelled copies or before durable publication.
+- Exclude concurrent local readers while requesting cleanup. The private native method must use only an existing authorized Client, offline file lookup and TDLib deleteFile, validate generation/file identity/path, reject active downloads/uploads and protect against new getFile during deletion. Confirm the actual original cache path disappeared, not merely a successful TDLib callback.
+- No production cache sweep, runtime-data reset, real Telegram probe or container update is authorized by this increment. Document temporary double space and pending cleanup failures; use targeted isolated checks.
+
 # Configuration portability and first-release cleanup (2026-10-21)
 
 - Add authenticated WebUI configuration export/import. Include Bot Token, API Hash and proxy password encrypted with an independent user-supplied backup password. Exclude administrator credentials/sessions, tasks/history/database, media, logs, caches and service/protection state; explain the scope in UI and public documentation.

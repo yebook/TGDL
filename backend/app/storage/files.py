@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from app.core.errors import AppError
 from app.core.security import private_file
@@ -72,7 +72,7 @@ class Storage:
         identity = {"marker": marker.read_text(), "device": self.root.stat().st_dev}
         private_file(self.identity_path, json.dumps(identity).encode())
 
-    def check(self, required: int = 0) -> dict[str, Any]:
+    def check(self, required: int = 0, *, check_space: bool = True) -> dict[str, Any]:
         if not self.identity_path.exists():
             self.initialize()
         identity = json.loads(self.identity_path.read_text())
@@ -82,7 +82,7 @@ class Storage:
         if marker.read_text() != identity["marker"] or self.root.stat().st_dev != identity["device"]:
             raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
         usage = shutil.disk_usage(self.root)
-        if usage.free < self.minimum_free + required:
+        if check_space and usage.free < self.minimum_free + required:
             raise AppError("NO_SPACE", "可用空间不足，下载已暂停")
         return {"id": self.root_id, "label": self.root_id, "available": True,
                 "free_bytes": usage.free, "total_bytes": usage.total, "message": ""}
@@ -97,13 +97,27 @@ class Storage:
 
 
 def file_hash(path: Path) -> tuple[int, str]:
+    with path.open("rb") as stream:
+        return hash_stream(stream)
+
+
+def hash_stream(stream: BinaryIO) -> tuple[int, str]:
     sha = hashlib.sha256()
     count = 0
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            sha.update(block)
-            count += len(block)
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        sha.update(block)
+        count += len(block)
     return count, sha.hexdigest()
+
+
+def regular_file_hash(path: Path) -> tuple[int, str]:
+    # A replaced final path must not hang housekeeping/shutdown on a FIFO. Check
+    # the opened descriptor, rather than trusting the earlier pathname stat.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise AppError("UNSAFE_PATH", "最终文件不是普通文件")
+        return hash_stream(stream)
 
 
 def copy_stream(source: Path, temporary: Path, expected: int | None,

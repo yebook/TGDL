@@ -14,6 +14,7 @@ Read [template-contracts.md](template-contracts.md) for confirmation and filenam
 Read [task-deletion-contracts.md](task-deletion-contracts.md) for task record removal.
 Read [config-backup-contracts.md](config-backup-contracts.md) for encrypted configuration portability.
 Read [local-progress-contracts.md](local-progress-contracts.md) for native read-only download observations and per-attempt progress ownership.
+Read [cache-cleanup-contracts.md](cache-cleanup-contracts.md) for safe durable cleanup after final local media publication.
 Other topic files remain bootstrap templates, not additional implemented conventions.
 Read [version-contracts.md](version-contracts.md) for numeric product metadata and synchronized runtime/build/documentation versions.
 

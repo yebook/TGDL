@@ -1,0 +1,190 @@
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "telegram-bot-api/Client.h"
++#include "telegram-bot-api/CacheCleanup.h"
+ 
+ #include "telegram-bot-api/ClientParameters.h"
+ 
+@@ -8375,6 +8376,30 @@
+   PromisedQueryPtr query_;
+ };
+ 
++class Client::TdOnCacheLookupCallback final : public TdQueryCallback {
++ public:
++  TdOnCacheLookupCallback(Client *client, PromisedQueryPtr query) : client_(client), query_(std::move(query)) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_cache_resolved(std::move(query_), std::move(result));
++  }
++ private:
++  Client *client_;
++  PromisedQueryPtr query_;
++};
++
++class Client::TdOnCacheDeleteCallback final : public TdQueryCallback {
++ public:
++  TdOnCacheDeleteCallback(Client *client, PromisedQueryPtr query, int32 file_id)
++      : client_(client), query_(std::move(query)), file_id_(file_id) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_cache_deleted(std::move(query_), file_id_, std::move(result));
++  }
++ private:
++  Client *client_;
++  PromisedQueryPtr query_;
++  int32 file_id_;
++};
++
+ class Client::TdOnReturnFileCallback final : public TdQueryCallback {
+  public:
+   TdOnReturnFileCallback(const Client *client, PromisedQueryPtr query) : client_(client), query_(std::move(query)) {
+@@ -8636,6 +8661,9 @@
+ }
+ 
+ void Client::send(PromisedQueryPtr query) {
++  if (query->method() == "tgddeletefilecache") {
++    return tgd_delete_file_cache(std::move(query));
++  }
+   if (query->method() == "tgdgetfileprogress") {
+     return tgd_read_progress(std::move(query));
+   }
+@@ -17129,6 +17157,94 @@
+   answer_query(reply, std::move(query));
+ }
+ 
++namespace {
++struct TgdCacheReply final : td::Jsonable {
++  td::string generation;
++  td::string status;
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("generation", generation);
++    o("status", status);
++  }
++};
++}
++
++void Client::tgd_delete_file_cache(PromisedQueryPtr query) {
++  const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++  if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
++      !generation || !*generation || td::Slice(generation).size() > 128) {
++    return fail_query(404, "Not Found: cache cleanup unavailable", std::move(query));
++  }
++  auto alias = query->arg("file_id");
++  auto path = query->arg("expected_path");
++  auto size = query->arg("expected_size");
++  auto expected_generation = query->arg("generation");
++  auto parsed_size = td::to_integer_safe<int64>(size);
++  if (alias.empty() || alias.size() > 4096 || path.empty() || path.size() > 4096 || path[0] != '/' ||
++      path.find('\0') != td::Slice::npos || size.empty() || size.size() > 20 ||
++      parsed_size.is_error() || parsed_size.ok() < 0 || !query->files().empty() ||
++      expected_generation.empty() || expected_generation.size() > 128) {
++    return fail_query(400, "Bad Request: invalid cache cleanup request", std::move(query));
++  }
++  if (expected_generation != td::Slice(generation)) {
++    return fail_query(409, "Conflict: cache generation changed", std::move(query));
++  }
++  if (!td::begins_with(path, files_dir_) || path.size() <= files_dir_.size() ||
++      path.str().find("/../") != td::string::npos || path.str().find("/./") != td::string::npos ||
++      td::ends_with(path, "/..") || td::ends_with(path, "/.")) {
++    return fail_query(400, "Bad Request: invalid cache path", std::move(query));
++  }
++  if (!tgd_cache_gate_.begin_resolution()) {
++    return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
++  }
++  // Block new getFile callbacks even while the offline alias resolution is pending.
++  send_request(make_object<td_api::getRemoteFile>(alias.str(), nullptr),
++               td::make_unique<TdOnCacheLookupCallback>(this, std::move(query)));
++}
++
++void Client::tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result) {
++  tgd_cache_gate_.resolved();
++  if (result->get_id() != td_api::file::ID || closing_ || logging_out_) {
++    return fail_query(409, "Conflict: cache identity unavailable", std::move(query));
++  }
++  auto file = move_object_as<td_api::file>(result);
++  auto path = query->arg("expected_path");
++  if (cache_file_busy(file->local_->is_downloading_active_, file->remote_->is_uploading_active_,
++                      file_download_listeners_.count(file->id_) != 0, download_started_file_ids_.count(file->id_) != 0)) {
++    return fail_query(409, "Conflict: cache file busy", std::move(query));
++  }
++  if (file->local_->path_.empty()) {
++    if (!cache_path_absent(path.str())) {
++      return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
++    }
++    TgdCacheReply reply;
++    reply.generation = query->arg("generation").str();
++    reply.status = "absent";
++    return answer_query(reply, std::move(query));
++  }
++  auto expected_size = td::to_integer_safe<int64>(query->arg("expected_size"));
++  if (!cache_file_matches(file->local_->path_, path.str(), file->size_, expected_size.ok(),
++                          file->local_->is_downloading_completed_, file->local_->can_be_deleted_)) {
++    return fail_query(409, "Conflict: cache identity changed", std::move(query));
++  }
++  auto id = file->id_;
++  tgd_cache_gate_.begin_delete(id);
++  send_request(make_object<td_api::deleteFile>(id),
++               td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), id));
++}
++
++void Client::tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result) {
++  // The gate belongs to the TD request, not the HTTP connection lifetime.
++  tgd_cache_gate_.completed(file_id);
++  if (result->get_id() != td_api::ok::ID || !cache_path_absent(query->arg("expected_path").str())) {
++    return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
++  }
++  TgdCacheReply reply;
++  reply.generation = query->arg("generation").str();
++  reply.status = "deleted";
++  answer_query(reply, std::move(query));
++}
++
+ td::Status Client::process_get_file_query(PromisedQueryPtr &query) {
+   td::string file_id = query->arg("file_id").str();
+   check_remote_file_id(file_id, std::move(query), [this](object_ptr<td_api::file> file, PromisedQueryPtr query) {
+@@ -17144,6 +17260,9 @@
+   }
+ 
+   auto file_id = file->id_;
++  if (tgd_cache_gate_.blocks(file_id)) {
++    return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
++  }
+   if (parameters_->local_mode_) {
+     tgd_progress_.bind(query->arg("file_id").str(), file_id,
+                        {file->local_->downloaded_size_, file->size_, file->expected_size_,
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -8,6 +8,7 @@
+ 
+ #include "telegram-bot-api/Query.h"
+ #include "telegram-bot-api/ProgressCache.h"
++#include "telegram-bot-api/CacheCleanup.h"
+ #include "telegram-bot-api/Stats.h"
+ #include "telegram-bot-api/WebhookActor.h"
+ 
+@@ -1035,6 +1036,12 @@
+   td::Status process_set_webhook_query(PromisedQueryPtr &query);
+   td::Status process_get_webhook_info_query(PromisedQueryPtr &query);
+   td::Status process_get_file_query(PromisedQueryPtr &query);
++  class TdOnCacheLookupCallback;
++  class TdOnCacheDeleteCallback;
++  void tgd_delete_file_cache(PromisedQueryPtr query);
++  void tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result);
++  void tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result);
++  CacheCleanupGate tgd_cache_gate_;
+   void tgd_read_progress(PromisedQueryPtr query);
+   ProgressCache tgd_progress_;
+ 
+--- a/telegram-bot-api/ClientManager.cpp
++++ b/telegram-bot-api/ClientManager.cpp
+@@ -89,7 +89,7 @@
+   }
+ 
+   auto id_it = token_to_id_.find(token);
+-  if (query->method() == "tgdgetfileprogress") {
++  if ((query->method() == "tgdgetfileprogress" || query->method() == "tgddeletefilecache")) {
+     if (!parameters_->local_mode_ || id_it == token_to_id_.end()) {
+       return fail_query(404, "Not Found: progress unavailable", std::move(query));
+     }

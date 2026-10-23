@@ -1093,3 +1093,9 @@ Implemented native read-only TDLib progress, guarded backend observations and us
 ### Status
 
 [OK] **Completed**
+
+## 2026-10-23: Clean local media caches after safe publication
+
+Implemented durable local cache housekeeping through a private offline TDLib endpoint, preserving API runtime/authentication data and read-only app cache mounts. Publication and recovery atomically enqueue encrypted source identities; final hash/root/fingerprint checks, draining and native per-file gates protect concurrent readers, late deletion and retries. Cleanup errors do not redownload successful media. No historical sweep, live container update, user-data change, commit or push performed.
+
+Independent review fixed low-space cleanup admission and final-path FIFO blocking; source paths are encrypted with the existing key because they can contain Bot Tokens. Native pinned compile, shared policy fixture, no-client/no-egress and existing progress verifier passed. Backend broad run422 passed/11 skipped/one stale fake-client failure; fixed its mode and scoped recovery passed. Final encryption/schema/recovery39 and further focused7 cases passed, Ruff/mypy36 passed. Actual isolated Linux regular/FIFO/stat-to-open-race verification exited0. Docs23 Markdown/97 links/18 pages passed. Authenticated TDLib deletion/space reclamation remains real-environment acceptance; current development baseline schema requires explicit handling during any later deployment update.
