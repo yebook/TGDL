@@ -1339,3 +1339,36 @@ Explicit final-stage chmod protects app/API scripts from restrictive copied mode
 ### Next Steps
 
 - Commit remains local until requested push. User must update actual source and rebuild/recreate containers; no user deployment or native compilation performed.
+
+
+## Session 40: Source-only deployment and full local Compose verification
+
+**Date**: 2026-10-23
+**Task**: Source-only deployment and full local Compose verification
+**Branch**: `main`
+
+### Summary
+
+Blocked remote image deployment/publication; fixed local source tags build by default, build-time non-owner guards, and resolved duplicate API exporter race found during real source startup.
+
+### Main Changes
+
+- Only bot-api builds shared API/init artifact. Fixed source tags ignore remote env overrides; bundled native fixed. Public docs and version tooling synchronized.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e323a80` | (see git log) |
+
+### Testing
+
+- [OK] Independent90 passed3 skipped, actual Docker permission4 passed, Compose3 passed, Ruff/mypy36/version/diff/docs23files99links18pages and YAML/env parity passed. Full default up, stale-tag rebuild, UID1000/0 init0 and live/ready200, explicit no-build recreation succeeded; no TDLib compile or Telegram credentials.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Primary isolated tgd-source-acceptance remains at localhost18083 with fresh .runtime/source-only-acceptance storage and waiting_credentials. Extra root stack removed. Commit local pending requested push; user NAS result still needs current source build.
