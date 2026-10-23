@@ -8,13 +8,22 @@ image release automation and distribution docs. User authorized this scope on
 
 ## 2. Signatures
 
-- `compose.yaml`: one shared source/image deployment file with build definitions,
-  local versioned application/API tags and default pull policy `never`.
-  Source startup is `docker compose up -d --build`; no override Compose file.
-  `TGD_APP_IMAGE` / `TGD_API_IMAGE` override tags for image deployment, and
-  generated `images.env` / `images.ghcr.env` set `TGD_PULL_POLICY=missing`.
-  Image deployment uses explicit pull then `up -d --no-build`, even without a
-  source checkout. API and initializer share build definition and image reference.
+- `compose.yaml`: source-only deployment, fixed `tgd-app-source:<version>` and
+  `tgd-bot-api-source:<version>` tags, `pull_policy: build` on app/API.
+  Ordinary `up -d` builds current source; `up -d --build` is also supported.
+  Intentional config-only recreation uses `up -d --no-build`. No override file,
+  remote image variables or pull-policy variables. API and initializer share
+  one image, built only by bot-api; init has no build and pull policy never.
+  Two Bake targets exporting the same tag raced on the containerd image store
+  during actual acceptance. Never restore duplicate exports; normal whole-stack
+  up must build API before initializing an empty control volume.
+  Compose fixes `TGD_NATIVE_IMAGE: bundled-native`.
+  Do not assume Compose `--dry-run up` is side-effect free: actual Buildx builds
+  occurred under the tested Compose version. Use isolated tags and paths even
+  for a dry-run, and restore any test-only tag changes afterward.
+  Do not assume Compose `--dry-run up` is side-effect free: actual Buildx builds
+  occurred under the tested Compose version. Use isolated tags and paths even
+  for a dry-run, and restore any test-only tag changes afterward.
 - `TGD_BUILD_JOBS`: source-only compilation setting, integer 1..64, default 2;
   unrelated to application download concurrency.
 - Independent `native` target: compiled Bot API/TDLib, runtime libraries and
@@ -25,9 +34,9 @@ image release automation and distribution docs. User authorized this scope on
 - `deploy/bot-api/prebuilt/linux-amd64.tar.gz` and `manifest.json`: ordinary Git
   files containing the linked Bot API/TDLib binary, licenses and provenance.
   `python scripts/bundle_native.py --image <fresh-native-image>` regenerates both.
-- Image workflow: manual `workflow_dispatch`, trusted main only, linux/amd64.
-  Immutable full-revision image tags and digest-pinned deployment artifact;
-  numeric publication must be intentional and must not overwrite a release.
+- Image workflow: temporarily disabled; publisher and bundle entrypoints fail
+  before registry access. Pages remains independent and enabled. The following
+  registry contracts describe dormant internal tooling, not available deployment.
 - Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (read/write),
   with public `tgdl-app` and `tgdl-bot-api` repositories only.
   GHCR remains authenticated build/cache storage. Mirror the same manifests,
@@ -35,8 +44,8 @@ image release automation and distribution docs. User authorized this scope on
 
 ## 3. Contracts
 
-First-release numeric metadata remains canonical. Version tooling updates only
-owned default image/tag mirrors and preserves operator custom image references.
+First-release numeric metadata remains canonical. Version tooling updates owned
+fixed local source tags; remote image examples/overrides are absent from env.
 The production app/API pair must be reproducible; initializer always uses the
 same API reference. No generic upstream binary may replace the project's pinned
 patched API. Preserve native patch source verification, licenses, proxy/progress/
@@ -78,6 +87,13 @@ and preserved required executable bits. Verify with restrictive Linux build
 contexts, because Windows contexts can mask this failure. Apply permissions only
 to image-owned code; never broaden mounted data, keys or control-file permissions.
 Runtime packaging permission fixes must not invalidate native input identity.
+Build-time guards after normalization must actually read entrypoints as a
+non-owner UID/GID and verify required executables, rather than relying on root
+access or source text assertions. Fail the build before an unreadable runtime
+artifact is accepted. Test the entire source-only Compose lifecycle using fresh
+isolated paths, no credentials and no inherited runtime .env; verify initializer
+exit 0, app readiness, idle supervisor, actual image content and config-only
+recreation behavior. Do not silently reuse an earlier product-image tag.
 
 Final runtime stages must explicitly normalize permissions after the last COPY;
 COPY --chmod alone is not the acceptance boundary. On 2026-10-23 the user's
@@ -128,12 +144,11 @@ Copy complete manifest indexes and attestations without changing digests;
 interrupted copies must remain safely retryable. Actual production-image
 permission checks and offline smoke precede release aliases. Anonymous Docker
 Hub manifest pulls for app/API are required before publication succeeds.
-Deployment bundles copy the identical root Compose file, include pull policy with
-both image environment files, and must configure successfully without source
-Dockerfiles. Never rebuild from a digest-pinned deployment bundle. Source startup
-must not query remote application/API repositories; base image/package network
-access remains necessary. Deployment bundles default to Docker Hub digest-pinned references and retain
-`images.ghcr.env` as an alternative; GHCR package visibility may remain private.
+Deployment bundle creation is currently blocked at its public entrypoint.
+Dormant registry helpers retain manifest/digest safety for future restoration,
+but current Compose cannot deploy remote product images. Source startup must
+not query remote application/API repositories; base image/package network
+access remains necessary.
 Never print Docker Hub Tokens or require deployment-host credentials for public
 Docker Hub pulls. Neither image publication nor Pages updates deployed containers.
 
@@ -142,8 +157,9 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 | Condition | Behavior |
 | --- | --- |
 | Configuration-only change | `up -d --no-build`, recreate containers without compiling |
-| Source startup with default env | `up -d --build` uses local tags; no remote production-image lookup |
-| Source-free deployment bundle | Same Compose config resolves digest pair with `missing`; explicit `--no-build` skips source |
+| Source startup with default env | Ordinary `up -d` builds fixed local source tags; no remote production-image lookup |
+| Remote image/pull-policy variables set | Ignored by fixed Compose; cannot select remote product images |
+| Publication or deployment bundle request | Fail before registry access while source-only mode is active |
 | App-only source edit | Build app only; keep API artifact unchanged |
 | Management script edit | Repackage API using the same precompiled native base |
 | Bundled native artifact valid, builder cache empty | Extract verified bundle; never compile TDLib as runtime dependency |
@@ -158,23 +174,24 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 
 ## 5. Good / Base / Bad Cases
 
-Good: use digest-pinned tested app/API references; the same Compose supports source builds.
+Good: fixed source tags build current code, initialization consumes the newly built API image.
 Base: default 2 compiler jobs and warm dependency/native caches.
 Bad: download-directory edit triggers TDLib compilation; publishing a new app
 silently replaces a numeric API tag; docs present unavailable images as deployed.
 
 ## 6. Tests Required
 
-Quiet Compose checks for default/source/custom image references and zero/mixed
+Quiet Compose checks for fixed local source references, ignored remote variables and zero/mixed
 runtime identity; version tooling preservation and drift tests; build argument
 validation; actual isolated package-cache install and runtime source checks where
 possible. Review workflow permissions, main gate, tag collision/retry behavior,
 content input hash and exact deployment image pair. Document unexecuted hosted
 build/publication and native cold compile separately from passing local checks.
-Parse actual Compose configuration and source build plan; assert local tags,
-shared API build, default `never` policy and bundled-native. Validate byte-identical
-Compose in source-free bundles using both image env files with digest pairs and
-`missing` policy; exercise image-only startup via read-only dry-run when available.
+Parse actual Compose configuration and source build plan; assert distinct local
+source tags, exactly two image builds, API/init image equality, build policy for
+app/API and never policy for init, and bundled-native. Assert publication and
+bundle entrypoints reject before registry calls; exercise real full source up
+using fresh isolated paths and test port without credentials.
 Docs build validates current code blocks and links. No live Telegram or current
 deployment/data mutations are needed.
 

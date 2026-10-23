@@ -28,6 +28,10 @@ COPY --chmod=0644 deploy/app-entrypoint.py /app/entrypoint.py
 # Apply modes inside the final filesystem too: restrictive NAS source modes must
 # never survive packaging, even when COPY permission metadata is not applied.
 RUN chmod -R u=rwX,go=rX /app && chmod 0644 /app/entrypoint.py
+COPY --chmod=0644 deploy/verify-image-permissions.py /usr/local/lib/tgd-verify-permissions.py
+RUN chmod 0644 /usr/local/lib/tgd-verify-permissions.py
 USER 1000:1000
+# Fail the build if the final copied code is unreadable by a non-owner user.
+RUN python /usr/local/lib/tgd-verify-permissions.py app --build
 EXPOSE 8000
 ENTRYPOINT ["python", "/app/entrypoint.py"]

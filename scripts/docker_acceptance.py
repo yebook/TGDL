@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", action="store_true", help="Explicitly allow disposable Docker mutations")
     version_file = Path(__file__).resolve().parents[1] / "backend/app/version.json"
     version = json.loads(version_file.read_text(encoding="utf-8"))["version"]
-    parser.add_argument("--image", default=f"tgd-app:{version}", help="Already built local production image")
+    parser.add_argument("--image", default=f"tgd-app-source:{version}", help="Already built local production image")
     args = parser.parse_args(argv)
     if not args.run:
         parser.error("--run is required; this creates and removes isolated disposable containers")

@@ -36,12 +36,12 @@ def api_identity(root: Path) -> str:
     """Runtime identity binds scripts/version to the actual verified Git bundle."""
     _, runtime = dockerfile_sections(root)
     files = [f"deploy/bot-api/{name}" for name in ("entrypoint.sh", "supervisor.py", "init-volumes.py")]
-    return input_identity(root, files, (bundled_artifact_identity(root) + "\n" + runtime).encode())
+    return input_identity(root, [*files, "deploy/verify-image-permissions.py"], (bundled_artifact_identity(root) + "\n" + runtime).encode())
 
 
 def app_identity(root: Path) -> str:
     tracked = run("git", "ls-files", "backend", "frontend").splitlines()
-    return input_identity(root, [".dockerignore", "Dockerfile", "deploy/app-entrypoint.py", *tracked])
+    return input_identity(root, [".dockerignore", "Dockerfile", "deploy/app-entrypoint.py", "deploy/verify-image-permissions.py", *tracked])
 
 
 def input_identity(root: Path, names: list[str], extra: bytes = b"") -> str:
@@ -82,7 +82,7 @@ def remote_digest(reference: str) -> str | None:
     return digest
 
 
-def bundle(
+def _bundle_archived(
     root: Path, destination: Path, app: str, api: str, revision: str, identity: str,
     native_inputs: str, native_artifact: str,
     mirrors: list[str] | None = None,
@@ -171,7 +171,7 @@ def verify_public(reference: str) -> None:
         raise RuntimeError(f"Anonymous registry digest mismatch: {reference}")
 
 
-def publish(release: bool) -> None:
+def _publish_archived(release: bool) -> None:
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ValueError("Publication is permitted only from main")
     revision = os.environ["GITHUB_SHA"]
@@ -284,8 +284,17 @@ def publish(release: bool) -> None:
             raise ValueError(f"Refusing to overwrite conflicting immutable image tag: {target}")
     for target, source in aliases:
         ensure_alias(target, source)
-    bundle(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity,
+    _bundle_archived(ROOT, ROOT / "deployment-bundle", pinned[0], pinned[1], revision, identity,
            native_identity(ROOT), bundled_artifact_identity(ROOT), mirrors or None)
+
+
+# Kept internally for future publication work; the active deployment is source-only.
+def bundle(*args: object, **kwargs: object) -> None:
+    raise RuntimeError("Remote image deployment is temporarily disabled; use the source checkout and docker compose up -d")
+
+
+def publish(release: bool) -> None:
+    raise RuntimeError("Remote image publication is temporarily disabled; use the source checkout and docker compose up -d")
 
 
 if __name__ == "__main__":

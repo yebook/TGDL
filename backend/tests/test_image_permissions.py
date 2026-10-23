@@ -84,7 +84,8 @@ def test_final_layer_repairs_restrictive_copy_modes(kind: str) -> None:
         pytest.skip("Set local permission-test image references to run Docker regression")
     dockerfile = ROOT / ("Dockerfile" if kind == "app" else "deploy/bot-api/Dockerfile")
     text = dockerfile.read_text(encoding="utf-8")
-    commands = re.findall(r"(?m)^RUN chmod[^\n]*", text.replace("\\\n", ""))
+    commands = [command for command in re.findall(r"(?m)^RUN chmod[^\n]*", text.replace("\\\n", ""))
+                if "/app" in command or "/usr /usr/local" in command]
     assert commands, "Missing final image permission normalization"
     normalization = commands[-1]
     sources = (

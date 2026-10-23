@@ -9,7 +9,7 @@
 先启动 Docker Engine，并构建当前源码的应用镜像：
 
 ```text
-docker build -t tgd-app:0.1.0 .
+docker build -t tgd-app-source:0.1.0 .
 python scripts/docker_acceptance.py --run
 ```
 

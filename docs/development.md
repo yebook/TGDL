@@ -61,9 +61,9 @@ pnpm test:e2e
 
 ## 源码构建与缓存
 
-源码构建与镜像部署共用 `compose.yaml`。文件内已定义构建上下文和本机镜像标签，默认不会从远程拉取应用/API 镜像。首次构建：
+部署只使用 `compose.yaml` 从源码构建。固定本机源码标签与默认构建策略，启动时不会拉取远程应用/API 镜像；可复用有效构建缓存。首次构建：
 
-从镜像部署切换到源码构建时，不要加载配套的 `images.env`。同时移除自己 `.env` 和终端环境中已有的 `TGD_APP_IMAGE` / `TGD_API_IMAGE` / `TGD_PULL_POLICY` 覆盖，使用默认本机标签和构建策略；摘要引用（`镜像名@sha256:...`）不能作为构建输出标签。若确实需要自定义构建标签，请使用可写的本地标签。
+使用完整源码和自己的 `.env`，不加载 `images.env`。Compose 已屏蔽远程运行镜像与拉取策略覆盖参数。
 
 ```sh
 docker compose up -d --build
@@ -97,18 +97,18 @@ docker compose up -d --no-build --no-deps app
 
 源码构建默认 `TGD_NATIVE_IMAGE=bundled-native`，使用 `deploy/bot-api/prebuilt/linux-amd64.tar.gz` 及配套 `manifest.json`。无需改配置，也无需等待镜像首次发布。维护者通常只需更新附带的预编译包；项目不再发布独立原生基础镜像，不能用普通 Bot API 或任意最终 API 镜像代替该产物。
 
-只有需要重新编译原生代码时，才将 `.env` 中的选择改为 `TGD_NATIVE_IMAGE=native`，或在项目根目录单独构建 `native` 目标：
+只有需要修改原生代码时，才在项目根目录单独构建 `native` 目标并更新预编译包；普通 Compose 部署固定使用附带产物：
 
 ```sh
 docker build -f deploy/bot-api/Dockerfile --target native --build-arg TGD_BUILD_JOBS=2 -t tgd-native:source-build .
 python scripts/bundle_native.py --image tgd-native:source-build
 ```
 
-第二步导出新产物、许可证和清单；更新后将压缩包、清单与对应的原生代码修改一起提交，再恢复默认 `bundled-native`。缺失、损坏或与当前原生输入不匹配的产物会让默认构建失败，不能只修改版本号或绕过摘要校验来继续部署。
+第二步导出新产物、许可证和清单；更新后将压缩包、清单与对应的原生代码修改一起提交，普通部署继续使用固定的 `bundled-native`。缺失、损坏或与当前原生输入不匹配的产物会让默认构建失败，不能只修改版本号或绕过摘要校验来继续部署。
 
 ### 构建缓存与资源
 
-Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓存，锁文件仍强制校验。缓存减少重复下载和手动原生重编译；这与仓库附带或镜像仓库发布的预编译原生产物是不同机制。缓存挂载属于构建器，不能假定更换主机或导入远程层缓存后仍有相同的包/ccache 缓存。默认源码构建使用附带的原生产物，仍需下载应用依赖与基础镜像。
+Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓存，锁文件仍强制校验。缓存减少重复下载和手动原生重编译；这与仓库附带的预编译原生产物是不同机制。缓存挂载属于构建器，不能假定更换主机或导入远程层缓存后仍有相同的包/ccache 缓存。默认源码构建使用附带的原生产物，仍需下载应用依赖与基础镜像。
 
 `.env` 的 `TGD_BUILD_JOBS=2` 仅控制原生编译线程数（1–64），小内存设备可降低为 `1`；不要直接按 CPU 核心数拉满。增加线程不加速网络下载，也可能因内存不足失败。未完成冷/热构建对比前，不承诺数值提速。
 
@@ -118,28 +118,14 @@ Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓�
 
 ## 手动镜像发布
 
-独立的镜像工作流只接受手动触发，不随代码推送自动执行，不连接或更新 NAS。文档站 Pages 工作流继续只发布静态文档。流程在 GHCR 构建并保存可复用产物，然后将同一产物同步到 Docker Hub，无需再编译一遍。Docker Hub 是部署包的默认拉取来源；GHCR 副本可保留为私有，不影响 Docker Hub 部署。
-
-首次运行前准备：
-
-1. 在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 添加 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` 两个 Repository secrets。用户名应为 Docker Hub 账号名，Token 需要 **Read & Write** 权限；不要将 Token 写入源码、`.env` 或普通 Variables。
-2. 在该 Docker Hub 账号下创建两个 **Public** 仓库：`tgdl-app`、`tgdl-bot-api`。原生组件随源码提供，不需要单独的镜像仓库。仓库不存在或认证失败会明确报错，不会当成可以覆盖的空标签。
-3. 确认 GitHub 仓库允许运行 Actions。GHCR 登录使用流程自带的 `GITHUB_TOKEN`，工作流仅为发布任务授予 `packages: write`，无需另外保存 GHCR 密钥。
-
-在 **Actions → Publish production images → Run workflow** 选择 `main`。首次需要可直接拉取的数字标签时，勾选 **Also publish the current numeric version**，当前为 `0.1.0`；已有不同产物占用同一数字标签时会拒绝覆盖。未勾选时仍发布输入指纹和完整提交编号标签，并提供固定摘要的部署包。
-
-流程会检查镜像内程序的可读与执行权限，并对实际应用/API 运行镜像进行无凭据隔离验收；同步后再匿名验证 Docker Hub 镜像可拉取。构建、运行或匿名拉取失败均不提升用户使用的版本标签。原生部分默认使用附带产物，首次仍需安装应用依赖和构建前端；修复问题后重跑会按输入指纹复用已经成功推送的内容，不需要清理缓存或修改版本来重试。
-
-发布初期只构建 `linux/amd64`。只发布应用与最终 API 两种镜像，按各自输入指纹复用，并按完整提交编号配对记录；API 缓存未命中时直接从附带产物组装。原生输入改变后须先完成单独编译与产物更新。标签和缓存存在不等于新修改已经通过真实 Telegram 验收。生产镜像保持官方源码固定版本、项目定制补丁、监督进程和许可证。数字版本标签为明确选择的发布操作，避免覆盖已有版本；验证镜像/带调试工具的镜像不用于生产。
-
-成功运行输出固定应用/API 摘要的部署包，使用方式见 [镜像部署](deployment.md#镜像部署)。发布记录须保留源码提交、架构、两条运行镜像摘要、原生输入和预编译产物的身份信息，以及验证边界。部署包同时保留 GHCR 引用；如选择 GHCR 拉取，需确认两个对应包的可见性和读取权限，GitHub 源码公开不代表 GHCR 包自动公开。首次运行、新增架构以及原生补丁变化应完成无凭据隔离构建/运行检查；增加 arm64 前需实际构建和运行验证，不能仅凭 buildx 支持多平台宣称可用。
+远程镜像发布与部署暂时停用，当前不需要准备 Docker Hub 凭据或运行发布工作流。相关工具保留供后续恢复，发布入口会明确拒绝执行；文档站 Pages 发布不受影响。
 
 ## 原生代理隔离验证
 
 修改本地 API 源码补丁时，先编译实际镜像，再运行专用传输检查。以下命令在项目根目录执行，不挂载应用数据，不填写真实凭据；专用检查镜像安装 `strace`，只在断网容器中验证。
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api:0.1.0 .
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.1.0 .
 docker build -f deploy/bot-api/Dockerfile.verify-native -t tgd-native-transport-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-transport-acceptance
 ```
@@ -153,7 +139,7 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api:0.1.0 -t tgd-native-progress-acceptance .
+docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.1.0 -t tgd-native-progress-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-progress-acceptance
 ```
 

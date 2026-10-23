@@ -58,6 +58,11 @@ COPY --chmod=0644 deploy/bot-api/init-volumes.py /usr/local/lib/tgd-init-volumes
 # Normalize the final image filesystem, independently of COPY metadata.
 RUN chmod 0755 /usr /usr/local /usr/local/lib /entrypoint.sh && \
     chmod 0644 /usr/local/lib/tgd-api-supervisor.py /usr/local/lib/tgd-init-volumes.py
+COPY --chmod=0644 deploy/verify-image-permissions.py /usr/local/lib/tgd-verify-permissions.py
+RUN chmod 0644 /usr/local/lib/tgd-verify-permissions.py
+USER 1000:1000
+RUN python3 /usr/local/lib/tgd-verify-permissions.py api --build
+USER 0:0
 WORKDIR /var/lib/telegram-bot-api
 EXPOSE 8081
 ENTRYPOINT ["/entrypoint.sh"]

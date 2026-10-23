@@ -18,6 +18,7 @@ MANIFESTS = (
     "backend/app/version.py", "backend/app/version.json", "backend/pyproject.toml", "backend/uv.lock",
     "frontend/package.json", "compose.yaml", ".env.example", "Dockerfile", "deploy/bot-api/Dockerfile",
     "deploy/bot-api/Dockerfile.verify-native", "deploy/bot-api/Dockerfile.verify-progress",
+    "deploy/bot-api/Dockerfile.verify-cache-cleanup",
 )
 
 

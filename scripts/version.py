@@ -19,12 +19,12 @@ def planned_updates(root: Path) -> dict[Path, str]:
         ("backend/pyproject.toml", r'(?m)^(version = ")[^"]+("\r?$)', version, 1),
         ("backend/uv.lock", r'(name = "tgd-backend"\r?\nversion = ")[^"]+(")', version, 1),
         ("frontend/package.json", r'(?m)^(  "version": ")[^"]+(",?\r?$)', version, 1),
-        ("compose.yaml", r'(?m)^(    image: \$\{TGD_(?:APP|API)_IMAGE:-tgd-(?:app|bot-api):)[0-9.]+(\}\r?$)', version, 3),
-        (".env.example", r'(?m)^(# TGD_(?:APP|API)_IMAGE=ghcr\.io/yebook/tgdl-(?:app|bot-api):)[0-9.]+(\r?$)', version, 2),
+        ("compose.yaml", r'(?m)^(    image: tgd-(?:app|bot-api)-source:)[0-9.]+(\r?$)', version, 3),
         ("Dockerfile", r'(LABEL org.opencontainers.image.version=")[^"]+(")', version, 1),
         ("deploy/bot-api/Dockerfile", r'(LABEL org.opencontainers.image.version=")[^"]+(")', version, 1),
-        ("deploy/bot-api/Dockerfile.verify-native", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api:)[^\s]+(\r?$)', version, 1),
-        ("deploy/bot-api/Dockerfile.verify-progress", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api:)[^\s]+(\r?$)', version, 1),
+        ("deploy/bot-api/Dockerfile.verify-native", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api-source:)[^\s]+(\r?$)', version, 1),
+        ("deploy/bot-api/Dockerfile.verify-progress", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api-source:)[^\s]+(\r?$)', version, 1),
+        ("deploy/bot-api/Dockerfile.verify-cache-cleanup", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api-source:)[^\s]+(\r?$)', version, 1),
     ]
     updates = {}
     for relative, pattern, replacement, expected in targets:

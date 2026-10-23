@@ -1,8 +1,8 @@
 name: tgd
 services:
   app:
-    image: ${TGD_APP_IMAGE:-tgd-app:0.1.0}
-    pull_policy: ${TGD_PULL_POLICY:-never}
+    image: tgd-app-source:0.1.0
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
@@ -38,14 +38,14 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
   bot-api:
-    image: ${TGD_API_IMAGE:-tgd-bot-api:0.1.0}
-    pull_policy: ${TGD_PULL_POLICY:-never}
-    build: &api-build
+    image: tgd-bot-api-source:0.1.0
+    pull_policy: build
+    build:
       context: .
       dockerfile: deploy/bot-api/Dockerfile
       args:
         TGD_BUILD_JOBS: ${TGD_BUILD_JOBS:-2}
-        TGD_NATIVE_IMAGE: ${TGD_NATIVE_IMAGE:-bundled-native}
+        TGD_NATIVE_IMAGE: bundled-native
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     init: true
     restart: unless-stopped
@@ -65,9 +65,10 @@ services:
     stop_grace_period: 90s
     logging: *logging
   init-volumes:
-    image: ${TGD_API_IMAGE:-tgd-bot-api:0.1.0}
-    pull_policy: ${TGD_PULL_POLICY:-never}
-    build: *api-build
+    image: tgd-bot-api-source:0.1.0
+    # bot-api builds this image before Compose creates any service.
+    # Do not build the same tag twice concurrently or pull a remote replacement.
+    pull_policy: never
     entrypoint: ["python3", "/usr/local/lib/tgd-init-volumes.py"]
     restart: "no"
     network_mode: none

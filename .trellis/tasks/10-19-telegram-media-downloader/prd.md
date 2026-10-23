@@ -1,5 +1,15 @@
 # Telegram 媒体下载助手：需求与实施
 
+## Source-only deployment and local acceptance (2026-10-23)
+
+- User requests source builds as the active deployment path and temporary blocking of remote images after continued permission/old-initializer failures.
+- Fixed distinct local source image tags, default build policy even when images exist; ignore old remote image/pull-policy env settings. Keep a single Compose file and deliberate no-build config recreation.
+- Pause image publishing and deployment-bundle entrypoints; retain dormant internals without presenting remote deployment as currently available. Pages remains independent.
+- Build-time non-owner checks must reject unreadable entrypoint artifacts; Compose uses verified bundled native code without remote native selection or TDLib compilation.
+- User authorizes full local Compose source-build/startup acceptance, reporting original local containers deleted. Use independent fresh paths/config and no Telegram credentials; preserve existing data and volumes.
+- Full local default startup exposed a duplicate-exporter race: API and initializer concurrently exported the same image tag. Build API only once via bot-api, then initialize with the same image using no build/never pull; verify fresh-tag and fresh-volume startup before completion.
+- Actual local acceptance completed: default up builds both source images; initializer exits 0, live/ready succeed, non-owner image checks pass. Separate UID/GID 0 stack also passes and is removed. Stale source tags still trigger rebuilding; explicit no-build recreate executes without building. Primary empty-config stack remains available at localhost:18083 using isolated `.runtime/source-only-acceptance/` data.
+
 ## Runtime entrypoint permission recurrence (2026-10-23)
 
 - User's built app image `17bcd6994114` contains `/app/entrypoint.py` mode 0700 owned by root; API image `0f9211ab0355` has the same mode/owner for `/usr/local/lib/tgd-api-supervisor.py`. Relevant parent directories are 0755. Non-owner UID 1000 cannot read either script.

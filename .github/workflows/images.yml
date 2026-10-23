@@ -17,7 +17,8 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    # Temporarily source-only deployment; do not publish unusable remote bundles.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:

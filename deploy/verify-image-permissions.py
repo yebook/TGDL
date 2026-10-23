@@ -44,7 +44,8 @@ def main() -> None:
             check(path)
         entrypoint = root / "entrypoint.py"
         compile(entrypoint.read_bytes(), str(entrypoint), "exec")
-        check_app_import(root / "backend")
+        if "--build" not in sys.argv:
+            check_app_import(root / "backend")
         assert Path("/app/frontend/dist/index.html").read_bytes()
         assert os.access("/app/backend/.venv/bin/uvicorn", os.X_OK)
     elif sys.argv[1] == "api":
