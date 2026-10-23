@@ -4,7 +4,7 @@
 
 **[在线文档](https://yebook.github.io/TGDL/)** · [第一次下载](https://yebook.github.io/TGDL/quick-start.html) · [更新日志](https://yebook.github.io/TGDL/changelog.html) · [问题反馈](https://github.com/yebook/TGDL/issues)
 
-目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。采用源码构建，暂未提供可直接拉取的公开应用镜像；真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
+目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。默认部署文件已改为拉取配套生产镜像，公开镜像尚待首次发布；**目前可用的启动方式仍是下方源码构建**。真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
 
 ## 怎么使用
 
@@ -33,11 +33,11 @@
 
 ## 快速部署
 
-需要完整项目源码、Docker Compose v2、Linux 容器环境、专属 Bot Token 和自己的数字 Telegram 用户 ID。源码获取与 Bot 准备方法见 [部署前准备](https://yebook.github.io/TGDL/deployment.html#部署前准备)。数据库使用可靠本地存储，媒体共享先挂载。
+需要完整项目源码、Docker Compose v2、`linux/amd64` 容器环境、专属 Bot Token 和自己的数字 Telegram 用户 ID。当前源码构建与预编译镜像均仅支持 amd64（x86_64）。源码获取与 Bot 准备方法见 [部署前准备](https://yebook.github.io/TGDL/deployment.html#部署前准备)。数据库使用可靠本地存储，媒体共享先挂载。
 
 ### 1. 准备配置与目录
 
-根目录 [compose.yaml](compose.yaml) 是唯一部署入口，环境参数模板是 [.env.example](.env.example)。以下为 Linux / SSH 命令，在项目根目录执行。将示例 `1000:1000` 替换为实际非 root 用户与组，并在 `.env` 中填写相同的 `TGD_UID` / `TGD_GID`；若 `id` 显示 root，使用 `id 用户名` 查询普通用户，不能填 `0:0`。
+根目录 [compose.yaml](compose.yaml) 定义运行服务，[compose.build.yaml](compose.build.yaml) 添加源码构建，环境参数模板是 [.env.example](.env.example)。以下为 Linux / SSH 命令，在完整项目根目录执行。将示例 `1000:1000` 替换为有目录权限的用户与组，并在 `.env` 中填写相同的 `TGD_UID` / `TGD_GID`。推荐使用普通用户；也支持 `0:0` 或单独将 UID、GID 设为 `0`，但目录权限仍需匹配。
 
 ```sh
 cp .env.example .env
@@ -57,12 +57,13 @@ chmod 600 .env
 确认路径、权限与共享挂载后，在项目根目录执行：
 
 ```sh
-docker compose --env-file .env -f compose.yaml config --quiet
-docker compose --env-file .env -f compose.yaml up -d --build
-docker compose --env-file .env -f compose.yaml ps
+docker compose --env-file .env -f compose.yaml -f compose.build.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.build.yaml build
+docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-build
+docker compose --env-file .env -f compose.yaml -f compose.build.yaml ps
 ```
 
-即使先使用云端，首次构建也会下载依赖并编译本地 API，耗时较长、需要数 GB 内存。`init-volumes` 初始化成功后退出是正常现象，应用和 API 管理服务保持运行。
+未指定预编译原生基础镜像时，源码首次构建仍会下载依赖并编译本地 API，耗时较长、需要数 GB 内存。之后只修改 `.env` 时，用同样两份 Compose 文件执行 `up -d --no-build` 即可重建容器，无需再次编译。`init-volumes` 初始化成功后退出是正常现象。配套镜像发布后可按 [镜像部署](https://yebook.github.io/TGDL/deployment.html#镜像部署) 省去本机编译；维护者的原生组件独立预编译、轻量 API 打包及应用单独构建见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
 
 ### 3. 初始化并验证
 

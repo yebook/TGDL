@@ -53,7 +53,7 @@ the lock. Nonmanaged cloud reconnect must respect the same durable cooldown and
 manual-validation barriers as managed operation; consumer/claim barriers must not
 depend only on managed_local_api.
 
-The nonroot API supervisor stays alive without credentials, controls only the
+The API supervisor runs as the configured UID/GID, stays alive without credentials, controls only the
 fixed official API child and uses no Docker socket. Private control volume and
 independent Fernet key are shared only with app/API, never full app data or
 master.key. Versioned desired.json carries command_id, action start/stop/restart,
@@ -153,8 +153,8 @@ again in supervisor decrypted-payload validation. Disabled proxy fields may be
 retained for editing; HTTP CONNECT retains normal character limits. Maximum
 Unicode HTTP credentials must fit the encrypted IPC bounds.
 
-The fixed initializer mounts only private control volume, validates nonroot
-UID/GID and uses opened no-follow directory descriptors for ownership/mode
+The fixed initializer mounts only private control volume, validates numeric
+UID/GID in the inclusive range 0..2147483647 and uses opened no-follow directory descriptors for ownership/mode
 changes, never recursive media permission changes. Runtime gates local
 dispatch/poll/notify on current acknowledged process settings, while transactional
 phase barriers block conflicting acquisition. Metadata checks cannot atomically
@@ -164,6 +164,9 @@ certify independent process liveness.
 
 | Condition | Required behavior |
 | --- | --- |
+| TGD_UID/TGD_GID zero, independently or together | Accept; defaults remain 1000:1000; supervisor and entrypoint must not reject root |
+| Negative/out-of-range/nonnumeric UID/GID | Reject initialization before changing private-volume permissions |
+| Control file UID/mode mismatch, including root deployments | Retain private ownership/mode validation; no bypass based on UID 0 |
 | Missing application credentials | Offline save allowed; waiting_credentials; no child |
 | Missing/stale supervisor heartbeat | Unavailable; no invented running status |
 | Active download | Draining state; no new claims; do not kill owner |
@@ -184,6 +187,9 @@ then resume downloads without replacing app/container. Base: cloud deployment
 keeps supervisor waiting with no API credentials. Bad: a status poll or manual
 candidate validation logs into local before logout; restarting a container is
 reported as the meaning of the process button; a timeout clears uncertain slots.
+Deployment identity cases: default 1000:1000 and explicit 0:0, 0:1000 or
+1000:0 are supported. Root identity does not imply privileged containers or
+permission changes to unrelated host directories.
 
 ## 6. Tests Required
 
@@ -195,6 +201,10 @@ cooldown across app restart, candidate-validation barriers, unrelated saves,
 blocked recovery and externally managed API status. Narrow browser tests cover status,
 actions, credential blank/clear, unsaved form preservation and mobile layout.
 Quiet Compose parsing must support blank credentials without dumping secrets.
+Exercise initializer and actual Linux supervisor/entrypoint startup under
+0:0, 0:1000, 1000:0 and 1000:1000 with no external network. Assert private
+control ownership/mode, fresh heartbeat and unchanged dropped capabilities,
+no-new-privileges and read-only filesystem settings.
 Mocks cannot certify actual Telegram, local >20 MB, real proxy or Docker host behavior.
 
 Fault tests must cover hanging cooperative identity/close/logout, barrier held
@@ -214,3 +224,7 @@ Wrong: `settings.bot_api_mode` immediately reconnects while an async migration
 is still running; a failed logout automatically falls back to cloud.
 Correct: desired/applied modes and persisted barriers control every upstream
 consumer, uncertain remote outcomes remain explicit, and the UI reports them.
+
+Wrong: accepting UID 0 by making the control volume world-writable or enabling
+privileged mode. Correct: allow zero as an ordinary configured identity while
+preserving exact ownership checks, private mode 700 and deployment restrictions.

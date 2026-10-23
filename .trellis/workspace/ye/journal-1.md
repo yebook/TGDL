@@ -1105,3 +1105,59 @@ Independent review fixed low-space cleanup admission and final-path FIFO blockin
 The user subsequently authorized commit, push and current-container update. Feature commit `cff7a83` was pushed to `origin/main`. Production images were rebuilt from verified pinned native sources and canonical production stages; app image `7a477cdb907a`, Bot API image `c11e55ddfadb`.
 
 An isolated baseline conversion preserved all existing table rows by named columns and proved the previous production ORM could read the fresh additive schema. After a graceful idle stop, complete app/API/control/config backups were verified at `.runtime/local-docker/backups/before-cache-cleanup-20261023T020855Z/`. Only the two TGDL services were recreated. Post-start checks passed for live/ready (200), original settings/admins/business IDs, media/master key, mounts, private control key, protection/mode/logout state and fresh API heartbeat/generation acknowledgement. Post-start failures never automatically stop new owners or restore stale state. Private deployment helpers and backups remain ignored. No real Telegram probe, historical-cache sweep or authenticated deletion/space-reclamation acceptance was performed.
+
+## 2026-10-23: Allow explicitly configured root UID/GID
+
+User requested removal of the UID/GID-zero restriction. The initializer accepts integer identities in 0..2147483647, and entrypoint/supervisor no longer reject UID 0. Default identity remains 1000:1000; private-control ownership/mode checks, read-only roots, dropped capabilities and no-new-privileges remain intact. README, deployment examples and current executable specs describe zero and mixed identities. The change does not alter the running deployment or existing directory ownership, and is not automatically committed/pushed.
+
+Independent review passed. Scoped tests: 34 passed, 2 POSIX-only skips on Windows. Network-disabled Linux checks passed real initialization and entrypoint/heartbeat/private-file/shutdown behavior for 0:0, 0:1000, 1000:0 and 1000:1000 under existing container restrictions. Ruff and Linux-platform mypy passed for 3 files; documentation checks passed 23 Markdown files, 97 links and 18 pages. No Telegram probe was made.
+
+## 2026-10-23: Build cache and production image distribution
+
+User authorized implementing the researched build optimization, including a
+separate manual main-only GHCR image workflow. Root Compose is image-only;
+`compose.build.yaml` retains explicit source builds. Numeric default 0.1.0
+references remain pending first publication, with an honest source fallback.
+The initializer shares the API reference. Input-keyed manifests support reuse
+and interrupted-publication retries; guarded aliases reject conflicting numeric
+or revision tags. Actual-image no-secret acceptance precedes aliases and the
+digest-pinned deployment bundle. Pages and current running containers remain
+unchanged; no images or Git commits were published in this increment.
+
+Source builds use explicit copy-mode pnpm/uv mounts, architecture/upstream-scoped
+ccache and validated TGD_BUILD_JOBS (1..64, default 2). Native incremental patch
+layers and production boundaries remain. Canonical app image built successfully;
+Dockerfile checks passed for app/API. Clean offline reinstalls reused 212 pnpm
+packages with zero downloads and installed 45 Python packages. Real minimal
+C/C++ CMake clean rebuild across layers yielded two direct compiler-cache hits;
+five invalid concurrency inputs were rejected. Full TDLib cold build was not
+rerun, so no complete native-build or numerical speedup claim is made.
+
+Scoped version/distribution tests: 22 passed; Ruff/version/quiet Compose checks
+passed. Independent actual app production-image acceptance passed all eight
+checks including persistence and disposable backup/restore. Docs checked 23
+Markdown files, 104 links and 18 pages; full commented env/YAML examples matched
+the implementation. Hosted publication, anonymous GHCR pulling and arm64 remain
+unexecuted. First publication must confirm package visibility and anonymous
+digest pulls before claiming public image availability. User buildlog is kept
+untouched and is not included in this work.
+
+### Independent native artifacts and freshness gates
+
+Following user direction, split native Bot API/TDLib into independently reusable
+precompiled bases. Shared identity code pins both upstream revisions and hashes
+native patches, headers, build definitions and toolchain inputs. Actual checkout
+revisions are checked before compiling; native packaging records provenance and
+runtime packaging rejects missing or mismatched manifests even for manually
+selected bases. Script/product-version changes do not trigger native rebuilds.
+Source and published native paths explicitly support linux/amd64 only.
+
+Final review passed: 49 distribution/version tests, Ruff and three-script mypy.
+Real network-disabled BuildKit fixtures passed matching metadata and rejected
+missing metadata and a changed CacheCleanup.h, without compiler/toolchain/source
+stages. These fixtures used a previously verified binary and synthetic current
+metadata, not a new full native compile. Documentation build passed 23 Markdown
+files, 104 links and 18 pages; env/YAML examples and version metadata match.
+User authorized commit/push; publication workflow remains manual and has not
+been triggered. Public GHCR availability and authenticated media acceptance are
+not claimed. Running deployment and user buildlog remain untouched.

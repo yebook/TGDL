@@ -1,4 +1,4 @@
-"""Non-root fixed-command Bot API supervisor; encrypted, bounded file handoff.
+"""Fixed-command Bot API supervisor; encrypted, bounded file handoff.
 
 Process health is deliberately separate from authenticated Telegram connectivity.
 No request payload, child output, environment or exception text is logged.
@@ -318,8 +318,6 @@ class Supervisor:
 
 def main() -> None:
     os.umask(0o077)
-    if os.getuid() == 0:
-        raise SystemExit("Bot API supervisor requires a non-root UID")
     shared = Path(os.environ.get("TGD_LOCAL_API_CONTROL_DIR", "/run/tgd-api-control"))
     cache = Path("/var/lib/telegram-bot-api")
     shared.mkdir(parents=True, exist_ok=True)

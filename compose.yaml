@@ -1,8 +1,7 @@
 name: tgd
 services:
   app:
-    build: .
-    image: tgd-app:0.1.0
+    image: ${TGD_APP_IMAGE:-ghcr.io/yebook/tgdl-app:0.1.0}
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     init: true
     restart: unless-stopped
@@ -35,10 +34,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
   bot-api:
-    build:
-      context: .
-      dockerfile: deploy/bot-api/Dockerfile
-    image: tgd-bot-api:0.1.0
+    image: ${TGD_API_IMAGE:-ghcr.io/yebook/tgdl-bot-api:0.1.0}
     user: "${TGD_UID:-1000}:${TGD_GID:-1000}"
     init: true
     restart: unless-stopped
@@ -58,10 +54,7 @@ services:
     stop_grace_period: 90s
     logging: *logging
   init-volumes:
-    build:
-      context: .
-      dockerfile: deploy/bot-api/Dockerfile
-    image: tgd-bot-api:0.1.0
+    image: ${TGD_API_IMAGE:-ghcr.io/yebook/tgdl-bot-api:0.1.0}
     entrypoint: ["python3", "/usr/local/lib/tgd-init-volumes.py"]
     restart: "no"
     network_mode: none

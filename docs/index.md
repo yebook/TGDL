@@ -17,7 +17,7 @@ features:
   - title: WebUI 管理
     details: 顶部查看连接与队列，按使用流程设置 Bot、保存方式、提示及备份；调试详情默认隐藏。
   - title: 简单自托管
-    details: Docker 源码构建，数据与媒体分开持久化，适合个人内网及 NAS 使用。
+    details: Docker 部署，数据与媒体分开持久化；保留源码构建，配套镜像待首次发布。
 ---
 
 云端下载上限 **20 MB**；大文件可在同一 WebUI 切换到本地 Bot API。先完成 [第一次下载](quick-start.md)，再按需调整 [日常设置](settings.md)、查看 [任务与进度](usage.md) 或 [备份配置](configuration-backup.md)。

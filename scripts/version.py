@@ -19,7 +19,9 @@ def planned_updates(root: Path) -> dict[Path, str]:
         ("backend/pyproject.toml", r'(?m)^(version = ")[^"]+("\r?$)', version, 1),
         ("backend/uv.lock", r'(name = "tgd-backend"\r?\nversion = ")[^"]+(")', version, 1),
         ("frontend/package.json", r'(?m)^(  "version": ")[^"]+(",?\r?$)', version, 1),
-        ("compose.yaml", r'(?m)^(    image: tgd-(?:app|bot-api):)[^\s]+(\r?$)', version, 3),
+        ("compose.yaml", r'(?m)^(    image: \$\{TGD_(?:APP|API)_IMAGE:-ghcr\.io/yebook/tgdl-(?:app|bot-api):)[0-9.]+(\}\r?$)', version, 3),
+        ("compose.build.yaml", r'(?m)^(    image: \$\{TGD_(?:APP|API)_IMAGE:-tgd-(?:app|bot-api):)[0-9.]+(\}\r?$)', version, 3),
+        (".env.example", r'(?m)^(# TGD_(?:APP|API)_IMAGE=ghcr\.io/yebook/tgdl-(?:app|bot-api):)[0-9.]+(\r?$)', version, 2),
         ("Dockerfile", r'(LABEL org.opencontainers.image.version=")[^"]+(")', version, 1),
         ("deploy/bot-api/Dockerfile", r'(LABEL org.opencontainers.image.version=")[^"]+(")', version, 1),
         ("deploy/bot-api/Dockerfile.verify-native", r'(?m)^(ARG TGDL_API_IMAGE=tgd-bot-api:)[^\s]+(\r?$)', version, 1),
@@ -29,7 +31,10 @@ def planned_updates(root: Path) -> dict[Path, str]:
     for relative, pattern, replacement, expected in targets:
         path = root / relative
         current = path.read_bytes().decode("utf-8")
-        candidate, count = re.subn(pattern, lambda match, value=replacement: match[1] + value + match[2], current)
+        def replace_version(match: re.Match[str], value: str = replacement) -> str:
+            return match[1] + value + match[2]
+
+        candidate, count = re.subn(pattern, replace_version, current)
         if count != expected:
             raise ValueError(f"Unexpected release manifest structure: {relative}")
         if candidate != current:

@@ -26,6 +26,7 @@ frontend/playwright.config.ts
 **/*.db-shm
 runtime
 .runtime
+/deployment-bundle
 .cache
 data
 downloads

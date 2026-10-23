@@ -2,7 +2,8 @@ FROM node:24.11.1-bookworm-slim@sha256:48abc13a19400ca3985071e287bd405a1d9930677
 WORKDIR /build
 RUN npm install --global pnpm@11.23.0
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=tgd-pnpm-v11,target=/pnpm/store,sharing=locked \
+    pnpm install --frozen-lockfile --store-dir=/pnpm/store --package-import-method=copy
 COPY frontend/ ./
 RUN pnpm build
 
@@ -10,7 +11,8 @@ FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134
 RUN pip install --no-cache-dir uv==0.12.5
 WORKDIR /app/backend
 COPY backend/pyproject.toml backend/uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN --mount=type=cache,id=tgd-uv-py312,target=/root/.cache/uv,sharing=locked \
+    UV_LINK_MODE=copy uv sync --locked --no-dev --no-install-project
 COPY backend/ ./
 
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
