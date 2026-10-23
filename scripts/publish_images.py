@@ -20,11 +20,23 @@ dockerfile_sections = _NATIVE["dockerfile_sections"]
 native_identity = _NATIVE["native_identity"]
 
 
+def bundled_artifact_identity(root: Path) -> str:
+    """Bind registry reuse to both native inputs and the actual checked-in artifact."""
+    files = [f"deploy/bot-api/prebuilt/{name}" for name in ("linux-amd64.tar.gz", "manifest.json")]
+    return input_identity(root, files, native_identity(root).encode())
+
+
+def verify_bundled_native(root: Path) -> None:
+    # Validate even when registries already contain every requested artifact.
+    with tempfile.TemporaryDirectory(prefix="tgdl-native-check-") as temporary:
+        _NATIVE["extract_bundle"](root, root / "deploy/bot-api/prebuilt", Path(temporary))
+
+
 def api_identity(root: Path) -> str:
     """Runtime scripts/version reuse the independently compiled native input identity."""
     _, runtime = dockerfile_sections(root)
     files = [f"deploy/bot-api/{name}" for name in ("entrypoint.sh", "supervisor.py", "init-volumes.py")]
-    return input_identity(root, files, (native_identity(root) + "\n" + runtime).encode())
+    return input_identity(root, files, (bundled_artifact_identity(root) + "\n" + runtime).encode())
 
 
 def app_identity(root: Path) -> str:
@@ -152,13 +164,13 @@ def verify_public(reference: str) -> None:
 
 def ensure_native(root: Path, repository: str, revision: str, common: list[str]) -> str:
     repo = f"ghcr.io/{repository}-bot-api-native"
-    reference = f"{repo}:input-{native_identity(root)}"
+    reference = f"{repo}:input-{bundled_artifact_identity(root)}"
     digest = remote_digest(reference)
     if digest is None:
         cache = f"type=registry,ref={repo}:buildcache-amd64"
         subprocess.run([
             "docker", "buildx", "build", ".", "-f", "deploy/bot-api/Dockerfile",
-            "--target", "native", "-t", reference, "--build-arg", "TGD_BUILD_JOBS=2",
+            "--target", "bundled-native", "-t", reference,
             "--label", f"org.opencontainers.image.source=https://github.com/{repository}",
             "--label", f"io.tgdl.build.revision={revision}",
             "--cache-from", cache, "--cache-to", cache + ",mode=max", *common,
@@ -179,6 +191,7 @@ def publish(release: bool) -> None:
     if run("git", "rev-parse", "HEAD") != revision or run("git", "status", "--porcelain"):
         raise ValueError("Publication requires a clean checkout of the workflow revision")
     run("python", "scripts/version.py", "--check")
+    verify_bundled_native(ROOT)
     version = json.loads((ROOT / "backend/app/version.json").read_text())["version"]
     repos = [f"ghcr.io/{repository}-app", f"ghcr.io/{repository}-bot-api"]
     namespace = os.environ.get("DOCKERHUB_USERNAME", "")
@@ -202,9 +215,9 @@ def publish(release: bool) -> None:
     # Include mirror content/native/commit/release conflicts in preflight as well.
     # Never discover an occupied Docker Hub release after a lengthy native build.
     if namespace:
-        native_digest = remote_digest(f"ghcr.io/{repository}-bot-api-native:input-{native_identity(ROOT)}")
+        native_digest = remote_digest(f"ghcr.io/{repository}-bot-api-native:input-{bundled_artifact_identity(ROOT)}")
         for repo, expected, key in zip(
-            mirror_repos, [*digests, native_digest], [*identities, native_identity(ROOT)], strict=True,
+            mirror_repos, [*digests, native_digest], [*identities, bundled_artifact_identity(ROOT)], strict=True,
         ):
             tags = [f"input-{key}", f"sha-{revision}"]
             if release:
@@ -268,7 +281,7 @@ def publish(release: bool) -> None:
     mirrors: list[str] = []
     if namespace:
         for repo, source, key in zip(
-            mirror_repos, [*pinned, native], [*identities, native_identity(ROOT)], strict=True,
+            mirror_repos, [*pinned, native], [*identities, bundled_artifact_identity(ROOT)], strict=True,
         ):
             mirrors.append(mirror_image(f"{repo}:input-{key}", source))
         # Neither registry gets user-facing aliases if public pulls are unavailable.

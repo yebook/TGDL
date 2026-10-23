@@ -63,7 +63,7 @@ docker compose --env-file .env -f compose.yaml -f compose.build.yaml up -d --no-
 docker compose --env-file .env -f compose.yaml -f compose.build.yaml ps
 ```
 
-未指定预编译原生基础镜像时，源码首次构建仍会下载依赖并编译本地 API，耗时较长、需要数 GB 内存。之后只修改 `.env` 时，用同样两份 Compose 文件执行 `up -d --no-build` 即可重建容器，无需再次编译。`init-volumes` 初始化成功后退出是正常现象。配套镜像发布后可按 [镜像部署](https://yebook.github.io/TGDL/deployment.html#镜像部署) 省去本机编译；维护者的原生组件独立预编译、轻量 API 打包及应用单独构建见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
+源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，用同样两份 Compose 文件执行 `up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。配套镜像发布后可按 [镜像部署](https://yebook.github.io/TGDL/deployment.html#镜像部署) 连应用构建也省去；预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
 
 ### 3. 初始化并验证
 

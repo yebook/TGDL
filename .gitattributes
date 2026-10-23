@@ -16,3 +16,9 @@ Dockerfile text eol=lf
 *.yml text eol=lf
 # Unified patches require a single-space prefix even for blank context lines.
 *.patch text eol=lf whitespace=-blank-at-eol
+# Native provenance hashes exact source bytes; keep checkout and source ZIP identical.
+.dockerignore text eol=lf
+deploy/bot-api/ProgressCache.h text eol=lf
+deploy/bot-api/CacheCleanup.h text eol=lf
+deploy/bot-api/prebuilt/*.tar.gz binary
+deploy/bot-api/prebuilt/manifest.json text eol=lf

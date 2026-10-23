@@ -25,7 +25,7 @@ cd TGDL
 | [.env.example](https://github.com/yebook/TGDL/blob/main/.env.example) | 复制成 `.env`，填写路径、权限和访问端口 |
 | `Dockerfile`、`.dockerignore` | 应用构建入口；排除本机配置、数据和依赖缓存 |
 | `backend/`、`frontend/` | 应用源码、版本信息、依赖清单和锁文件；保留完整目录 |
-| `deploy/` | 应用启动脚本、本地 API 构建文件、补丁、头文件和管理脚本；保留完整目录 |
+| `deploy/` | 应用启动脚本、本地 API 构建文件、预编译压缩包及校验清单、补丁、头文件和管理脚本；保留完整目录 |
 | `.gitattributes` | Git 检出时保持补丁等文件的换行格式 |
 | `LICENSE`、`deploy/sources.md` | 项目许可和第三方来源；第三方 LICENSE / NOTICE 如有也一并保留 |
 
@@ -45,7 +45,8 @@ cd TGDL
 ### 2. Docker 与存储环境
 
 - 安装 Docker Engine 和 **Docker Compose v2**，使用 `linux/amd64` 容器（主机 `x86_64`）。当前源码构建与预编译镜像均仅支持此架构；ARM 主机暂不支持。运行 `docker version` 和 `docker compose version` 确认引擎可访问；Windows 使用 Docker Desktop，见 [本地运行](local-run.md)。
-- 首次源码构建需要访问 Docker Hub、GitHub、Debian、PyPI 和 npm。**未指定预编译原生基础镜像时，源码部署即使先使用云端，也会编译本地 API 原生组件**，可能耗时较长并占用数 GB 内存；运行时尚未填写本地凭据也可先用云端。普通用户的预构建镜像部署省去本机编译，但仍需能访问镜像仓库。
+- 首次源码构建需要访问 Docker Hub、Debian、PyPI 和 npm。源码已附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，**默认无需下载原生源码或编译 TDLib**；应用依赖安装与前端构建仍会执行。只有主动选择完整原生编译时，才需要访问 GitHub 下载上游源码并承担 C++ 编译的时间与内存开销。运行时尚未填写本地凭据也可先用云端。
+- 如以前手动设置过 `TGD_NATIVE_IMAGE=native`，请删除该行或改为 `TGD_NATIVE_IMAGE=bundled-native`，才会使用附带产物。未设置此参数时直接使用默认值。
 - 准备应用数据、下载、API 缓存三个目录，并允许所选 UID/GID 写入。数据库使用可靠本地文件系统，不放在 SMB/NFS 上；媒体共享应先挂载。本地下载保存期间，API 缓存与目标文件会暂时各占一份空间；最终文件安全保存后自动清理对应媒体缓存，API 运行数据保留。仍需预留两份大文件及并发临时空间，详见 [缓存维护](operations.md#api-缓存维护)。
 - 云端和本地均可在 WebUI 配置 HTTP CONNECT / SOCKS5，无需 TUN 设备或 NET_ADMIN 权限。Docker 不会自动继承宿主的系统或浏览器代理。
 
@@ -127,9 +128,9 @@ TGD_TIMEZONE=Asia/Shanghai
 # TGD_API_IMAGE=ghcr.io/yebook/tgdl-bot-api:0.1.0
 # 可选 API 镜像覆盖；bot-api 与 init-volumes 共用，必须与应用配套。
 TGD_BUILD_JOBS=2
-# 仅源码构建使用的编译线程数，范围 1–64；默认 2，增加线程前确认内存充足。
-# TGD_NATIVE_IMAGE=native
-# 仅源码构建：默认内部 native 目标自行编译；可改为与当前补丁、架构匹配的项目原生基础镜像摘要，跳过编译。不能使用普通 Bot API 镜像。
+# 仅手动选择完整原生编译时使用，范围 1–64；默认部署使用附带产物，无需编译 TDLib。
+# TGD_NATIVE_IMAGE=bundled-native
+# 默认校验并使用源码附带的预编译产物；native 表示手动完整编译，也可指定匹配的项目原生基础镜像摘要。
 ```
 
 WebUI 的下载根目录对应容器中的 `/downloads`，宿主实际位置由 `TGD_HOST_DOWNLOADS` 决定，不在页面输入宿主路径。Bot Token、用户 ID、API ID / Hash 和代理均在 WebUI 配置，不放进准备分享的部署文件。

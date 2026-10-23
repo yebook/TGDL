@@ -166,6 +166,13 @@
 - User configured GitHub Repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` and authorized completing, committing/pushing and attempting the production image workflow, including the startup permission fix. User chose to click Run workflow personally because this workstation has no GitHub Actions authentication.
 - Compile once on GitHub, retain independently reusable native artifacts and GHCR build/cache, mirror the same manifests to Docker Hub, and provide Docker Hub digest-pinned deployment files with GHCR alternatives. Do not update NAS or local running containers.
 - Preserve immutable-tag collision checks, interrupted-run recovery and provenance; verify real-image permissions/offline smoke before version tags, and anonymous Docker Hub pulls before claiming publication usable. Three Docker Hub repositories must be public and the Token must permit writes; never expose credentials in source or logs.
+
+## Git-bundled native runtime (2026-10-23)
+
+- User requests committing a feasible-size compiled native artifact so source downloads need no TDLib compile. Measured existing verified production binary 45,541,176 bytes (43.4 MiB), gzip 15,469,457 bytes (14.8 MiB); TDLib is linked into telegram-bot-api.
+- Bundle deterministic linux/amd64 precompiled archive, licenses and source/checksum metadata as ordinary Git files (not LFS). Default source builds and image publication use the verified bundle, while preserving an explicit full-native compile/update path.
+- Establish actual binary provenance from the original compiled builder, not synthetic test metadata. Check pinned upstream commits, all native patch/header inputs and the exported production binary; record reuse honestly.
+- Changed native code/toolchain inputs, corrupt bytes, missing metadata or unsupported architecture must fail clearly without silently compiling or accepting stale artifacts. Runtime-only edits do not invalidate the native identity. No live deployment or Telegram interaction is authorized.
 ## Saved local media cache cleanup (2026-10-23)
 
 - After successful durable final publication, remove that media's local API cache through TDLib; preserve API authentication/runtime data. Cross-volume copying remains necessary, but retained double storage must not be normal successful behavior.

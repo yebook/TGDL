@@ -22,6 +22,15 @@ The Bot API image applies [native-proxy.patch](bot-api/native-proxy.patch) to th
 
 The image installs the Bot API and TDLib license files. Review their license requirements before redistribution. This source list records provenance; it is not a successful image-build report.
 
+Source deployments also include a precompiled linux/amd64 runtime under
+`bot-api/prebuilt/`. TDLib is linked into the Bot API executable. The compressed
+archive includes upstream licenses; its adjacent manifest records source pins,
+native input identity and archive/binary checksums. Default builds verify and
+use this artifact without a C++ compile. The explicit `native` build target
+and `scripts/bundle_native.py` regenerate the archive when native inputs change.
+Keep binaries, manifests, license notices and their corresponding pinned source
+and project patches together when redistributing.
+
 The same pinned build additionally applies [native-progress.patch](bot-api/native-progress.patch) and includes [ProgressCache.h](bot-api/ProgressCache.h). This extension exposes bounded in-memory download observations from existing TDLib updates to the application through a private local-only method. It does not start downloads or create Bot clients when queried; ordinary upstream builds do not provide this extension.
 
 The source patch is checked by `git apply --check` before compilation. Keep its LF line endings (`.gitattributes` enforces this on Windows checkouts); changing the upstream pins requires rechecking and compiling the patch.

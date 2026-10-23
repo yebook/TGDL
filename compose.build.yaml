@@ -14,7 +14,7 @@ services:
       dockerfile: deploy/bot-api/Dockerfile
       args:
         TGD_BUILD_JOBS: ${TGD_BUILD_JOBS:-2}
-        TGD_NATIVE_IMAGE: ${TGD_NATIVE_IMAGE:-native}
+        TGD_NATIVE_IMAGE: ${TGD_NATIVE_IMAGE:-bundled-native}
   init-volumes:
     image: ${TGD_API_IMAGE:-tgd-bot-api:0.1.0}
     pull_policy: never

@@ -1203,3 +1203,40 @@ passed. Documentation build, env/YAML synchronization, version and diff
 checks passed. Remote workflow execution, credentials/scope verification and
 actual registry pushes are pending the user's manual trigger; no successful
 publication or public numeric tags are claimed. No runtime deployment changed.
+
+## 2026-10-23: Checked-in native bundle and hosted verifier repair
+
+User requested a feasible-size native binary in Git so downloaded source avoids
+TDLib compilation. Added linux/amd64 bundle (15,474,996 bytes, 14.76 MiB) with
+binary (45,551,408 bytes, 43.44 MiB), licenses and provenance, ordinary Git files.
+Default source/publication uses bundled-native; explicit native target and
+bundle_native.py preserve full compile/regeneration. Manifest validates native
+source identity, archive/member checksums, safe paths and actual binary checksum.
+Publisher separately binds concrete archive/manifest bytes and validates local
+bundle even on registry hits. LF attributes preserve identities across checkouts.
+
+Original builder source matched both upstream pins, all three patches and two
+headers. Its old /out export differed from current compiled output; used a cached
+up-to-date target build and fresh install, verified byte equality and archived
+the actual current binary b24c49244e72673e8b0a37956eb842d0e1675b0522e6fdba71c8ee7cb5c635d2.
+Full source recipe now compares compiled and installed binaries before metadata.
+Release/GCC flags had no test/bypass definitions. No full cold compile was run.
+
+Actual default Docker build passed without source/Git/CMake/compiler stages;
+chosen binary passed offline proxy (five scenarios), progress and cleanup
+checks plus five UID/GID checks. Regeneration CLI succeeded deterministically.
+Combined scoped tests 96 passed, one Windows symlink skip covered in Linux;
+Ruff and mypy (36 files) passed. Docs build checked 23 Markdown, 104 links and
+18 pages; env/YAML examples and version metadata matched. Evidence is private
+under .runtime/bundled-native; no running deployment or Telegram was changed.
+
+During this increment user supplied hosted publication failure: mounted verifier
+could not import app.main. Earlier stdin-only local execution masked Python's
+different sys.path for an absolute mounted script. Verifier now resolves the real
+app directory and rejects unexpected module locations. Two external-script tests
+passed (combined 98 passing scoped tests, one Windows skip). Exact hosted Docker
+invocation with mounted /verify-permissions.py, no PYTHONPATH, read-only and no
+network reproduced the old import failure and passed the fixed script under
+1000:1000 and 12345:23456. Evidence is .runtime/image-import-check/evidence.json.
+Production application layout/startup remains unchanged. Hosted workflow must be
+rerun from the new commit, not rerun an old revision's job.

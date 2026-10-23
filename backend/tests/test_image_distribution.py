@@ -20,6 +20,9 @@ def test_api_identity_covers_native_runtime_and_exclusions(tmp_path: Path) -> No
     for path in (ROOT / "deploy/bot-api").iterdir():
         if path.is_file():
             shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
     (api / "supervisor.py").write_text("version = 1\n")
     identity = TOOL["api_identity"](tmp_path)
     (tmp_path / "frontend").mkdir()
@@ -30,6 +33,45 @@ def test_api_identity_covers_native_runtime_and_exclusions(tmp_path: Path) -> No
     (api / "supervisor.py").write_text("version = 1\n")
     (tmp_path / ".dockerignore").write_text("changed exclusions\n")
     assert TOOL["api_identity"](tmp_path) != identity
+
+
+@pytest.mark.parametrize("filename", ["linux-amd64.tar.gz", "manifest.json"])
+def test_changed_bundle_changes_artifact_and_api_keys_without_self_reference(tmp_path: Path, filename: str) -> None:
+    source = tmp_path / "deploy/bot-api"
+    shutil.copytree(ROOT / "deploy/bot-api", source, ignore=shutil.ignore_patterns("prebuilt", "__pycache__"))
+    shutil.copyfile(ROOT / ".dockerignore", tmp_path / ".dockerignore")
+    (source / "prebuilt").mkdir()
+    for name in ("linux-amd64.tar.gz", "manifest.json"):
+        (source / "prebuilt" / name).write_bytes(b"original artifact")
+    before = [TOOL[name](tmp_path) for name in ("native_identity", "bundled_artifact_identity", "api_identity")]
+    (source / "prebuilt" / filename).write_bytes(b"changed artifact")
+    after = [TOOL[name](tmp_path) for name in ("native_identity", "bundled_artifact_identity", "api_identity")]
+    assert before[0] == after[0]  # Native source identity never includes its own output.
+    assert before[1] != after[1]
+    assert before[2] != after[2]
+
+
+def test_invalid_local_bundle_is_rejected_before_any_registry_cache_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "c" * 40
+    for name, value in {
+        "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": revision, "GITHUB_REPOSITORY": "yebook/TGDL",
+    }.items():
+        monkeypatch.setenv(name, value)
+    namespace = TOOL["publish"].__globals__
+
+    def reject_bundle(*args: object) -> None:
+        raise ValueError("Bundled native binary is stale")
+
+    with patch.dict(namespace, {
+        "ROOT": tmp_path,
+        "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
+    }), patch.dict(namespace["_NATIVE"], {"extract_bundle": reject_bundle}), patch.dict(namespace, {
+        "remote_digest": lambda ref: pytest.fail("Registry cache must not hide stale bundle"),
+    }):
+        with pytest.raises(ValueError, match="stale"):
+            TOOL["publish"](False)
 
 
 @pytest.mark.parametrize("error,absent", [
@@ -124,7 +166,8 @@ def test_partial_build_failure_resumes_using_completed_api(tmp_path: Path, monke
         return subprocess.CompletedProcess(args, 0, "", "")
 
     with patch.dict(namespace, {
-        "ROOT": tmp_path, "run": fake_run, "api_identity": lambda root: "d" * 64,
+        "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
+        "bundled_artifact_identity": lambda root: "f" * 64, "run": fake_run, "api_identity": lambda root: "d" * 64,
         "app_identity": lambda root: "e" * 64, "native_identity": lambda root: "f" * 64,
         "remote_digest": registry.get,
         "bundle": lambda *args: bundles.append(args),
@@ -162,7 +205,8 @@ def test_smoke_failure_never_promotes_or_emits_bundle(tmp_path: Path, monkeypatc
         return subprocess.CompletedProcess(args, 0, "", "")
 
     with patch.dict(namespace, {
-        "ROOT": tmp_path,
+        "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
+        "bundled_artifact_identity": lambda root: "f" * 64,
         "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "api_identity": lambda root: "d" * 64,
         "app_identity": lambda root: "e" * 64,
@@ -188,7 +232,8 @@ def test_immutable_conflict_fails_before_expensive_build(
     monkeypatch.setenv("GITHUB_SHA", revision)
     monkeypatch.setenv("GITHUB_REPOSITORY", "yebook/TGDL")
     with patch.dict(namespace, {
-        "ROOT": tmp_path,
+        "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
+        "bundled_artifact_identity": lambda root: "f" * 64,
         "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "api_identity": lambda root: "d" * 64,
         "app_identity": lambda root: "e" * 64,
@@ -209,6 +254,9 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
     for path in (ROOT / "deploy/bot-api").iterdir():
         if path.is_file():
             shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
     before = TOOL["native_identity"](tmp_path)
     runtime_before = TOOL["api_identity"](tmp_path)
     if changed == "product-version":
@@ -235,6 +283,9 @@ def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) 
     for path in (ROOT / "deploy/bot-api").iterdir():
         if path.is_file():
             shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
     before = TOOL["native_identity"](tmp_path)
     if changed in {"upstream-revision", "tdlib-revision", "compiler-toolchain"}:
         path = api / "Dockerfile"
@@ -277,7 +328,8 @@ def test_cached_native_artifact_is_explicit_base_when_runtime_missing(
         return subprocess.CompletedProcess(args, 0, "", "")
 
     with patch.dict(namespace, {
-        "ROOT": tmp_path,
+        "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
+        "bundled_artifact_identity": lambda root: "f" * 64,
         "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "api_identity": lambda root: "d" * 64, "native_identity": lambda root: "f" * 64,
         "app_identity": lambda root: "e" * 64, "remote_digest": registry.get, "bundle": lambda *args: None,
@@ -298,15 +350,20 @@ def test_native_manifest_requires_current_sources_and_both_pinned_revisions(tmp_
     for path in (ROOT / "deploy/bot-api").iterdir():
         if path.is_file():
             shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
     source = tmp_path / "source.json"
     source.write_text(json.dumps(helper["source_pins"](tmp_path)))
     manifest = tmp_path / "native.json"
-    helper["write_manifest"](tmp_path, manifest, source)
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"synthetic native binary")
+    helper["write_manifest"](tmp_path, manifest, source, binary)
     if case == "matching":
-        helper["verify_manifest"](tmp_path, manifest)
+        helper["verify_manifest"](tmp_path, manifest, binary)
         # Runtime-only edits keep the exact compiled native contract.
         (api / "supervisor.py").write_text("runtime-only edit\n")
-        helper["verify_manifest"](tmp_path, manifest)
+        helper["verify_manifest"](tmp_path, manifest, binary)
         return
     if case == "missing":
         manifest.unlink()
@@ -324,7 +381,7 @@ def test_native_manifest_requires_current_sources_and_both_pinned_revisions(tmp_
             metadata["format"] = True
         manifest.write_text(json.dumps(metadata))
     with pytest.raises(expected_error):
-        helper["verify_manifest"](tmp_path, manifest)
+        helper["verify_manifest"](tmp_path, manifest, binary)
 
 
 def test_native_manifest_writer_rejects_unexpected_tdlib_checkout(tmp_path: Path) -> None:
@@ -338,7 +395,7 @@ def test_native_manifest_writer_rejects_unexpected_tdlib_checkout(tmp_path: Path
     source.write_text(json.dumps(revisions))
     output = tmp_path / "native.json"
     with pytest.raises(ValueError, match="source pins"):
-        helper["write_manifest"](tmp_path, output, source)
+        helper["write_manifest"](tmp_path, output, source, tmp_path / "binary")
     assert not output.exists()
 
 
@@ -347,9 +404,9 @@ def test_native_manifest_rejects_unsupported_architecture_before_io(tmp_path: Pa
     helper = runpy.run_path(str(ROOT / "deploy/bot-api/native_identity.py"))
     with patch("platform.machine", return_value=architecture):
         with pytest.raises(ValueError, match="linux/amd64 only"):
-            helper["write_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "source.json")
+            helper["write_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "source.json", tmp_path / "binary")
         with pytest.raises(ValueError, match="linux/amd64 only"):
-            helper["verify_manifest"](tmp_path, tmp_path / "native.json")
+            helper["verify_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "binary")
 
 
 @pytest.mark.parametrize("state", ["missing", "matching", "conflict", "wrong-copy"])
@@ -478,7 +535,8 @@ def test_dual_registry_publication_resumes_without_rebuilding(
             raise RuntimeError("repository is private")
 
     with patch.dict(namespace, {
-        "ROOT": tmp_path, "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
+        "ROOT": tmp_path, "verify_bundled_native": lambda root: None,
+        "bundled_artifact_identity": lambda root: "f" * 64, "run": lambda *args: revision if args == ("git", "rev-parse", "HEAD") else "",
         "app_identity": lambda root: "e" * 64, "api_identity": lambda root: "d" * 64,
         "native_identity": lambda root: "f" * 64, "remote_digest": registry.get,
         "bundle": lambda *args: bundles.append(args), "verify_public": check_public,

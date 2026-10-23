@@ -17,7 +17,11 @@ image release automation and distribution docs. User authorized this scope on
 - Independent `native` target: compiled Bot API/TDLib, runtime libraries and
   licenses, without supervisor/init scripts or numeric product label.
   `TGD_NATIVE_IMAGE` selects a trusted precompiled base by digest for runtime
-  packaging; default internal `native` target preserves full source builds.
+  packaging; default `bundled-native` uses the checked-in linux/amd64 archive.
+  Explicit `native` remains the complete C++ source-build target.
+- `deploy/bot-api/prebuilt/linux-amd64.tar.gz` and `manifest.json`: ordinary Git
+  files containing the linked Bot API/TDLib binary, licenses and provenance.
+  `python scripts/bundle_native.py --image <fresh-native-image>` regenerates both.
 - Image workflow: manual `workflow_dispatch`, trusted main only, linux/amd64.
   Immutable full-revision image tags and digest-pinned deployment artifact;
   numeric publication must be intentional and must not overwrite a release.
@@ -44,6 +48,24 @@ bind native identity and scripts. A precompiled native registry hit must permit
 lightweight runtime packaging even on a builder with no native layer cache.
 Avoid unnecessary native compilation on ordinary app or supervisor changes.
 
+Source deployment must work without a published native image or a surviving
+compiler cache: use the checked-in native bundle by default. Missing, corrupt,
+unsupported or source-mismatched bundles fail clearly; never silently compile
+or relabel a stale binary. Pin source identity separately from concrete artifact
+identity. Publisher cache keys also bind actual bundled bytes and validate the
+local bundle even when a registry artifact exists, so changed/corrupt prebuilts
+cannot be hidden by a source-only cache hit.
+
+Bundle deterministic archive bytes with explicit safe modes and the upstream
+licenses. Validate archive and member checksums, exact allowed file paths,
+regular-file types, source pins, architecture and native input identity before
+extracting. Reject path traversal, links and preexisting destination symlink
+paths. Export fresh source-built artifacts only after provenance checks; initial
+reuse requires verified original source tree, patch/header inputs and actual
+compiled/exported binary agreement. Synthetic test manifests are never release
+provenance. Changes to native inputs require regenerating and committing bundle
+and manifest together; product/runtime-only edits do not require recompilation.
+
 Image code permissions must not depend on host checkout modes or NAS ACL export.
 Normalize packaged application code, dependency/static trees and startup scripts
 for arbitrary configured runtime UID/GID: readable files, traversable directories,
@@ -51,6 +73,13 @@ and preserved required executable bits. Verify with restrictive Linux build
 contexts, because Windows contexts can mask this failure. Apply permissions only
 to image-owned code; never broaden mounted data, keys or control-file permissions.
 Runtime packaging permission fixes must not invalidate native input identity.
+
+Permission acceptance must reproduce the hosted execution mode: bind the verifier
+at its absolute container script path and invoke Python with that filename, with
+no inherited PYTHONPATH. Stdin execution is insufficient: Python places the script
+directory rather than the application working directory on sys.path. The offline
+verifier must explicitly resolve the real application root before importing
+app.main, while production startup continues to use uvicorn's application path.
 
 Freshness is enforced, not inferred from tag names: native artifacts carry
 versioned provenance with exact Bot API/TDLib source pins and native input

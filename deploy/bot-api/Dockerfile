@@ -1,5 +1,5 @@
-# Default to the source-built stage; publication may supply an immutable native image.
-ARG TGD_NATIVE_IMAGE=native
+# Source deployment uses the checked-in native artifact; select native to compile from source.
+ARG TGD_NATIVE_IMAGE=bundled-native
 FROM scratch AS native-inputs
 COPY .dockerignore /.dockerignore
 COPY deploy/bot-api/Dockerfile deploy/bot-api/native_identity.py deploy/bot-api/native-proxy.patch deploy/bot-api/native-progress.patch deploy/bot-api/ProgressCache.h deploy/bot-api/native-cache-cleanup.patch deploy/bot-api/CacheCleanup.h /deploy/bot-api/
@@ -29,17 +29,24 @@ COPY deploy/bot-api/native-cache-cleanup.patch /native-cache-cleanup.patch
 COPY deploy/bot-api/CacheCleanup.h /src/telegram-bot-api/CacheCleanup.h
 RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
     cd /src && git apply --check /native-cache-cleanup.patch && git apply /native-cache-cleanup.patch && cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
-RUN mkdir -p /out/licenses/tdlib /out/share && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/ && \
+RUN cmp /src/build/telegram-bot-api /out/bin/telegram-bot-api && mkdir -p /out/licenses/tdlib /out/share && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/ && \
     printf '{"bot_api_revision":"%s","tdlib_revision":"%s"}\n' "$(git -C /src rev-parse HEAD)" "$(git -C /src/td rev-parse HEAD)" > /out/share/tgdl-source.json
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS native
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS native-runtime
 RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates libssl3 zlib1g libstdc++6 python3 python3-cryptography && rm -rf /var/lib/apt/lists/*
+FROM native-runtime AS native
 COPY --from=build /out/ /usr/local/
 ARG TELEGRAM_BOT_API_REV=e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1
 LABEL org.opencontainers.image.source="https://github.com/tdlib/telegram-bot-api" org.opencontainers.image.revision=$TELEGRAM_BOT_API_REV
 RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
     python3 /tgd-source/deploy/bot-api/native_identity.py write --root /tgd-source --output /usr/local/share/tgdl-native.json --source /usr/local/share/tgdl-source.json
 # TGD_NATIVE_INPUTS_END
+
+FROM scratch AS prebuilt-inputs
+COPY deploy/bot-api/prebuilt/linux-amd64.tar.gz deploy/bot-api/prebuilt/manifest.json /prebuilt/
+FROM native-runtime AS bundled-native
+RUN --mount=type=bind,from=native-inputs,target=/tgd-source --mount=type=bind,from=prebuilt-inputs,source=/prebuilt,target=/tgd-prebuilt \
+    python3 /tgd-source/deploy/bot-api/native_identity.py extract --root /tgd-source --bundle /tgd-prebuilt --destination /usr/local
 
 FROM ${TGD_NATIVE_IMAGE} AS runtime
 RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
