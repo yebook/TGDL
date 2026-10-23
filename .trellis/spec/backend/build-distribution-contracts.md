@@ -79,6 +79,21 @@ contexts, because Windows contexts can mask this failure. Apply permissions only
 to image-owned code; never broaden mounted data, keys or control-file permissions.
 Runtime packaging permission fixes must not invalidate native input identity.
 
+Final runtime stages must explicitly normalize permissions after the last COPY;
+COPY --chmod alone is not the acceptance boundary. On 2026-10-23 the user's
+source-built images contained root-owned 0700 app/API Python entrypoints with
+0755 parents, which cannot be read by UID 1000. Exact ZIP revision/builder cause
+remains unknown; do not infer a specific builder bug from this observation.
+The user's subsequent UID/GID 0 attempt reported the removed initializer error
+`TGD_UID and TGD_GID must be nonroot numeric IDs`, proving the running API image
+contains an outdated initializer. Current source permits each ID independently
+from 0 to 2147483647. Update actual source/image and recreate containers; an
+unchanged numeric tag or recent image timestamp is not evidence of current code.
+Exercise explicit runtime chmod with restrictive 0700 copied files, including a
+fixture without COPY --chmod, and verify actual reads under non-owner IDs.
+Retain a negative fixture that rejects unreadable scripts. Never fix this by
+making mounted user data public or requiring root runtime.
+
 Permission acceptance must reproduce the hosted execution mode: bind the verifier
 at its absolute container script path and invoke Python with that filename, with
 no inherited PYTHONPATH. Stdin execution is insufficient: Python places the script

@@ -55,6 +55,9 @@ LABEL org.opencontainers.image.version="0.1.0"
 COPY --chmod=0755 deploy/bot-api/entrypoint.sh /entrypoint.sh
 COPY --chmod=0644 deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
 COPY --chmod=0644 deploy/bot-api/init-volumes.py /usr/local/lib/tgd-init-volumes.py
+# Normalize the final image filesystem, independently of COPY metadata.
+RUN chmod 0755 /usr /usr/local /usr/local/lib /entrypoint.sh && \
+    chmod 0644 /usr/local/lib/tgd-api-supervisor.py /usr/local/lib/tgd-init-volumes.py
 WORKDIR /var/lib/telegram-bot-api
 EXPOSE 8081
 ENTRYPOINT ["/entrypoint.sh"]

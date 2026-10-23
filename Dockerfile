@@ -25,6 +25,9 @@ WORKDIR /app/backend
 COPY --from=python-build /app/backend /app/backend
 COPY --from=web /build/dist /app/frontend/dist
 COPY --chmod=0644 deploy/app-entrypoint.py /app/entrypoint.py
+# Apply modes inside the final filesystem too: restrictive NAS source modes must
+# never survive packaging, even when COPY permission metadata is not applied.
+RUN chmod -R u=rwX,go=rX /app && chmod 0644 /app/entrypoint.py
 USER 1000:1000
 EXPOSE 8000
 ENTRYPOINT ["python", "/app/entrypoint.py"]

@@ -1,13 +1,18 @@
 """Exercise the verifier as an external script, not stdin or pytest's sys.path."""
 
+import io
 import os
+import re
 import subprocess
 import sys
+import tarfile
+import uuid
 from pathlib import Path
 
 import pytest
 
 VERIFIER = Path(__file__).resolve().parents[2] / "deploy/verify-image-permissions.py"
+ROOT = VERIFIER.parent.parent
 
 
 @pytest.mark.parametrize("cached_decoy", [False, True])
@@ -63,3 +68,83 @@ def test_external_script_selects_exact_application_source(tmp_path: Path, cached
         cwd=backend, env=environment, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("kind", ["app", "api"])
+def test_final_layer_repairs_restrictive_copy_modes(kind: str) -> None:
+    """Opt-in real Docker regression, using local images and no native build.
+
+    Supply TGD_TEST_PERMISSION_APP_IMAGE and TGD_TEST_PERMISSION_API_IMAGE.
+    Ordinary COPY deliberately preserves 0700 source files, reproducing the NAS
+    observation without relying on COPY --chmod. Execute the actual final-stage
+    RUN normalization from the production Dockerfile, then its external verifier.
+    """
+    base = os.environ.get(f"TGD_TEST_PERMISSION_{kind.upper()}_IMAGE")
+    if not base:
+        pytest.skip("Set local permission-test image references to run Docker regression")
+    dockerfile = ROOT / ("Dockerfile" if kind == "app" else "deploy/bot-api/Dockerfile")
+    text = dockerfile.read_text(encoding="utf-8")
+    commands = re.findall(r"(?m)^RUN chmod[^\n]*", text.replace("\\\n", ""))
+    assert commands, "Missing final image permission normalization"
+    normalization = commands[-1]
+    sources = (
+        {"deploy/app-entrypoint.py": "/app/entrypoint.py"}
+        if kind == "app" else {
+            "deploy/bot-api/entrypoint.sh": "/entrypoint.sh",
+            "deploy/bot-api/supervisor.py": "/usr/local/lib/tgd-api-supervisor.py",
+            "deploy/bot-api/init-volumes.py": "/usr/local/lib/tgd-init-volumes.py",
+        }
+    )
+    targets = list(sources.values())
+    copies = "\n".join(f"COPY source{index} {target}" for index, target in enumerate(targets))
+    before = "import pathlib; " + "; ".join(
+        f"assert pathlib.Path({target!r}).stat().st_mode & 0o777 == 0o700" for target in targets
+    )
+    python = "python" if kind == "app" else "python3"
+    denied_target = next(target for target in targets if target.endswith(".py"))
+    denied = (
+        "import subprocess; "
+        f"p=subprocess.run([{python!r}, {denied_target!r}], user=1000, group=1000, capture_output=True); "
+        "assert p.returncode != 0 and b'Permission denied' in p.stderr, p.stderr"
+    )
+    fixture = (
+        f"FROM {base}\nUSER 0:0\n{copies}\n"
+        "RUN touch /permission-private && chmod 0600 /permission-private\n"
+        f"RUN {python} -c \"{before}\"\nRUN {python} -c \"{denied}\"\n{normalization}\n"
+        "USER 1000:1000\n"
+    )
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for name, content, mode in [
+            ("Dockerfile", fixture.encode(), 0o600),
+            *((f"source{index}", (ROOT / source).read_bytes(), 0o700)
+              for index, source in enumerate(sources)),
+        ]:
+            entry = tarfile.TarInfo(name)
+            entry.mode, entry.size = mode, len(content)
+            tar.addfile(entry, io.BytesIO(content))
+    tag = f"tgd-permission-regression:{kind}-{uuid.uuid4().hex}"
+    try:
+        build = subprocess.run(
+            ["docker", "build", "--network=none", "--pull=false", "-t", tag, "-"],
+            input=archive.getvalue(), capture_output=True, check=False,
+        )
+        assert build.returncode == 0, (build.stdout + build.stderr).decode(errors="replace")
+        result = subprocess.run(
+            ["docker", "run", "--rm", "--network=none", "--read-only",
+             "--user=1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
+             "--tmpfs=/tmp:rw,noexec,nosuid,size=64m", "-e", "TGD_DATA_DIR=/tmp/tgd-check",
+             "--mount", f"type=bind,src={VERIFIER},dst=/verify-permissions.py,readonly",
+             "--entrypoint", python, tag, "/verify-permissions.py", kind],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        private = subprocess.run(
+            ["docker", "run", "--rm", "--network=none", "--read-only", "--user=1000:1000",
+             "--cap-drop=ALL", "--entrypoint", python, tag, "-c",
+             "import os; assert not os.access('/permission-private', os.R_OK)"],
+            capture_output=True, text=True, check=False,
+        )
+        assert private.returncode == 0, private.stdout + private.stderr
+    finally:
+        subprocess.run(["docker", "image", "rm", tag], capture_output=True, check=False)

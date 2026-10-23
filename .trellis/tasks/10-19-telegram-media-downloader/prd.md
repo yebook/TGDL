@@ -1,5 +1,13 @@
 # Telegram 媒体下载助手：需求与实施
 
+## Runtime entrypoint permission recurrence (2026-10-23)
+
+- User's built app image `17bcd6994114` contains `/app/entrypoint.py` mode 0700 owned by root; API image `0f9211ab0355` has the same mode/owner for `/usr/local/lib/tgd-api-supervisor.py`. Relevant parent directories are 0755. Non-owner UID 1000 cannot read either script.
+- `.env` changes to host data path mount at `/data` and do not cover these image-owned paths. ZIP revision and build engine behavior remain unconfirmed.
+- Subsequent user output includes the removed `nonroot numeric IDs` initializer exception, confirming deployed API contains outdated code; current initializer accepts IDs 0..2147483647. Do not attribute current Dockerfile COPY behavior to the engine without evidence.
+- Explicitly normalize permissions after runtime COPY instructions, independently of COPY --chmod; preserve nonroot operation, mounted state boundaries and native bundle identity.
+- Reproduce restrictive copied script modes in isolated builds, verify actual non-owner reads and retain negative checks; no live Telegram or deployed-container changes.
+
 ## Single-file Compose deployment (2026-10-23)
 
 - User requires one shared `compose.yaml` for source build and image deployment; remove the source override file without compatibility branches.

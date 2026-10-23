@@ -48,6 +48,8 @@ def main() -> None:
         assert Path("/app/frontend/dist/index.html").read_bytes()
         assert os.access("/app/backend/.venv/bin/uvicorn", os.X_OK)
     elif sys.argv[1] == "api":
+        for name in ("/usr", "/usr/local", "/usr/local/lib"):
+            check(Path(name))
         for name in ("/entrypoint.sh", "/usr/local/lib/tgd-api-supervisor.py", "/usr/local/lib/tgd-init-volumes.py"):
             path = Path(name)
             check(path)
