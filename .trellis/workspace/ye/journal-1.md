@@ -1273,3 +1273,36 @@ Removed independent native registry publication; final Bot API uses the verified
 ### Next Steps
 
 - User manually runs the image workflow on main; no hosted publication, remote repository deletion or local container update performed.
+
+
+## Session 38: Unify source and image Compose deployment
+
+**Date**: 2026-10-23
+**Task**: Unify source and image Compose deployment
+**Branch**: `main`
+
+### Summary
+
+One shared compose.yaml supports local source builds and digest-pinned image deployment; removed source override Compose and synchronized guides.
+
+### Main Changes
+
+- Source up --build uses local tags and default never policy; release env files select paired image digests and missing policy.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `HEAD` | (see git log) |
+
+### Testing
+
+- [OK] Independent 88 passed, 1 Windows symlink skip; Ruff, script mypy, version and diff checks passed. Real Compose config/build-plan and source-free bundle config passed; docs 23 files/103 links/18 pages and YAML/env parity passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Actual build/startup unexecuted; Docker image-only dry-run stalled and was cancelled. No current containers or data changed. Parent implementation task remains active.
