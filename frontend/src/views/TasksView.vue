@@ -55,11 +55,11 @@ async function remove(ids: string[]) {
 }
 </script>
 <template>
-  <section>
-    <div class="page-heading page-actions"><p v-if="data" class="muted">共 {{ data.total }} 条</p><el-button :disabled="deleting" :loading="!data && loading" @click="refresh">刷新</el-button></div>
+  <section class="tasks-workspace">
     <div class="panel task-panel">
       <div class="task-toolbar"><el-select v-model="status" aria-label="筛选任务状态" class="status-filter" :disabled="deleting"><el-option v-for="value in filters" :key="value" :label="value ? stateLabel(value) : '全部状态'" :value="value" /></el-select><form class="search-form" @submit.prevent="submitSearch"><el-input v-model="query" placeholder="搜索名称或任务编号" aria-label="搜索名称或任务编号" :disabled="deleting" clearable @clear="submitSearch" /><el-button native-type="submit" :disabled="deleting">搜索</el-button></form></div>
       <div v-if="data?.items.length" class="task-selection"><el-checkbox :model-value="allSelected" :indeterminate="selectedIds.length > 0 && !allSelected" :disabled="deleting || !selectableIds.length" @change="selectedIds = $event ? [...selectableIds] : []">全选本页</el-checkbox><span class="muted" aria-live="polite">已选 {{ selectedIds.length }} 条</span><el-button type="danger" plain :disabled="!selectedIds.length || deleting" :loading="deleting" @click="remove([...selectedIds])">删除所选</el-button></div>
+      <div class="task-scroll" role="region" aria-label="下载任务列表" tabindex="0">
       <el-alert v-if="error && !data" :title="error" type="error" :closable="false" show-icon />
       <el-skeleton v-if="!data && loading" :rows="5" animated class="list-skeleton" />
       <div v-else-if="data?.items.length" class="task-list">
@@ -71,7 +71,8 @@ async function remove(ids: string[]) {
         </div>
       </div>
       <el-empty v-else-if="data" :description="search || status ? '没有符合条件的任务' : '还没有下载任务'" :image-size="90" />
-      <div v-if="data" class="list-footer"><span class="warning-text task-refresh-status" :title="error || undefined" role="status">{{ error ? '更新失败，保留上次结果' : '' }}</span><el-pagination v-model:current-page="page" :disabled="deleting" :total="data.total" :page-size="20" :pager-count="5" layout="prev, pager, next" /></div>
+      </div>
+      <div v-if="data" class="list-footer"><span class="muted task-total">共 {{ data.total }} 条</span><el-pagination v-model:current-page="page" :disabled="deleting" :total="data.total" :page-size="20" :pager-count="5" layout="prev, pager, next" /><span class="warning-text task-refresh-status" :title="error || undefined" role="status">{{ error ? '更新失败，保留上次结果' : '' }}</span></div>
     </div>
     <el-drawer :model-value="!!selected" title="任务详情" size="min(680px, 100vw)" destroy-on-close @close="selected = ''"><TaskDetail v-if="selected" :id="selected" :deleting="deleting" @changed="refresh" @remove="remove([$event])" /></el-drawer>
   </section>

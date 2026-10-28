@@ -329,7 +329,7 @@ networks:
 docker compose up -d --no-build
 ```
 
-单纯 `restart` 不会更新环境变量和目录挂载。更换媒体宿主目录须先停服，迁移原媒体并确认权限和文件可访问，然后按[下载目录身份登记](upgrade.md#storage-identity-011)明确登记新目录；不要通过换空目录绕过存储保护。
+单纯 `restart` 不会更新环境变量和目录挂载。更换媒体宿主目录须先停服，迁移原媒体并确认权限和文件可访问，然后按[下载目录身份登记](operations.md#storage-identity)明确登记新目录；不要通过换空目录绕过存储保护。
 
 只更新应用源码时可 [单独构建 app](development.md#源码构建与缓存)，无需重新编译未变的本地 API。日常更新不要加 `--no-cache`，也不要清空 Docker 缓存。
 

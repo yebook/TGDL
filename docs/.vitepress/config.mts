@@ -40,8 +40,8 @@ export default defineConfig({
         { text: '任务、进度与归档', link: '/usage' },
         { text: '提示与文件名模板', link: '/templates' },
       ] },
-      { text: '版本升级', link: '/upgrade' },
       { text: '维护与帮助', items: [
+        { text: '版本升级', link: '/upgrade' },
         { text: '配置备份与恢复', link: '/configuration-backup' },
         { text: '日志与故障处理', link: '/operations' },
         { text: '常见问题', link: '/faq' },

@@ -7,7 +7,6 @@
 > [!WARNING]
 > **使用前请了解账号风险：Bot 可能被 Telegram 限流、限制或封禁，关联的 Bot 所有者个人账号也可能受限或被封禁。** 云端、本地 API、代理和请求节流都不能保证免于限制。请先阅读 [账号风险与异常处理](https://yebook.github.io/TGDL/faq.html#account-risk)，再创建或接入 Bot。
 
-目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。部署统一使用下方的源码构建方式。真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
 
 ## 怎么使用
 
