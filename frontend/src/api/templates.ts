@@ -1,6 +1,6 @@
 import { bytes } from './format'
 
-export const defaultConfirmationTemplate = '📥 确认下载：{title}\n📁 保存到：{destination}\n⏳ 确认有效期：{expires_in_minutes} 分钟\n{files}'
+export const defaultConfirmationTemplate = '======\n📥 确认下载：{title}\n📄 文件数量：{file_count} 个\n📦 总文件大小：{total_size}\n📁 保存到：{destination}\n⏳ 确认有效期：{expires_in_minutes} 分钟\n======\n{files}'
 export const defaultFilenameTemplate = '{name}'
 export const confirmationVariables = [
   ['title', '消息标题'], ['file_count', '文件数量'], ['total_size', '总大小（未知时显示未知）'],
@@ -65,7 +65,7 @@ export function templateExamples(confirmation: string, filename: string, expires
     file = fitExampleFilename(renderTemplateExample(filename, { name: '海边日落', date: '20261020', time: '183000', datetime: '20261020_183000', type: 'video', index: '1', id: 'a1b2c3d4' }, true))
   } catch (cause) { fileError = (cause as Error).message }
   try {
-    text = renderTemplateExample(confirmation, { title: '海边日落', file_count: '1', total_size: bytes(13107200), files: `${file || '海边日落.mp4'}\n📦 文件大小：${bytes(13107200)}`, destination: '2026-10-20', expires_in_minutes: String(Number((expiresIn / 60).toFixed(2))) }) + '\n任务编号：e5f6a7b80123456789abcdef01234567'
+    text = '任务编号：e5f6a7b80123456789abcdef01234567\n' + renderTemplateExample(confirmation, { title: '海边日落', file_count: '1', total_size: bytes(13107200), files: `文件名：${file || '海边日落.mp4'}\n文件大小：${bytes(13107200)}`, destination: '2026-10-20', expires_in_minutes: String(Number((expiresIn / 60).toFixed(2))) })
   } catch (cause) { confirmationError = (cause as Error).message }
   return { file, fileError, text, confirmationError }
 }

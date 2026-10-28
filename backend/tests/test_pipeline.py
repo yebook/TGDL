@@ -102,7 +102,7 @@ def test_confirmation_formats_file_sizes_without_changing_dto_bytes(client: Test
     with state.db.sessions() as session:
         items = list(session.scalars(select(MediaItem).order_by(MediaItem.message_id)))
         for item, (_, expected) in zip(items, sizes, strict=True):
-            assert f"{item.planned_filename}\n📦 文件大小：{expected}" in text
+            assert f"文件名：{item.planned_filename}\n文件大小：{expected}" in text
     assert "字节" not in text
     detail = state.tasks.detail(request_id)
     assert [item["size_bytes"] for item in detail["items"]] == [size for size, _ in sizes]

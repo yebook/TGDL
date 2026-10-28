@@ -44,11 +44,11 @@ def iso(value: float | None) -> str | None:
 
 def task_message(text: str, request_id: str, limit: int = 3900) -> str:
     """Reserve a complete system-owned identifier line outside custom content."""
-    suffix = f"\n任务编号：{request_id}"
-    budget = limit - len(suffix.encode("utf-16-le")) // 2
+    prefix = f"任务编号：{request_id}\n"
+    budget = limit - len(prefix.encode("utf-16-le")) // 2
     if len(text.encode("utf-16-le")) // 2 > budget:
         text = text.encode("utf-16-le")[:(budget - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
-    return text + suffix
+    return prefix + text
 
 
 def enqueue(session: Session, request: MediaRequest, key: str, text: str,
@@ -209,7 +209,7 @@ class TaskService:
                 for index, item in enumerate(items, start=1):
                     item.planned_filename = unique_name(planned_name(
                         item, request, settings.filename_template, settings.timezone, index, caption=caption), used)
-                    lines.append(f"{item.planned_filename}\n📦 文件大小：{format_bytes(item.size_bytes)}")
+                    lines.append(f"文件名：{item.planned_filename}\n文件大小：{format_bytes(item.size_bytes)}")
                 sizes = [item.size_bytes for item in items]
                 text = render_confirmation(settings.confirmation_template, {
                     "title": request.title, "destination": request.destination,

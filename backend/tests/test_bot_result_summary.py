@@ -38,11 +38,10 @@ def build_result(client: TestClient, states: list[str], *, separate_paths: bool 
 
 def test_two_file_success_has_one_overall_result_and_clear_file_list(client: TestClient) -> None:
     request_id, text = build_result(client, ["succeeded", "succeeded"])
-    assert text == ("✅ 下载完成：海边旅行\n"
+    assert text == (f"任务编号：{request_id}\n✅ 下载完成：海边旅行\n"
                     "文件：2 个 · 已下载 2 个\n"
                     "📁 保存到：2026-10-28/旅行\n"
-                    "文件清单：\n✅ video_1.mp4\n✅ video_2.mp4\n"
-                    f"任务编号：{request_id}")
+                    "文件清单：\n✅ video_1.mp4\n✅ video_2.mp4")
     assert "下载成功" not in text
 
 
@@ -60,7 +59,7 @@ def test_mixed_and_unsaved_results_are_honest(client: TestClient, states: list[s
     assert f"文件：2 个 · {summary}" in text
     assert all(detail in text for detail in details)
     assert "unsafe-upstream-secret" not in text
-    assert text.endswith(f"\n任务编号：{request_id}")
+    assert text.startswith(f"任务编号：{request_id}\n")
     if "succeeded" not in states:
         assert "已下载" not in text
     if all(outcome in {"failed", "cancelled"} for outcome in states):
@@ -79,7 +78,7 @@ def test_result_uses_actual_paths_when_files_saved_in_different_directories(clie
 def test_long_result_preserves_full_identifier_without_splitting_emoji(client: TestClient) -> None:
     request_id, text = build_result(client, ["succeeded"], title="🌅" * 2500)
     assert len(text.encode("utf-16-le")) // 2 <= 3900
-    assert text.endswith(f"\n任务编号：{request_id}")
+    assert text.startswith(f"任务编号：{request_id}\n")
     assert "\ufffd" not in text
 
 

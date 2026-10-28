@@ -57,14 +57,11 @@ p { font-size: 14px; line-height: 1.7; }
 .page-actions { min-height: 44px; margin-bottom: 18px; }
 .page-actions > .el-button:last-child { margin-left: auto; }
 .page-actions p { margin: 0; }
-.app-footer { padding: 14px 40px; flex-shrink: 0; border-top: 1px solid var(--line); color: #67768b; font-size: 11px; font-weight: 600; }
-.app-footer span { font-weight: 400; margin-left: 8px; color: #728197; }
 .notice-strip { border: 1px solid #dbe5f7; background: #eef3fd; border-radius: 10px; display: flex; align-items: center; gap: 17px; padding: 20px 24px; margin-bottom: 25px; }
 .notice-icon { height: 42px; width: 42px; border-radius: 11px; display: flex; align-items: center; justify-content: center; background: #fff; color: var(--blue); flex-shrink: 0; }
 .notice-strip strong { font-size: 14px; font-weight: 600; }
 .notice-strip p { font-size: 12px; color: #596e8b; margin: 5px 0 0; }
 .tasks-active .main-content { padding: 16px 24px; overflow: hidden; scrollbar-gutter: auto; display: flex; flex-direction: column; }
-.tasks-active .app-footer { padding: 8px 24px; }
 .tasks-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .task-panel { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .task-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding: 44px 8px 8px; }
@@ -340,7 +337,6 @@ p { font-size: 14px; line-height: 1.7; }
   .tasks-active .sidebar { flex-shrink: 0; }
   .tasks-active .main-shell { min-height: 0; flex: 1; }
   .tasks-active .main-content { padding: 10px; }
-  .tasks-active .app-footer { display: none; }
   .task-toolbar { padding: 8px 12px; gap: 8px; }
   .task-toolbar .status-filter { width: 100%; }
   .task-toolbar .search-form { width: 100%; }
@@ -390,7 +386,6 @@ p { font-size: 14px; line-height: 1.7; }
   .el-message-box { width: calc(100% - 32px); }
   .el-message { max-width: calc(100% - 24px); }
   .el-message-box__btns { flex-wrap: wrap; gap: 8px; }
-  .app-footer { padding: 0 20px 20px; }
   .auth-layout { display: block; }
   .auth-story { padding: 25px; }
   .auth-story .brand { margin-bottom: 28px; }

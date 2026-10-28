@@ -23,6 +23,33 @@ def test_current_timeout_and_template_defaults() -> None:
     assert settings.filename_template == "{name}"
 
 
+@pytest.mark.parametrize("size,total", [(0, "0 B"), (1024, "2.0 KB"), (None, "未知")])
+def test_default_confirmation_summary_and_labelled_files(client: TestClient, size: int | None, total: str) -> None:
+    state, ingest = setup_pipeline(client)
+    for number in (1, 2):
+        payload = message(number, "g", size=1024)
+        if size is None and number == 2:
+            payload["video"].pop("file_size")
+        elif size is not None:
+            payload["video"]["file_size"] = size
+        ingest.message(7, payload, f"in{number}")
+    with state.db.transaction() as session:
+        request = session.scalar(select(MediaRequest))
+        request.collect_until = 0
+        request_id = request.id
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        text = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%"))).payload["text"]
+        assert text.startswith(f"任务编号：{request_id}\n======\n📥 确认下载：")
+        assert text.count(f"任务编号：{request_id}") == 1
+        assert "📄 文件数量：2 个" in text
+        assert f"📦 总文件大小：{total}\n" in text
+        assert text.count("======") == 2
+        assert "\n======\n文件名：movie1.mp4\n文件大小：" in text
+        assert "\n\n文件名：movie2.mp4\n文件大小：" in text
+        assert text.endswith("文件大小：未知" if size is None else f"文件大小：{'0 B' if size == 0 else '1.0 KB'}")
+
+
 def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     ingest.message(7, message(), "in1")
@@ -51,7 +78,7 @@ def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) 
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         card = session.scalar(select(Notification).where(Notification.request_id == new_id))
-        assert card.payload["text"] == f"1.5 分钟\n任务编号：{new_id}"
+        assert card.payload["text"] == f"任务编号：{new_id}\n1.5 分钟"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -74,7 +101,8 @@ def test_plain_render_escapes_and_length() -> None:
     assert render_template("{{title}} {title}", {"title": "{files}"}) == "{title} {files}"
     text = render_confirmation(DEFAULT_CONFIRMATION_TEMPLATE, {
         "title": "😀" * 4000, "destination": "2026-10-21", "expires_in_minutes": "30",
-        "files": "video.mp4\n📦 文件大小：2.0 MB\n\n" * 500,
+        "file_count": "500", "total_size": "1.0 GB",
+        "files": "文件名：video.mp4\n文件大小：2.0 MB\n\n" * 500,
     })
     assert len(text.encode("utf-16-le")) // 2 <= 3500
     assert "video.mp4" in text and "…" in text
@@ -119,8 +147,8 @@ def test_freeze_names_prompt_and_retry_preserve_snapshot(client: TestClient) -> 
         assert names == ["19700101_1.mp4", "19700101_2.mp4"]
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert card.payload["text"] == (
-            "2项 2.0 KB\n19700101_1.mp4\n📦 文件大小：1.0 KB\n\n"
-            f"19700101_2.mp4\n📦 文件大小：1.0 KB\n任务编号：{card.request_id}")
+            f"任务编号：{card.request_id}\n2项 2.0 KB\n文件名：19700101_1.mp4\n文件大小：1.0 KB\n\n"
+            "文件名：19700101_2.mp4\n文件大小：1.0 KB")
     patch = SettingsPatch(revision=3, filename_template="new_{name}", timezone="Pacific/Honolulu")
     state.settings.save(patch, state.settings.candidate(patch))
     assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
@@ -154,8 +182,8 @@ def test_group_confirmation_separates_each_size_in_custom_file_list(client: Test
     with state.db.sessions() as session:
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert card.payload["text"] == (
-            "清单\n1.mp4\n📦 文件大小：1.5 KB\n\n"
-            f"2.mp4\n📦 文件大小：未知\n任务编号：{card.request_id}")
+            f"任务编号：{card.request_id}\n清单\n文件名：1.mp4\n文件大小：1.5 KB\n\n"
+            "文件名：2.mp4\n文件大小：未知")
     assert state.settings.read()[1].confirmation_template == "清单\n{files}"
 
 

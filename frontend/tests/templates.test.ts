@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultConfirmationTemplate, defaultFilenameTemplate, renderTemplateExample, templateExamples } from '../src/api/templates'
 
-const identifierLine = '\n任务编号：e5f6a7b80123456789abcdef01234567'
+const identifierLine = '任务编号：e5f6a7b80123456789abcdef01234567\n'
 
 describe('settings template examples', () => {
   it('keeps media braces literal and supports escaped braces', () => {
@@ -21,9 +21,9 @@ describe('settings template examples', () => {
   it('previews readable sizes, automatic extension and current expiry', () => {
     const sample = templateExamples(defaultConfirmationTemplate, defaultFilenameTemplate, 600)
     expect(sample.file).toBe('海边日落.mp4')
-    expect(sample.text).toContain(`${sample.file}\n📦 文件大小：12.5 MB`)
-    expect(sample.text).toContain('📥 确认下载：海边日落\n')
-    expect(sample.text.endsWith(identifierLine)).toBe(true)
+    expect(sample.text).toContain(`文件名：${sample.file}\n文件大小：12.5 MB`)
+    expect(sample.text).toContain('======\n📥 确认下载：海边日落\n📄 文件数量：1 个\n📦 总文件大小：12.5 MB')
+    expect(sample.text.startsWith(identifierLine)).toBe(true)
     expect(sample.text).toContain('📁 保存到：2026-10-20\n')
     expect(sample.text).toContain('10 分钟')
     expect(sample.text).toContain(sample.file)
@@ -31,7 +31,7 @@ describe('settings template examples', () => {
     expect(sample.fileError).toBe('')
   })
   it.each([[1800, '30'], [30, '0.5'], [90, '1.5']])('previews the supported minute variable for %s', (seconds, minutes) => {
-    expect(templateExamples('{expires_in_minutes} 分钟', '{name}', seconds).text).toBe(`${minutes} 分钟${identifierLine}`)
+    expect(templateExamples('{expires_in_minutes} 分钟', '{name}', seconds).text).toBe(`${identifierLine}${minutes} 分钟`)
   })
   it('rejects removed template variables', () => {
     expect(templateExamples('{expires_in}', '{name}', 1800).confirmationError).toContain('模板变量或括号无效')
@@ -43,7 +43,7 @@ describe('settings template examples', () => {
     const sample = templateExamples('{files}', '🌅'.repeat(160), 300)
     expect(sample.file).toBe(`${'🌅'.repeat(44)}.mp4`)
     expect(new TextEncoder().encode(sample.file).length).toBe(180)
-    expect(sample.text).toBe(`${sample.file}\n📦 文件大小：12.5 MB${identifierLine}`)
+    expect(sample.text).toBe(`${identifierLine}文件名：${sample.file}\n文件大小：12.5 MB`)
   })
   it('allows confirmation tabs/newlines but rejects other control characters', () => {
     expect(renderTemplateExample('\t{title}\n', { title: 'sample' })).toBe('\tsample\n')
@@ -51,7 +51,7 @@ describe('settings template examples', () => {
   })
   it('bounds expanded confirmation examples just like Bot cards', () => {
     const sample = templateExamples('{files}'.repeat(100), '🌅'.repeat(160), 300)
-    expect(sample.text).toBe(`${'🌅'.repeat(17)}…`.repeat(100) + identifierLine)
+    expect(sample.text).toBe(identifierLine + `文件名：${'🌅'.repeat(15)}…`.repeat(100))
     expect(sample.text.length).toBe(3500 + identifierLine.length)
     expect(sample.text).not.toContain('\ufffd')
   })

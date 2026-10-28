@@ -102,8 +102,8 @@ def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClien
         project(session, session.get(MediaRequest, request_id))
     with state.db.sessions() as session:
         text = session.scalar(select(Notification).where(Notification.event_key.like("result:%"))).payload["text"]
-    assert text.startswith(expected)
-    assert text.endswith(f"\n任务编号：{request_id}")
+    assert text.startswith(f"任务编号：{request_id}\n{expected}")
+    assert text.splitlines().count(f"任务编号：{request_id}") == 1
     assert "secret-raw-upstream-error" not in text
     for status in states:
         assert status not in text

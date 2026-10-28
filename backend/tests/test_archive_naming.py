@@ -186,11 +186,12 @@ def test_concurrent_freezing_reserves_distinct_folders_and_one_card_per_request(
         assert len(list(session.scalars(select(Notification)))) == 2
 
 
-def test_task_message_reserves_identifier_after_long_astral_content() -> None:
+def test_task_message_reserves_identifier_before_long_astral_content() -> None:
     request_id = "0123456789abcdef" * 2
     text = task_message("😀" * 4000, request_id)
     assert len(text.encode("utf-16-le")) // 2 <= 3900
-    assert text.endswith(f"…\n任务编号：{request_id}")
+    assert text.startswith(f"任务编号：{request_id}\n")
+    assert text.endswith("…")
 
 
 def test_status_keeps_all_five_full_identifiers_and_frozen_title(client: TestClient) -> None:
