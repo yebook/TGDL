@@ -43,6 +43,7 @@ def upgrade() -> None:
     sa.Column('kind', sa.String(), nullable=False),
     sa.Column('group_key', sa.String(), nullable=True),
     sa.Column('title', sa.String(), nullable=False),
+    sa.Column('name_override', sa.String(length=80), nullable=True),
     sa.Column('status', sa.String(), nullable=False),
     sa.Column('created_at', sa.Double(), nullable=False),
     sa.Column('updated_at', sa.Double(), nullable=False),
@@ -56,6 +57,15 @@ def upgrade() -> None:
     sa.Column('deleted_at', sa.Double(), nullable=True),
     sa.Column('result_revision', sa.Integer(), nullable=False),
     sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('pending_media_names',
+    sa.Column('bot_id', sa.Integer(), nullable=False),
+    sa.Column('chat_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('message_id', sa.Integer(), nullable=False),
+    sa.Column('name', sa.String(length=80), nullable=True),
+    sa.Column('expires_at', sa.Double(), nullable=False),
+    sa.PrimaryKeyConstraint('bot_id', 'chat_id', 'user_id')
     )
     op.create_table('sessions',
     sa.Column('token_hash', sa.String(), nullable=False),
@@ -212,6 +222,7 @@ def downgrade() -> None:
     op.drop_table('media_items')
     op.drop_table('settings')
     op.drop_table('sessions')
+    op.drop_table('pending_media_names')
     op.drop_table('requests')
     op.drop_table('poll_cursor')
     op.drop_table('ingest_updates')

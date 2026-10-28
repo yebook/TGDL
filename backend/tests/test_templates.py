@@ -20,6 +20,7 @@ def test_current_timeout_and_template_defaults() -> None:
     assert settings.confirmation_timeout_seconds == 1800
     assert settings.confirmation_template == DEFAULT_CONFIRMATION_TEMPLATE
     assert settings.bot_api_mode == "cloud"
+    assert settings.filename_template == "{name}"
 
 
 def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) -> None:
@@ -73,7 +74,7 @@ def test_plain_render_escapes_and_length() -> None:
     assert render_template("{{title}} {title}", {"title": "{files}"}) == "{title} {files}"
     text = render_confirmation(DEFAULT_CONFIRMATION_TEMPLATE, {
         "title": "😀" * 4000, "destination": "2026-10-21", "expires_in_minutes": "30",
-        "files": "video.mp4 · 2.0 MB\n" * 500,
+        "files": "video.mp4\n📦 文件大小：2.0 MB\n\n" * 500,
     })
     assert len(text.encode("utf-16-le")) // 2 <= 3500
     assert "video.mp4" in text and "…" in text
@@ -117,7 +118,9 @@ def test_freeze_names_prompt_and_retry_preserve_snapshot(client: TestClient) -> 
         names = [item.planned_filename for item in items]
         assert names == ["19700101_1.mp4", "19700101_2.mp4"]
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
-        assert card.payload["text"] == f"2项 2.0 KB\n19700101_1.mp4 · 1.0 KB\n19700101_2.mp4 · 1.0 KB\n任务编号：{card.request_id}"
+        assert card.payload["text"] == (
+            "2项 2.0 KB\n19700101_1.mp4\n📦 文件大小：1.0 KB\n\n"
+            f"19700101_2.mp4\n📦 文件大小：1.0 KB\n任务编号：{card.request_id}")
     patch = SettingsPatch(revision=3, filename_template="new_{name}", timezone="Pacific/Honolulu")
     state.settings.save(patch, state.settings.candidate(patch))
     assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
@@ -135,6 +138,25 @@ def test_freeze_names_prompt_and_retry_preserve_snapshot(client: TestClient) -> 
     state.db.engine.dispose()
     with state.db.sessions() as session:
         assert [job.relative_path for job in session.scalars(select(Job))] == paths
+
+
+def test_group_confirmation_separates_each_size_in_custom_file_list(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    patch = SettingsPatch(revision=2, filename_template="{index}", confirmation_template="清单\n{files}")
+    state.settings.save(patch, state.settings.candidate(patch))
+    ingest.message(7, message(1, "g", size=1536), "in1")
+    unknown = message(2, "g")
+    unknown["video"].pop("file_size")
+    ingest.message(7, unknown, "in2")
+    with state.db.transaction() as session:
+        session.scalar(select(MediaRequest)).collect_until = 0
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
+        assert card.payload["text"] == (
+            "清单\n1.mp4\n📦 文件大小：1.5 KB\n\n"
+            f"2.mp4\n📦 文件大小：未知\n任务编号：{card.request_id}")
+    assert state.settings.read()[1].confirmation_template == "清单\n{files}"
 
 
 def test_name_safety_unicode_extensions_and_collision() -> None:
@@ -189,7 +211,7 @@ def test_missing_original_uses_caption_without_treating_title_as_extension(origi
     assert planned_name(item, request, "{name}", "UTC", 1) == "real.MKV"
     item.original_name = None
     item.caption_snippet = " \u200b\n"
-    assert planned_name(item, request, "{name}", "UTC", 1) == "video_abcdef012345.mp4"
+    assert planned_name(item, request, "{name}", "UTC", 1) == "video.mp4"
 
 
 def test_group_caption_index_safety_templates_and_collision() -> None:
@@ -197,17 +219,17 @@ def test_group_caption_index_safety_templates_and_collision() -> None:
     item = MediaItem(id="abcdef012345", media_type="video", original_name=None)
     caption = "../CON/\u200b测试" + "视" * 90
     name = planned_name(item, request, "{name}", "UTC", 2, caption=caption)
-    assert name.endswith("_2.mp4") and len(name.encode("utf-8")) <= 180
+    assert name.endswith(".mp4") and len(name.encode("utf-8")) <= 180
     assert "/" not in name and ".." not in name and "\u200b" not in name
     assert planned_name(item, request, "{date}_{name}_{index}", "UTC", 2, caption="旅行") == "19700101_旅行_2.mp4"
     explicit = planned_name(item, request, "{name}_{index}", "UTC", 2, caption="视" * 80)
     assert explicit.endswith("_2.mp4") and not explicit.endswith("_2_2.mp4")
     assert len(explicit.encode("utf-8")) <= 180
-    assert planned_name(item, request, "{name}_{{index}}", "UTC", 2, caption="旅行") == "旅行_{index}_2.mp4"
+    assert planned_name(item, request, "{name}_{{index}}", "UTC", 2, caption="旅行") == "旅行_{index}.mp4"
     used: set[str] = set()
     assert unique_name(name, used) == name
     collision = unique_name(name, used)
-    assert collision != name and collision.endswith("_2_2.mp4")
+    assert collision != name and collision.endswith("_2.mp4")
     assert len(collision.encode("utf-8")) <= 180
 
 
@@ -234,10 +256,70 @@ def test_group_first_caption_shared_in_order_and_frozen_before_consent(client: T
         request = session.get(MediaRequest, request_id)
         assert request.title == "旅行 合辑"
         items = list(session.scalars(select(MediaItem).order_by(MediaItem.message_id)))
-        assert [item.planned_filename for item in items] == ["旅行 合辑_1.jpg", "旅行 合辑_2.mp4", "movie3.mp4"]
+        assert [item.planned_filename for item in items] == ["旅行 合辑.jpg", "旅行 合辑.mp4", "movie3.mp4"]
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert all(item.planned_filename in card.payload["text"] for item in items)
     assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
     with state.db.sessions() as session:
         assert sorted(job.relative_path.rsplit("/", 1)[1] for job in session.scalars(select(Job))) == [
-            "movie3.mp4", "旅行 合辑_1.jpg", "旅行 合辑_2.mp4"]
+            "movie3.mp4", "旅行 合辑.jpg", "旅行 合辑.mp4"]
+
+
+def test_default_names_only_number_actual_duplicates(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    for index in (4, 2, 3, 1):
+        payload = message(index, "g")
+        payload["video"].pop("file_name")
+        if index == 1:
+            payload["caption"] = "旅行"
+        if index == 4:
+            payload["video"]["file_name"] = "Other.MKV"
+        ingest.message(7, payload, f"in{index}")
+    with state.db.transaction() as session:
+        session.scalar(select(MediaRequest)).collect_until = 0
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        names = [item.planned_filename for item in session.scalars(select(MediaItem).order_by(MediaItem.message_id))]
+        assert names == ["旅行.mp4", "旅行_2.mp4", "旅行_3.mp4", "Other.MKV"]
+        card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
+        assert all(name in card.payload["text"] for name in names)
+
+
+def test_single_names_reserve_disk_frozen_cards_and_jobs_without_ids(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    # Create the first card to discover the date under the current configured timezone.
+    ingest.message(7, message(1), "in1")
+    with state.db.transaction() as session:
+        session.scalar(select(MediaRequest)).collect_until = 0
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        request = session.scalar(select(MediaRequest))
+        first_id, nonce, folder = request.id, request.nonce, request.destination
+        assert session.scalar(select(MediaItem)).planned_filename == "movie1.mp4"
+    root = state.settings.config.download_root
+    day = root / folder
+    day.mkdir(parents=True)
+    (day / "MOVIE1_2.mp4").write_bytes(b"existing")
+    state.tasks.confirm(first_id, nonce, 42, 42, "confirm")
+    # The actual job path may diverge from its card following an external race.
+    with state.db.transaction() as session:
+        session.scalar(select(Job)).relative_path = folder + "/movie1_3.mp4"
+    group = message(4, "reserved-group")
+    group["caption"] = "movie1_4.mp4"
+    ingest.message(7, group, "group")
+    with state.db.transaction() as session:
+        session.scalar(select(MediaRequest).where(MediaRequest.status == "collecting")).collect_until = 0
+    state.tasks.freeze_due()
+    for number in (2, 3):
+        payload = message(number)
+        payload["video"]["file_name"] = "movie1.mp4"
+        ingest.message(7, payload, f"in{number}")
+    with state.db.transaction() as session:
+        for request in session.scalars(select(MediaRequest).where(MediaRequest.status == "collecting")):
+            request.collect_until = 0
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        assert [item.planned_filename for item in session.scalars(
+            select(MediaItem).where(MediaItem.message_id < 4).order_by(MediaItem.message_id))] == [
+            "movie1.mp4", "movie1_5.mp4", "movie1_6.mp4"]
+    assert (day / "MOVIE1_2.mp4").read_bytes() == b"existing"

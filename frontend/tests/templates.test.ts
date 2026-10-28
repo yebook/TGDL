@@ -20,8 +20,8 @@ describe('settings template examples', () => {
   })
   it('previews readable sizes, automatic extension and current expiry', () => {
     const sample = templateExamples(defaultConfirmationTemplate, defaultFilenameTemplate, 600)
-    expect(sample.file).toBe('海边日落_a1b2c3d4.mp4')
-    expect(sample.text).toContain('12.5 MB')
+    expect(sample.file).toBe('海边日落.mp4')
+    expect(sample.text).toContain(`${sample.file}\n📦 文件大小：12.5 MB`)
     expect(sample.text).toContain('📥 确认下载：海边日落\n')
     expect(sample.text.endsWith(identifierLine)).toBe(true)
     expect(sample.text).toContain('📁 保存到：2026-10-20\n')
@@ -43,7 +43,7 @@ describe('settings template examples', () => {
     const sample = templateExamples('{files}', '🌅'.repeat(160), 300)
     expect(sample.file).toBe(`${'🌅'.repeat(44)}.mp4`)
     expect(new TextEncoder().encode(sample.file).length).toBe(180)
-    expect(sample.text).toBe(`${sample.file} · 12.5 MB${identifierLine}`)
+    expect(sample.text).toBe(`${sample.file}\n📦 文件大小：12.5 MB${identifierLine}`)
   })
   it('allows confirmation tabs/newlines but rejects other control characters', () => {
     expect(renderTemplateExample('\t{title}\n', { title: 'sample' })).toBe('\tsample\n')

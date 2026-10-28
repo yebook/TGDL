@@ -45,6 +45,7 @@ from app.storage.files import (
     publish_no_replace,
     source_file,
 )
+from app.storage.naming import unique_name
 
 
 async def owned_thread[T](operation: Callable[..., T], *args: Any) -> T:
@@ -290,8 +291,23 @@ class DownloadWorker:
                 publish_no_replace(temporary, final)
             except FileExistsError:
                 # Persist collision path before publishing; never overwrite external files.
-                suffix = f"_{job.id}_{job.attempt_sequence}"
-                final = final.with_name(final.stem + suffix + final.suffix)
+                item = session.get(MediaItem, job.item_id)
+                assert item and item.planned_filename
+                used = {path.name.casefold() for path in final.parent.iterdir()}
+                destination = journal.final_path.rpartition("/")[0]
+                used.update(name.casefold() for name in session.scalars(
+                    select(MediaItem.planned_filename).join(MediaRequest).where(
+                        MediaRequest.root_id == job.root_id, MediaRequest.destination == destination,
+                        MediaItem.id != job.item_id, MediaItem.planned_filename.is_not(None))) if name)
+                prefix = destination + "/"
+                used.update(path[len(prefix):].split("/")[0].casefold() for path in session.scalars(
+                    select(MediaRequest.destination).where(
+                        MediaRequest.root_id == job.root_id, MediaRequest.destination.startswith(prefix))))
+                for path in session.scalars(select(Job.relative_path).where(Job.root_id == job.root_id)):
+                    parent, _, name = path.rpartition("/")
+                    if parent == destination:
+                        used.add(name.casefold())
+                final = final.with_name(unique_name(item.planned_filename, used))
                 journal.final_path = final.relative_to(storage.root.resolve()).as_posix()
                 job.relative_path = journal.final_path
                 # Journal path must commit before any irreversible second publish.

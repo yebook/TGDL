@@ -102,7 +102,7 @@ def test_confirmation_formats_file_sizes_without_changing_dto_bytes(client: Test
     with state.db.sessions() as session:
         items = list(session.scalars(select(MediaItem).order_by(MediaItem.message_id)))
         for item, (_, expected) in zip(items, sizes, strict=True):
-            assert f"{item.planned_filename} · {expected}" in text
+            assert f"{item.planned_filename}\n📦 文件大小：{expected}" in text
     assert "字节" not in text
     detail = state.tasks.detail(request_id)
     assert [item["size_bytes"] for item in detail["items"]] == [size for size, _ in sizes]
@@ -215,6 +215,44 @@ def test_crash_after_publish_reconciles_without_overwrite(client: TestClient, co
     state.runtime.worker.recover(False)
     assert state.tasks.detail(request_id)["status"] == "succeeded"
     assert final.read_bytes() == b"abcdef"
+    state.runtime.worker.recover(False)
+    assert state.tasks.detail(request_id)["status"] == "succeeded"
+
+
+def test_publish_race_uses_numeric_suffix_and_recovery_preserves_path(client: TestClient, config: Config) -> None:
+    state, ingest = setup_pipeline(client)
+    ingest.message(7, message(), "in")
+    request_id = confirm_all(state)
+    job_id = state.runtime.worker.claim()
+    with state.db.sessions() as session:
+        job = session.get(Job, job_id)
+        relative = job.relative_path
+        final = contained(config.download_root, relative, create_parent=True)
+    temporary = final.with_name(f".part.{job_id}")
+    temporary.write_bytes(b"abcdef")
+    final.write_bytes(b"external")
+    final.with_name("movie1_2.mp4").write_bytes(b"external2")
+    other = message(2)
+    other["video"]["file_name"] = "movie1_3.mp4"
+    ingest.message(7, other, "other")
+    with state.db.transaction() as session:
+        session.scalar(select(MediaRequest).where(MediaRequest.status == "collecting")).collect_until = 0
+    state.tasks.freeze_due()
+    state.runtime.worker.journal_copying(job_id, temporary.relative_to(config.download_root).as_posix(), relative)
+    state.runtime.worker.journal_ready(job_id, *file_hash(temporary))
+    state.runtime.worker.publish(job_id)
+    with state.db.sessions() as session:
+        job = session.get(Job, job_id)
+        assert job.relative_path == f"{final.parent.relative_to(config.download_root).as_posix()}/movie1_4.mp4"
+        assert session.get(PublishJournal, job_id).final_path == job.relative_path
+        assert session.get(MediaItem, job.item_id).planned_filename == "movie1.mp4"
+        next_final = config.download_root / job.relative_path
+    assert not next_final.exists()  # New collision path is committed before publication.
+    state.runtime.worker.recover(False)
+    assert state.tasks.detail(request_id)["status"] == "succeeded"
+    assert next_final.read_bytes() == b"abcdef"
+    assert final.read_bytes() == b"external"
+    assert final.with_name("movie1_2.mp4").read_bytes() == b"external2"
     state.runtime.worker.recover(False)
     assert state.tasks.detail(request_id)["status"] == "succeeded"
 

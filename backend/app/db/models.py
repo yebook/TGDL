@@ -80,6 +80,7 @@ class MediaRequest(Base):
     kind: Mapped[str] = mapped_column(default="single")
     group_key: Mapped[str | None]
     title: Mapped[str] = mapped_column(default="媒体下载")
+    name_override: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(default="collecting")
     created_at: Mapped[float] = mapped_column(default=time.time)
     updated_at: Mapped[float] = mapped_column(default=time.time)
@@ -92,6 +93,16 @@ class MediaRequest(Base):
     destination: Mapped[str] = mapped_column(default="")
     root_id: Mapped[str] = mapped_column(default="default")
     result_revision: Mapped[int] = mapped_column(default=0)
+
+
+class PendingMediaName(Base):
+    __tablename__ = "pending_media_names"
+    bot_id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int]
+    name: Mapped[str | None] = mapped_column(String(80))
+    expires_at: Mapped[float]
 
 
 class MediaItem(Base):

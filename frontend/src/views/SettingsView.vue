@@ -293,7 +293,7 @@ onMounted(load)
             </el-form-item>
           </div>
           <div class="storage-overview"><h3>存储空间</h3><div v-for="root in roots" :key="root.id" class="storage-row"><div><strong>{{ root.label }}</strong><p :class="root.available ? 'muted' : 'warning-text'">{{ root.message || (root.available ? '可用' : '不可用，请检查挂载和权限') }}</p></div><p>剩余 {{ bytes(root.free_bytes) }} / {{ bytes(root.total_bytes) }}</p></div><p class="field-hint">Telegram 缓存剩余 {{ bytes(liveSystem?.storage.cache.free_bytes ?? null) }} / {{ bytes(liveSystem?.storage.cache.total_bytes ?? null) }}。使用本地 API 下载时，缓存与保存目录均需足够空间。</p></div>
-          <details class="settings-details"><summary>文件归档规则</summary><div class="details-content"><p>单文件直接保存在日期目录（年-月-日）；同一媒体组另建文字摘要与短编号命名的目录，图片和视频放在一起。同名文件不会覆盖。</p></div></details>
+          <details class="settings-details"><summary>文件归档规则</summary><div class="details-content"><p>单文件直接保存在日期目录（年-月-日）；同一媒体组另建文字摘要或媒体名称目录，图片和视频放在一起。同名目录用数字区分，不附加任务编号。同名文件不会覆盖。</p></div></details>
         </section>
         <section v-show="section === 'templates'" class="panel settings-section">
           <div class="section-heading"><div><h2>提示与命名</h2><p class="muted">仅新生成的确认卡生效，已有卡片、任务和重试保留原计划。</p></div></div>
@@ -315,7 +315,7 @@ onMounted(load)
               <div class="template-editor">
                 <el-form-item label="保存文件名模板" label-for="filename-template" :error="examples.fileError">
                   <template #label><span class="setting-label">保存文件名模板<SettingsSource :source="settings.sources.filename_template" :editable="editable('filename_template')" /></span></template>
-                  <el-input id="filename-template" aria-label="保存文件名模板" v-model="form.filename_template" :disabled="!editable('filename_template')" /><p class="field-hint">1–160 个字符，只填名称。扩展名自动保留，归档目录不变。</p>
+                  <el-input id="filename-template" aria-label="保存文件名模板" v-model="form.filename_template" :disabled="!editable('filename_template')" /><p class="field-hint">1–160 个字符，只填名称。先用指定名称，否则保留原名，缺失时用消息标题；仅同名时追加数字。</p>
                 </el-form-item>
                 <el-button class="template-reset" :disabled="!editable('filename_template')" @click="form.filename_template = defaultFilenameTemplate">恢复默认文件名</el-button>
               </div>
@@ -323,7 +323,7 @@ onMounted(load)
             </div>
             <dl class="template-variables" aria-label="文件名变量"><div v-for="[key, description] in filenameVariables" :key="key"><dt><code>{{ '{' + key + '}' }}</code></dt><dd>{{ description }}</dd></div></dl>
           </div>
-          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：原文件名，缺失时用消息标题。</li><li><code v-text="'{date}_{name}'" />：收件日期与文件名称。</li><li><code v-text="'{date}_{type}_{index}'" />：日期、类型与序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。文件名优先使用原名，缺失时使用消息标题，再无标题则自动命名。同组共用消息标题；用标题命名的组内文件会加序号，模板已有序号变量时不重复添加。文件名会清理不支持的字符，过长时缩短；重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置。</p></div></details>
+          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：指定名称优先，否则用原文件名，缺失时用消息标题。</li><li><code v-text="'{date}_{name}'" />：收件日期与文件名称。</li><li><code v-text="'{date}_{type}_{index}'" />：主动使用日期、类型与顺序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。转发前暂存的指定名称优先；未指定时使用原名，缺失时使用消息标题，再无标题则按视频或图片类型自动命名。同组共用消息标题；完整文件名重名时才加 _2、_3 等数字，不重名的图片和视频无需序号。默认不附加编号，主动加入 ID 或顺序变量的模板仍按配置执行。文件名会清理不支持的字符，过长时缩短；重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置；已保存带编号的模板可通过恢复默认文件名后保存来替换。</p></div></details>
         </section>
 
         <section v-show="section === 'maintenance'" class="panel settings-section">

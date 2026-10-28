@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -82,15 +83,31 @@ def project(session: Session, request: MediaRequest) -> None:
         request.status, request.updated_at = state, time.time()
         if not any(s in ACTIVE for s in states):
             request.result_revision += 1
-            lines = [f"{status_label(state)}：{request.title}"]
+            headline = "✅ 下载完成" if state == "succeeded" else status_label(state)
+            lines = [f"{headline}：{request.title}"]
+            counts = [f"文件：{len(jobs)} 个"]
+            for outcome, label in (("succeeded", "已下载"), ("already_exists", "已保存，无需重复下载"),
+                                   ("failed", "失败"), ("cancelled", "取消")):
+                count = states.count(outcome)
+                if count:
+                    counts.append(f"{label} {count} 个")
+            lines.append(" · ".join(counts))
+            paths = [PurePosixPath(job.relative_path) for job in jobs]
+            common_parent = len({path.parent for path in paths}) == 1
+            if common_parent and any(s in {"succeeded", "already_exists"} for s in states):
+                lines.append(f"📁 保存到：{paths[0].parent}")
+            lines.append("文件清单：")
             for job in jobs:
-                line = f"{status_label(job.state)} · {job.relative_path}"
+                name = PurePosixPath(job.relative_path).name if common_parent else job.relative_path
+                label = {"succeeded": "✅", "already_exists": "📎 已保存", "failed": "❌ 失败",
+                         "cancelled": "🚫 已取消"}[job.state]
+                line = f"{label} {name}"
                 if job.state == "failed":
                     line += f"（{failure_hint(job.error_code)}）"
                 lines.append(line)
-            if state in {"failed", "partial_success"}:
+            if "failed" in states:
                 lines.append("请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。")
-            elif state == "cancelled":
+            elif "cancelled" in states:
                 lines.append("已保存的文件会保留。如需再次下载，请重新发送媒体。")
             enqueue(session, request, f"result:{request.id}:{request.result_revision}", "\n".join(lines))
 
@@ -167,13 +184,32 @@ class TaskService:
                     request.destination = self.destination(session, request, summary, settings.timezone)
                 # Conservative upper bound if send succeeds but its response is lost.
                 request.expires_at = time.time() + settings.confirmation_timeout_seconds
-                used: set[str] = set()
+                # Reserve other frozen plans and actual files before showing consent.
+                used = {name.casefold() for name in session.scalars(
+                    select(MediaItem.planned_filename).join(MediaRequest).where(
+                        MediaRequest.root_id == request.root_id, MediaRequest.destination == request.destination,
+                        MediaRequest.id != request.id, MediaItem.planned_filename.is_not(None))) if name}
+                root = self.settings.config.storage_roots[request.root_id]
+                prefix = request.destination + "/"
+                used.update(path[len(prefix):].split("/")[0].casefold() for path in session.scalars(
+                    select(MediaRequest.destination).where(
+                        MediaRequest.root_id == request.root_id, MediaRequest.id != request.id,
+                        MediaRequest.destination.startswith(prefix))))
+                try:
+                    folder = contained(root, request.destination + "/.tgd-name-check").parent
+                    used.update(path.name.casefold() for path in folder.iterdir())
+                except FileNotFoundError:
+                    pass
+                for path in session.scalars(select(Job.relative_path).where(Job.root_id == request.root_id)):
+                    parent, _, name = path.rpartition("/")
+                    if parent == request.destination:
+                        used.add(name.casefold())
                 lines = []
                 caption = request_caption(items)
                 for index, item in enumerate(items, start=1):
                     item.planned_filename = unique_name(planned_name(
                         item, request, settings.filename_template, settings.timezone, index, caption=caption), used)
-                    lines.append(f"{item.planned_filename} · {format_bytes(item.size_bytes)}")
+                    lines.append(f"{item.planned_filename}\n📦 文件大小：{format_bytes(item.size_bytes)}")
                 sizes = [item.size_bytes for item in items]
                 text = render_confirmation(settings.confirmation_template, {
                     "title": request.title, "destination": request.destination,
@@ -181,7 +217,7 @@ class TaskService:
                     "expires_in_minutes": f"{settings.confirmation_timeout_seconds / 60:.2f}".rstrip("0").rstrip("."),
                     "total_size": format_bytes(sum(s for s in sizes if s is not None)
                                                if all(s is not None for s in sizes) else None),
-                    "files": "\n".join(lines),
+                    "files": "\n\n".join(lines),
                 })
                 enqueue(session, request, f"confirm:{request.id}:{request.nonce}", text,
                         {"confirmation": True, "nonce": request.nonce})

@@ -540,7 +540,7 @@ test('custom Bot and filename templates preview, reject mistakes and persist off
   expect(saveRequests).toBe(0)
   expect(await (await page.request.get('/api/v1/settings')).json()).toEqual(saved)
   await page.getByRole('button', { name: '恢复默认文件名' }).click()
-  await expect(page.locator('#filename-template')).toHaveValue('{name}_{id}')
+  await expect(page.locator('#filename-template')).toHaveValue('{name}')
   const rules = page.locator('details').filter({ has: page.getByText('命名示例与模板规则', { exact: true }) })
   await expect(rules).not.toHaveAttribute('open', '')
   await rules.locator('summary').focus()

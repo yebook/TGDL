@@ -83,7 +83,7 @@ def test_status_translates_states_and_keeps_full_ids(client: TestClient) -> None
     (["failed", "failed"], "❌ 下载失败"),
     (["already_exists", "already_exists"], "✅ 文件已保存，无需重复下载"),
     (["cancelled", "cancelled"], "❌ 已取消"),
-    (["succeeded", "succeeded"], "✅ 下载成功"),
+    (["succeeded", "succeeded"], "✅ 下载完成"),
 ])
 def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClient, states: list[str], expected: str) -> None:
     state, _, request_id, payload = pending_request(client)
@@ -106,7 +106,6 @@ def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClien
     assert text.endswith(f"\n任务编号：{request_id}")
     assert "secret-raw-upstream-error" not in text
     for status in states:
-        assert STATUS_LABELS[status] in text
         assert status not in text
     if states[1] == "failed":
         assert "20 MB" in text and "切换本地 API" in text
