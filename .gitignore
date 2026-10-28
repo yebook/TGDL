@@ -5,6 +5,12 @@
 *.key
 *.pem
 
+# Local AI development tools and records
+/.agents/
+/.codex/
+/.trellis/
+/AGENTS.md
+
 # Python / tooling
 __pycache__/
 *.py[cod]

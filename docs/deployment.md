@@ -36,7 +36,6 @@ cd TGDL
 
 | 内容 | 删除后的影响 |
 | --- | --- |
-| `.codex`、`.agents`、`.trellis`、`AGENTS.md` | AI 辅助开发配置与记录，不参与镜像构建 |
 | `.github` | GitHub 仓库自动化配置，不影响本机运行 |
 | `docs/` | 文档站源码，可直接阅读在线文档 |
 | `scripts/` | 仓库开发与检查工具；不要误删 `deploy/` 内的运行脚本 |

@@ -3,9 +3,9 @@
 版本：v1.0（首版需求已确认）
 日期：2026-10-19  
 技术设计补充：2026-10-20  
-状态：产品需求已确认，可进入技术设计；尚未开始产品编码，技术候选与验证事项另行标注。
+状态：首版需求的历史记录，包含后续确认的需求补充；不作为当前部署与操作指南。
 
-后续规划：[技术设计](../.trellis/tasks/10-19-telegram-media-downloader/design.md)、[实施与验证计划](../.trellis/tasks/10-19-telegram-media-downloader/implement.md)。产品需求已确认，技术方案待最终评审。
+当前部署、使用和维护方法请以[文档站](https://yebook.github.io/TGDL/)为准；已执行的检查与尚待完成的真实环境验证见[验证说明](https://yebook.github.io/TGDL/verification.html)。
 
 ## 1. 项目定位与目标
 
