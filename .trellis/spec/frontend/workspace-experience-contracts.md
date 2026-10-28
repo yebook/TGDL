@@ -17,6 +17,20 @@ The app exposes tasks/settings only. One authenticated shared `GET /api/v1/syste
 - Status and account/password/logout controls share the topmost workspace bar. Do not repeat page titles in this bar or the task/settings page body; retain section headings and task/form actions. Display free capacity without the storage label, still resolved from selected_root_id. Numeric product version and changelog link live at the sidebar bottom-left, with a compact accessible mobile placement.
 - The top bar also shows proxy application state from the same status response: disabled means direct connection; active means proxy configuration applied, not verified Telegram connectivity. Pending/applying/failure/unavailable stay distinct, stale data is explicitly historical, and proxy addresses or credentials are not displayed there. Rendering this indicator never triggers a network probe.
 - Present current applied API mode and its observed service state separately from Bot identity and request state. During a transition identify the target without claiming it is already applied. Display only the current response's Bot username (or an explicit unknown/unconfigured placeholder); do not retain an old username across token changes. Local process running/cached identity never implies upstream Telegram health. Cloud/local unknown, failure, protection pause and stale states must remain explicit without additional probes.
+- `connectionSummary(api, bot, stale)` in `api/systemSummary.ts` is the shared
+  connection presentation for topbar and settings; `telegramSummary` delegates
+  to it. Both views apply identical lifecycle/protection/current-mode priorities.
+  Use target-aware `localApiPhaseLabel` for full phase text: cloud return stops
+  the local process, local selection starts it, and cloud reconnect must not
+  claim to start a local API. Preserve the separate saved-target/applied-mode rows.
+- Normal draining/logout/start/verify/cooldown phases are progress, not entries
+  in the actionable fault list. Retain failed/blocked/uncertain logout, current
+  protection, storage and real Bot transport faults. An unused local supervisor
+  stopped or waiting for credentials in cloud mode is not a cloud Bot fault.
+- A successful target verification can precede consumer publication: show the
+  applied API with Bot connecting during that gap. Restored current verified
+  identity after actual successful polling must clear the former unknown-name
+  display in both views; never infer readiness by retaining an old response.
 - For draining, use required `local_api.drain_reason`: downloads shows download waiting; connection or unknown/null shows preparation, never infer from queued counts or translated message strings. Keep the full server explanation in service details. Use coherent neutral text, subtle status markers and a muted fine-line refresh control instead of isolated bright icon styling.
 - External local API process management being unavailable is not an upstream connection failure: project managed-process failures only when the management component is enabled. Actual Bot connectivity and transitions remain visible independently.
 - One status poller preserves last good data on background failure, explicitly marks stale and disables stale actions. Logout/unmount aborts it and clears the session debug toggle. Mutations patch current status without allowing older poll revisions to undo saved state. Never fetch/clear logs or invoke recovery merely to render status.
@@ -52,6 +66,9 @@ Good: user sees a connection problem at top and opens connection settings to rec
 Unit tests cover status summary priority/staleness/cloud-unused-local and shared helpers. Desktop/mobile browser cases use actual isolated APIs: no system link, persistent status on both pages, section/debug/refresh input preservation, independent save/validation, conflict/navigation, moved recovery/protection/log/backup actions, stable task polling and reachable final fields/save controls. Do not invent success responses or use live credentials.
 
 Failure coverage must include hanging fetch/body and cancellation, failed status followed by resync, committed PATCH with lost response, preserved ordinary/secret drafts, and failed retry with dirty input using saved configuration only.
+Connection presentation coverage includes identical panel/topbar transition,
+terminal, protection and stale labels, target-aware process start/stop, ordinary
+cloud mode without a local-process alarm, and transient failure/identity recovery.
 
 ## 7. Wrong vs Correct
 

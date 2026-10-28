@@ -14,13 +14,9 @@ Use canonical metadata for backend and documentation builds. Ship it inside appl
 
 Use0.1.1 for fixes,0.2.0 for meaningful features,1.0.0 for first formal release; no alpha/beta/dev suffix. A numeric0.1.0 does not claim a formal release. Root CHANGELOG is the authoritative update record, with unreleased and honestly dated numeric entries. Site renders the same content. Do not invent historical tags/releases or automatically publish them.
 
-Image distribution exception authorized 2026-10-23: a separate main-only manual
-workflow may publish production images; Pages stays independent and NAS is not
-automatically deployed. Publication is currently paused; shared Compose fixed
-local source tags are owned version mirrors, with no remote env examples. Full-commit
-and digest identities identify builds without adding English stage labels to the
-numeric product version. Numeric image tags require deliberate publication and
-must not silently overwrite existing releases. See build-distribution contracts.
+Shared Compose fixed local source tags are owned version mirrors. Source-only
+deployment has no image publication workflow. Pages stays independent.
+See build-distribution contracts.
 
 ## 4. Validation & Error Matrix
 

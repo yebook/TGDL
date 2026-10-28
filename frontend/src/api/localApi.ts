@@ -22,8 +22,13 @@ export const localApiStates: Record<LocalApiStatus['state'], string> = {
   running: '进程运行中', stopping: '正在停止', failed: '进程异常',
 }
 export const localApiPhases: Record<LocalApiStatus['phase'], string> = {
-  idle: '无进行中的操作', draining: '正在准备切换连接', logging_out: '正在退出云端', starting: '正在启动本地 API',
+  idle: '无进行中的操作', draining: '正在准备切换连接', logging_out: '正在退出云端', starting: '正在应用 API 服务配置',
   verifying: '正在验证 Bot 连接', cooldown: '等待云端冷却', blocked: '操作受阻', logout_uncertain: '云端退出结果待确认', failed: '操作失败',
+}
+export function localApiPhaseLabel(status: LocalApiStatus): string {
+  if (status.phase === 'starting') return status.desired_mode === 'cloud' ? '正在停止本地 API' : '正在启动本地 API'
+  if (status.phase === 'draining' && status.drain_reason === 'downloads') return '等待下载结束'
+  return localApiPhases[status.phase]
 }
 export function localApiTone(status: LocalApiStatus): 'success' | 'warning' | 'danger' | 'info' {
   if (['failed', 'logout_uncertain', 'blocked'].includes(status.phase) || status.state === 'failed') return 'danger'

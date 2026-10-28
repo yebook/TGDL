@@ -23,6 +23,7 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 
 MAX_BYTES = 8192
+HEARTBEAT_INTERVAL = 5.0  # Remains well inside the application's 15-second stale limit.
 FIELDS = {
     "version", "command_id", "action", "credential_revision", "api_id", "api_hash_encrypted",
     "proxy_encrypted", "proxy_signature",
@@ -135,6 +136,8 @@ class Supervisor:
         self.failures = 0
         self.active_credentials: bytes | None = None
         self.latest_revision = -1
+        self.published_state: dict[str, Any] | None = None
+        self.published_at = 0.0
 
     def publish(self) -> None:
         value = {
@@ -143,9 +146,15 @@ class Supervisor:
             "credential_revision": self.desired.credential_revision if self.desired else 0,
             "proxy_signature": self.desired.proxy_signature if self.desired and self.state in ('starting', 'running') else None,
             "state": self.state, "generation": self.generation,
-            "heartbeat_at": time.time(), "error_code": self.error_code,
+            "error_code": self.error_code,
         }
-        atomic_write(self.shared / "applied.json", json.dumps(value, separators=(",", ":")).encode())
+        now = time.monotonic()
+        if value == self.published_state and now - self.published_at < HEARTBEAT_INTERVAL:
+            return
+        atomic_write(self.shared / "applied.json", json.dumps(
+            value | {"heartbeat_at": time.time()}, separators=(",", ":")).encode())
+        # Only successful writes count; an I/O failure must retry on the next tick.
+        self.published_state, self.published_at = value, now
 
     def stop_process(self) -> None:
         if self.process is None:

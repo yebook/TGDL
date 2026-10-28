@@ -28,7 +28,6 @@ test-results/
 
 # Runtime state and downloads
 .runtime/
-/deployment-bundle/
 data/
 downloads/
 /bot-api/

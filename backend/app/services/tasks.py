@@ -124,6 +124,17 @@ class TaskService:
         return f"{date:%Y-%m-%d}"
 
     def freeze_due(self) -> None:
+        # Most ticks are idle. Avoid a write reservation and decrypting settings
+        # unless there is work; recheck the full conditions in the transaction.
+        now = time.time()
+        with self.db.sessions() as session:
+            due = session.scalar(select(MediaRequest.id).where(
+                MediaRequest.deleted_at.is_(None), or_(
+                    (MediaRequest.status == "collecting") & (MediaRequest.collect_until <= now),
+                    (MediaRequest.status == "awaiting_confirmation") & (MediaRequest.expires_at < now),
+                )).limit(1))
+        if due is None:
+            return
         revision, settings, _ = self.settings.read()
         with self.db.transaction() as session:
             now = time.time()
@@ -207,10 +218,16 @@ class TaskService:
             enqueue(session, request, f"queued:{request.id}", f"已加入下载队列：{request.title}")
             return "queued"
 
-    def _dto(self, session: Session, request: MediaRequest, detail: bool = False) -> dict[str, Any]:
-        items = list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
-        jobs = {j.item_id: j for j in session.scalars(select(Job).where(Job.request_id == request.id))}
-        notifications = list(session.scalars(select(Notification).where(Notification.request_id == request.id)))
+    def _dto(self, session: Session, request: MediaRequest, detail: bool = False, *,
+             related: tuple[list[MediaItem], list[Job], list[Notification]] | None = None) -> dict[str, Any]:
+        if related is None:
+            related = (
+                list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id))),
+                list(session.scalars(select(Job).where(Job.request_id == request.id))),
+                list(session.scalars(select(Notification).where(Notification.request_id == request.id))),
+            )
+        items, job_rows, notifications = related
+        jobs = {j.item_id: j for j in job_rows}
         notification_status = "failed" if any(n.state == "failed" for n in notifications) else (
             "pending" if any(n.state == "pending" for n in notifications) else "sent")
         sizes = [i.size_bytes for i in items]
@@ -257,8 +274,21 @@ class TaskService:
                 query = query.where(or_(MediaRequest.title.contains(q, autoescape=True),
                                         MediaRequest.id.contains(q, autoescape=True)))
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
-            rows = session.scalars(query.order_by(MediaRequest.created_at.desc()).offset((page-1)*page_size).limit(page_size))
-            return {"items": [self._dto(session, row) for row in rows], "total": total, "page": page, "page_size": page_size}
+            rows = list(session.scalars(query.order_by(MediaRequest.created_at.desc()).offset((page-1)*page_size).limit(page_size)))
+            related: dict[str, tuple[list[MediaItem], list[Job], list[Notification]]] = {
+                row.id: ([], [], []) for row in rows
+            }
+            if rows:
+                ids = list(related)
+                for item in session.scalars(select(MediaItem).where(MediaItem.request_id.in_(ids)).order_by(MediaItem.message_id)):
+                    related[item.request_id][0].append(item)
+                for job in session.scalars(select(Job).where(Job.request_id.in_(ids))):
+                    related[job.request_id][1].append(job)
+                for notification in session.scalars(select(Notification).where(Notification.request_id.in_(ids))):
+                    assert notification.request_id is not None
+                    related[notification.request_id][2].append(notification)
+            return {"items": [self._dto(session, row, related=related[row.id]) for row in rows],
+                    "total": total, "page": page, "page_size": page_size}
 
     def detail(self, request_id: str) -> dict[str, Any]:
         with self.db.sessions() as session:

@@ -372,7 +372,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
     def system_status() -> dict[str, Any]:
-        revision, values, _ = settings.read()
+        values, bot, api, proxy = runtime.connection_snapshot()
         roots = []
         for root_id, root in storage.roots.items():
             try:
@@ -387,15 +387,11 @@ def create_app(config: Config | None = None) -> FastAPI:
         except OSError:
             pass
         active, blocked, pending = runtime.counts()
-        safety = runtime.safety.status(values.bot_token)
-        bot = dict(runtime.bot_status) | {"request_safety": safety}
-        if safety["state"] != "ready":
-            bot.update(state="error", message=safety["message"])
         return {"version": VERSION,
                 "diagnostic_log": runtime.diagnostics.status(), "bot": bot,
-                "local_api": runtime.local_api.status(),
+                "local_api": api,
                 "storage": {"selected_root_id": values.download_root_id, "roots": roots, "cache": cache},
-                "proxy": settings.proxy_status(revision, values),
+                "proxy": proxy,
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}
 

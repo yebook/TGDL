@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { systemIssues, telegramSummary } from '../src/api/systemSummary'
+import { connectionSummary, systemIssues, telegramSummary } from '../src/api/systemSummary'
+import { localApiPhaseLabel } from '../src/api/localApi'
 import type { SystemStatus } from '../src/api/types'
 
 function status(): SystemStatus {
@@ -11,6 +12,35 @@ function status(): SystemStatus {
   }
 }
 describe('persistent user status', () => {
+  it('uses the same saved-connection presentation for panel and topbar through recovery', () => {
+    const data = status()
+    for (const phase of ['draining', 'starting', 'verifying', 'failed', 'logout_uncertain', 'idle'] as const) {
+      data.local_api.phase = phase
+      expect(connectionSummary(data.local_api, data.bot)).toEqual(telegramSummary(data, false))
+    }
+    data.bot.state = 'error'
+    expect(connectionSummary(data.local_api, data.bot).botState).toBe('连接异常')
+    data.bot.state = 'online'
+    expect(connectionSummary(data.local_api, data.bot)).toMatchObject({ identity: '@fixture_bot', botState: '已就绪' })
+    expect(connectionSummary(data.local_api, data.bot, true).botState).toBe('待更新')
+  })
+  it('describes cloud-target start as stopping the local process, not starting it', () => {
+    const data = status()
+    data.local_api.phase = 'starting'
+    expect(localApiPhaseLabel(data.local_api)).toBe('正在停止本地 API')
+    expect(telegramSummary(data, false).apiState).toBe('停止本地中')
+    data.local_api.desired_mode = 'local'
+    expect(localApiPhaseLabel(data.local_api)).toBe('正在启动本地 API')
+    expect(telegramSummary(data, false).apiState).toBe('启动本地中')
+  })
+  it('shows an operation failure without duplicating a stale transport alarm', () => {
+    const data = status()
+    data.local_api.phase = 'failed'
+    data.local_api.message = '切换失败，请重试'
+    data.bot.state = 'error'; data.bot.message = '旧连接异常'
+    expect(systemIssues(data)).toEqual(['切换失败，请重试'])
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '操作失败', botState: '接收暂停' })
+  })
   it('separates known cloud API response from identified Bot readiness', () => {
     expect(telegramSummary(status(), false)).toMatchObject({ apiType: '云端', apiState: '可响应', apiTone: 'success', identity: '@fixture_bot', botState: '已就绪' })
   })
@@ -34,9 +64,25 @@ describe('persistent user status', () => {
     data.local_api.drain_reason = 'downloads'
     expect(telegramSummary(data, false).apiState).toBe('等待下载结束')
     data.local_api.message = '等待当前下载完成后切换连接'
-    expect(systemIssues(data)).toContain('等待当前下载完成后切换连接')
+    expect(systemIssues(data)).not.toContain('等待当前下载完成后切换连接')
     data.local_api.phase = 'logout_uncertain'
     expect(telegramSummary(data, false)).toMatchObject({ apiState: '退出待确认', apiTone: 'danger' })
+  })
+  it('shows routine switching as progress while preserving recovery alarms', () => {
+    const data = status()
+    data.local_api.desired_mode = 'local'
+    data.storage.cache.free_bytes = 100
+    for (const phase of ['draining', 'logging_out', 'starting', 'verifying', 'cooldown'] as const) {
+      data.local_api.phase = phase
+      data.local_api.message = '正常切换进度'
+      expect(systemIssues(data)).toEqual([])
+      expect(telegramSummary(data, false).apiTone).toBe('warning')
+    }
+    for (const phase of ['failed', 'blocked', 'logout_uncertain'] as const) {
+      data.local_api.phase = phase
+      data.local_api.message = '需要处理的操作'
+      expect(systemIssues(data)).toEqual(['需要处理的操作'])
+    }
   })
   it('shows protection before readiness without diagnosing the API as down', () => {
     const data = status()

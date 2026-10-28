@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
-import type { DownloadProgress } from '../src/api/types'
+import type { DownloadProgress, SystemStatus } from '../src/api/types'
 
 async function login(page: Page) {
   await page.goto('/')
@@ -17,6 +17,49 @@ async function settings(page: Page) {
 
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }]) {
+  test(`connection presentation stays coherent through switch and recovery at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    // Explicit display fixture; actual login/settings use the isolated backend.
+    // This verifies presentation only, not Telegram connectivity.
+    await page.setViewportSize(viewport)
+    await login(page)
+    const observed: SystemStatus = await (await page.request.get('/api/v1/system/status')).json()
+    observed.bot = { state: 'online', username: 'display_fixture_bot', message: '', request_safety: { state: 'ready', retry_at: null, message: '', can_retry: false } }
+    observed.local_api = { ...observed.local_api, managed: true, applied_mode: 'cloud', desired_mode: 'local', phase: 'draining', state: 'stopped', message: '正在准备切换连接', drain_reason: 'connection' }
+    observed.proxy.state = 'disabled'
+    observed.storage.cache.free_bytes = 1000
+    await page.route('**/api/v1/system/status', route => route.fulfill({ json: observed }))
+    await settings(page)
+    const panel = page.getByTestId('local-api-status')
+    const api = page.getByTestId('top-api-status')
+    const bot = page.getByTestId('top-bot-status')
+    const refresh = async () => {
+      const received = page.waitForResponse(response => response.url().endsWith('/system/status'))
+      await page.getByRole('button', { name: '刷新状态', exact: true }).click()
+      await received
+    }
+    await refresh()
+    await expect(api).toContainText('云端 → 本地')
+    await expect(api).toContainText('准备切换')
+    await expect(panel).toContainText('接收暂停')
+    await expect(page.locator('.status-issues')).toHaveCount(0)
+    observed.local_api.phase = 'failed'
+    observed.local_api.message = '切换失败，请重试'
+    await refresh()
+    await expect(api).toContainText('操作失败')
+    await expect(panel).toContainText('操作失败')
+    await expect(page.locator('.status-issues')).toContainText('切换失败，请重试')
+    observed.local_api = { ...observed.local_api, desired_mode: 'cloud', applied_mode: 'cloud', phase: 'idle', state: 'stopped', message: '' }
+    await refresh()
+    await expect(api).toContainText('可响应')
+    await expect(bot).toContainText('@display_fixture_bot')
+    await expect(bot).toContainText('已就绪')
+    await expect(panel).toContainText('已就绪')
+    await expect(page.locator('.status-issues')).toHaveCount(0)
+    await noOverflow(page)
+  })
 }
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }, { width: 390, height: 844 }]) {

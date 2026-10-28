@@ -1,10 +1,10 @@
-# Build and image distribution
+# Source builds and native artifacts
 
 ## 1. Scope / Trigger
 
 Read for production Dockerfiles, Compose image/source deployment, package caches,
-image release automation and distribution docs. User authorized this scope on
-2026-10-23; Pages remains independent. No automatic NAS deployment is authorized.
+native prebuilt artifacts and deployment docs. Remote product-image tooling was
+removed on 2026-10-27. Pages remains independent. No automatic NAS deployment is authorized.
 
 ## 2. Signatures
 
@@ -21,26 +21,18 @@ image release automation and distribution docs. User authorized this scope on
   Do not assume Compose `--dry-run up` is side-effect free: actual Buildx builds
   occurred under the tested Compose version. Use isolated tags and paths even
   for a dry-run, and restore any test-only tag changes afterward.
-  Do not assume Compose `--dry-run up` is side-effect free: actual Buildx builds
-  occurred under the tested Compose version. Use isolated tags and paths even
-  for a dry-run, and restore any test-only tag changes afterward.
 - `TGD_BUILD_JOBS`: source-only compilation setting, integer 1..64, default 2;
   unrelated to application download concurrency.
 - Independent `native` target: compiled Bot API/TDLib, runtime libraries and
   licenses, without supervisor/init scripts or numeric product label.
-  `TGD_NATIVE_IMAGE` selects a trusted precompiled base by digest for runtime
-  packaging; default `bundled-native` uses the checked-in linux/amd64 archive.
+  `TGD_NATIVE_IMAGE` defaults to the local `bundled-native` stage, which uses
+  the checked-in linux/amd64 archive.
   Explicit `native` remains the complete C++ source-build target.
 - `deploy/bot-api/prebuilt/linux-amd64.tar.gz` and `manifest.json`: ordinary Git
   files containing the linked Bot API/TDLib binary, licenses and provenance.
   `python scripts/bundle_native.py --image <fresh-native-image>` regenerates both.
-- Image workflow: temporarily disabled; publisher and bundle entrypoints fail
-  before registry access. Pages remains independent and enabled. The following
-  registry contracts describe dormant internal tooling, not available deployment.
-- Docker Hub secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (read/write),
-  with public `tgdl-app` and `tgdl-bot-api` repositories only.
-  GHCR remains authenticated build/cache storage. Mirror the same manifests,
-  never perform duplicate native compilation per registry.
+- Only the documentation Pages workflow remains. No remote application/API
+  publication, registry credentials, deployment bundles or disabled publisher stubs.
 
 ## 3. Contracts
 
@@ -52,23 +44,17 @@ patched API. Preserve native patch source verification, licenses, proxy/progress
 cleanup behavior and supervisor protocol. Runtime scripts remain isolated from
 expensive native compile layers. Caches never include runtime data or credentials.
 
-Publish only the application and final API images. Never build, inspect, alias,
-mirror or require anonymous access to a separate native image repository.
-API builds directly consume bundled-native and reuse final API content artifacts.
 Native source identity excludes management scripts, product-version-only runtime
 labels and application code; includes source pins, patches/headers, toolchain and
-native dependency setup, platform and all native-target build inputs. API keys
-additionally bind actual checked-in bundle bytes and runtime scripts. Record
-native source/artifact identities in deployment metadata instead of a third
-image reference. Avoid native compilation on ordinary app/supervisor updates.
+native dependency setup, platform and all native-target build inputs. Checked-in
+bundle manifests bind actual archive/member bytes to native inputs. Avoid native
+compilation on ordinary app/supervisor updates.
 
 Source deployment must work without a published native image or a surviving
 compiler cache: use the checked-in native bundle by default. Missing, corrupt,
 unsupported or source-mismatched bundles fail clearly; never silently compile
 or relabel a stale binary. Pin source identity separately from concrete artifact
-identity. Publisher cache keys also bind actual bundled bytes and validate the
-local bundle even when a registry artifact exists, so changed/corrupt prebuilts
-cannot be hidden by a source-only cache hit.
+identity. Always verify bundle bytes against the manifest before extraction.
 
 Bundle deterministic archive bytes with explicit safe modes and the upstream
 licenses. Validate archive and member checksums, exact allowed file paths,
@@ -120,7 +106,7 @@ app.main, while production startup continues to use uvicorn's application path.
 Freshness is enforced, not inferred from tag names: native artifacts carry
 versioned provenance with exact Bot API/TDLib source pins and native input
 fingerprint. One shared standard-library helper under `deploy/bot-api/` computes
-the identity for publication and Docker builds. Native packaging records it;
+the identity for local artifact generation and Docker builds. Native packaging records it;
 runtime packaging recomputes the expected identity and refuses missing or
 mismatched metadata before accepting an external base. Source builds use the
 same check. Pin and verify the actual upstream TDLib submodule revision before
@@ -132,25 +118,9 @@ identity distinguishes target architecture and compiler/source context. Retain
 late-patch incremental reuse unless an actual measured improvement justifies
 restructuring. Mutable cache mounts are not assumed to export via layer cache.
 
-Manual image publication uses least-privilege scoped GHCR permissions, pinned
-actions, no workflow on untrusted pull requests, no shell interpolation of
-untrusted input, and independent app/API caches. Native reuse keys cover every
-actual API build input. Existing immutable tags cannot silently change meaning.
-No actual published image or speedup may be claimed from local configuration
-validation. Arm64 requires real architecture-specific build/smoke evidence.
-
-Check immutable alias conflicts in both registries before expensive builds.
-Copy complete manifest indexes and attestations without changing digests;
-interrupted copies must remain safely retryable. Actual production-image
-permission checks and offline smoke precede release aliases. Anonymous Docker
-Hub manifest pulls for app/API are required before publication succeeds.
-Deployment bundle creation is currently blocked at its public entrypoint.
-Dormant registry helpers retain manifest/digest safety for future restoration,
-but current Compose cannot deploy remote product images. Source startup must
-not query remote application/API repositories; base image/package network
-access remains necessary.
-Never print Docker Hub Tokens or require deployment-host credentials for public
-Docker Hub pulls. Neither image publication nor Pages updates deployed containers.
+Source startup does not query remote application/API repositories; base-image
+and package downloads remain necessary. Arm64 requires architecture-specific
+build and smoke evidence. Pages never updates deployed containers.
 
 ## 4. Validation & Error Matrix
 
@@ -158,40 +128,30 @@ Docker Hub pulls. Neither image publication nor Pages updates deployed container
 | --- | --- |
 | Configuration-only change | `up -d --no-build`, recreate containers without compiling |
 | Source startup with default env | Ordinary `up -d` builds fixed local source tags; no remote production-image lookup |
-| Remote image/pull-policy variables set | Ignored by fixed Compose; cannot select remote product images |
-| Publication or deployment bundle request | Fail before registry access while source-only mode is active |
 | App-only source edit | Build app only; keep API artifact unchanged |
 | Management script edit | Repackage API using the same precompiled native base |
 | Bundled native artifact valid, builder cache empty | Extract verified bundle; never compile TDLib as runtime dependency |
 | Native source/patch/toolchain/dependency change | Build a new native input artifact |
 | Explicit old/unversioned native base | Reject mismatched or missing native provenance; do not package stale binaries |
 | Invalid compile concurrency | Fail before compilation |
-| First GHCR publication not complete | Explain prerequisite and working source fallback |
-| Non-main workflow invocation | Refuse publication |
-| Existing numeric release tag | Refuse replacement |
-| Unchanged API inputs | Reuse verified final API content artifact |
 | Runtime secrets or user data | Never copied into build context/artifacts/cache |
 
 ## 5. Good / Base / Bad Cases
 
 Good: fixed source tags build current code, initialization consumes the newly built API image.
 Base: default 2 compiler jobs and warm dependency/native caches.
-Bad: download-directory edit triggers TDLib compilation; publishing a new app
-silently replaces a numeric API tag; docs present unavailable images as deployed.
+Bad: a download-directory edit triggers TDLib compilation or docs present unavailable images as deployed.
 
 ## 6. Tests Required
 
-Quiet Compose checks for fixed local source references, ignored remote variables and zero/mixed
-runtime identity; version tooling preservation and drift tests; build argument
-validation; actual isolated package-cache install and runtime source checks where
-possible. Review workflow permissions, main gate, tag collision/retry behavior,
-content input hash and exact deployment image pair. Document unexecuted hosted
-build/publication and native cold compile separately from passing local checks.
+Quiet Compose checks cover fixed local source references and zero/mixed runtime
+identity. Version tooling preservation/drift, build arguments, native input drift,
+manifest provenance, archive safety and checksum checks remain required.
 Parse actual Compose configuration and source build plan; assert distinct local
 source tags, exactly two image builds, API/init image equality, build policy for
-app/API and never policy for init, and bundled-native. Assert publication and
-bundle entrypoints reject before registry calls; exercise real full source up
-using fresh isolated paths and test port without credentials.
+app/API and never policy for init, and bundled-native. For lifecycle changes,
+exercise full source up using isolated paths and port without credentials.
+Removal of publication tooling alone needs no container rebuild/native compile.
 Docs build validates current code blocks and links. No live Telegram or current
 deployment/data mutations are needed.
 

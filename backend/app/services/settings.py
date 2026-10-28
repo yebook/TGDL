@@ -19,6 +19,10 @@ class SettingsService:
         # Single runtime process: serialize short configuration/identity publication
         # sections. Always acquire before a write transaction, never around network I/O.
         self.connection_publication_lock = RLock()
+        self._read_lock = RLock()
+        self._decoded_key: tuple[Any, ...] | None = None
+        self._decoded: tuple[int, UserSettings, dict[str, str]] | None = None
+        self._read_query = select(Settings.revision, Settings.values).where(Settings.id == 1)
         self.cloud_applied_signature = ""
         with self.connection_publication_lock, self.db.transaction() as session:
             row = session.get(Settings, 1)
@@ -32,10 +36,26 @@ class SettingsService:
                                  sort_keys=True))
 
     def read(self) -> tuple[int, UserSettings, dict[str, str]]:
-        with self.db.sessions() as session:
-            row = session.get(Settings, 1)
+        # Always read current persisted values. Only decoding/validation is reused;
+        # revisions, environment changes and even same-revision writes invalidate it.
+        # Serialize cache publication so concurrent readers cannot publish older data
+        # after a newer read. This lock is never held across network or a write txn.
+        with self._read_lock:
+            return self._read_current()
+
+    def _read_current(self) -> tuple[int, UserSettings, dict[str, str]]:
+        with self.db.engine.connect() as connection:
+            row = connection.execute(self._read_query).one()
             assert row
-            revision, stored = row.revision, dict(row.values)
+            revision, stored = row[0], row[1]
+        environment = {key: os.getenv("TGD_" + key.upper()) for key in UserSettings.model_fields
+                       if key not in {"telegram_api_id", "telegram_api_hash"}}
+        key = (revision, stored, environment)
+        if key == self._decoded_key and self._decoded is not None:
+            cached_revision, cached_values, cached_sources = self._decoded
+            return cached_revision, cached_values.model_copy(deep=True), dict(cached_sources)
+        # Do not mutate encrypted data retained in the cache key.
+        stored = dict(stored)
         if stored.get("bot_token"):
             stored["bot_token"] = self.secrets.decrypt(stored["bot_token"])
         if stored.get("telegram_api_hash"):
@@ -48,16 +68,20 @@ class SettingsService:
         for key in values:
             if key in {"telegram_api_id", "telegram_api_hash"}:
                 continue  # Application credentials are managed exclusively in WebUI.
-            env = os.getenv("TGD_" + key.upper())
+            env = environment[key]
             if env is not None:
                 values[key] = json.loads(env) if key in {
                     "confirmation_timeout_seconds", "download_concurrency", "max_auto_retries", "allowed_user_ids", "proxy",
                     "diagnostic_log_retention_days"
                 } else env
                 sources[key] = "environment"
-        return revision, UserSettings.model_validate(values), sources
+        validated = UserSettings.model_validate(values)
+        self._decoded_key = (revision, row[1], environment)
+        self._decoded = (revision, validated, sources)
+        return revision, validated.model_copy(deep=True), dict(sources)
 
-    def proxy_status(self, revision: int, values: UserSettings) -> dict[str, Any]:
+    def proxy_status(self, revision: int, values: UserSettings, *, applied: dict[str, Any] | None = None,
+                     runtime_state: dict[str, Any] | None = None) -> dict[str, Any]:
         if values.bot_api_mode == "cloud":
             active = self.cloud_applied_signature == self.client_signature(values)
             return {"state": "disabled" if not values.proxy.enabled else "active" if active else "pending",
@@ -68,10 +92,11 @@ class SettingsService:
                     "applied_revision": None, "message": "代理需要标准部署中的受管本地 API" if values.proxy.enabled else ""}
         from app.db.models import LocalApiRuntime
         from app.services.local_api import supervisor_status
-        applied = supervisor_status(self.config)
-        with self.db.sessions() as session:
-            row = session.get(LocalApiRuntime, 1)
-            runtime_state = dict(row.values) if row else {}
+        applied = supervisor_status(self.config) if applied is None else applied
+        if runtime_state is None:
+            with self.db.sessions() as session:
+                row = session.get(LocalApiRuntime, 1)
+                runtime_state = dict(row.values) if row else {}
         expected_command = runtime_state.get("command_id") or runtime_state.get("applied_command_id")
         expected_revision = runtime_state.get("credential_revision") if runtime_state.get("command_id") else runtime_state.get("applied_credential_revision")
         signature = self.proxy_signature(values)

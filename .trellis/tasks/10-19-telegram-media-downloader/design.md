@@ -403,3 +403,58 @@ Use a durable cleanup queue, created in the same transaction as successful local
 When eligible cleanup is due, the runtime pauses new local claims, waits for all local owners/durable uncertain acquisitions, then runs a bounded cleanup batch under the existing connection barrier. Resume normal dispatch after completion or bounded backoff; failures never downgrade succeeded jobs or consume download retries. Cleanup uses current verified Bot and fresh matching child generation, and must not bypass transition barriers. Native per-file deletion ownership protects late responses/HTTP timeouts against new getFile.
 
 Private local-only tgdDeleteFileCache POST accepts file_id, expected_path, generation and expected_size. It requires an already existing authorized Client, exact generation, offline getRemoteFile resolution, exact expected path and size, can_be_deleted, no active download/upload/listeners, then TDLib deleteFile. A per-native-file gate rejects new getFile until deletion finishes. Reply result contains generation and status=deleted|absent only after original expected path is absent; no raw paths/IDs/errors in response. Errors preserve queue with bounded backoff and sanitized diagnostic. No cloud API call or request-safety mutation. Research lives under research/.
+
+# Idle CPU efficiency increment (2026-10-27)
+
+Keep the 0.5-second scheduling cadence. Add a read-only due-work probe before freeze_due reserves a write transaction and decrypts configuration. Keep full transactional rechecks for actual work. Aggregate indexed active/pending counts once; avoid dispatch-only verification and empty claims without pending work, while continuing transition reconciliation, grouping, generation recovery and independent cache cleanup. Preserve all ownership/safety checks for actual dispatch and cleanup.
+
+Generation markers are persisted only on initialization/change, preserving owner-drain recovery. Supervisor status changes remain immediate; unchanged heartbeat publication is coalesced to five monotonic seconds with successful-write caching, within the unchanged fifteen-second freshness window. No SDK/native changes, scheduling backoff, data migration or live Telegram test.
+
+User local-mode observations: app2.67% CPU/207MB, bot-api1.85% CPU/35MB. This increment targets CPU only. Local Docker is unavailable; compare offline query/write counts and report actual-host CPU acceptance as outstanding.
+
+Idle notification follow-up: a fresh read-only due-outbox probe runs after transition/client gates, before send-only settings/proxy/generation checks. No Bot filter or negative cache: stale foreign-Bot messages still reach the unchanged authoritative transaction and become obsolete; newly due messages are considered on the next original 0.5-second iteration.
+# Idle read processing reduction (2026-10-28)
+
+Retain fresh settings and local-runtime database reads at every existing authority
+boundary. Read singleton scalar columns through SQLAlchemy Core rather than
+constructing ORM sessions/entities. A bounded one-entry settings cache reuses
+only decryption and validated materialization, keyed by the freshly observed
+revision, complete encrypted stored values and effective environment overrides.
+Same-revision external writes also invalidate it. Serialize read/cache publication
+with a separate short lock; return deep model copies and copied source maps.
+No negative-work or operational transition/generation state is cached. Saves and
+backup restoration need no asynchronous invalidation: their next read sees the
+new row immediately. Invalid decoding/validation never replaces the cache.
+
+Task pages load media, jobs and notifications once each for only the selected
+request IDs, then use the same DTO projection as detail/individual queries.
+Keep filters, pagination, hidden deleted records, notification precedence and all
+progress/status/delete semantics. Nonempty pages use five service SELECTs,
+seven including authentication; empty pages retain two/four. Scheduler and WebUI
+refresh cadence, SDK/native code, storage safety and network traffic are unchanged.
+
+# API switching status coherence (2026-10-28)
+
+Keep durable migration/logout/cooldown/recovery behavior unchanged. Runtime retains
+the verified username with its exact published client; current saved signature,
+local generation and matching command/revision/proxy acknowledgement govern whether
+it may appear. A transient polling error keeps identity but remains an error until
+a successful request; client reuse only grants retry eligibility, never fabricated
+recovery. Old-client completions cannot replace a new connection's evidence.
+Failed current identity attempts remain visible without a published client, while
+changed saved credentials immediately suppress obsolete identity and errors.
+
+System status captures saved settings, durable operation and supervisor observation
+once under the short connection-publication lock, sharing them across Bot/API/proxy
+projection. Storage/log/queue inspections remain outside that lock. Database work
+from async polling/failure publication runs in worker threads. Request protection
+continues to override readiness without changing verified identity. API operation
+failure is independent from transport failure and is no longer rewritten into Bot
+status on every tick. External local APIs have no managed commit; only an exact
+verified current client can project that selected mode as applied.
+
+Topbar and connection settings consume one shared connectionSummary projection.
+Desired/applied mode remain distinct, cloud-target starting describes stopping the
+local child, and an unused cloud-mode local supervisor is not an API failure.
+No routine identity probe, native restart, scheduling/poll frequency, protocol or
+database schema change is introduced.

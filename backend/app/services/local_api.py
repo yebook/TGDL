@@ -23,7 +23,7 @@ from app.services.request_safety import SafetyDeferred
 
 BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
 MESSAGES = {"idle": "", "draining": "正在准备切换连接", "logging_out": "正在退出云端 Bot API",
-            "starting": "正在应用本地 API 服务配置", "verifying": "正在验证 Bot 连接", "cooldown": "等待 Telegram 云端冷却结束",
+            "starting": "正在应用 API 服务配置", "verifying": "正在验证 Bot 连接", "cooldown": "等待 Telegram 云端冷却结束",
             "blocked": "存在恢复待处理任务，请先重启本地 API 恢复", "logout_uncertain": "云端退出结果不确定；请核实退出后明确确认继续，系统不会自动重试退出或回连云端",
             "failed": "操作未完成，请检查凭据、网络或代理后重试"}
 ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保存配置",
@@ -160,6 +160,7 @@ class LocalApiService:
 
         self.diagnostics: DiagnosticLog | None = None
         self.settings, self.db, self.config = settings, settings.db, settings.config
+        self._read_query = select(LocalApiRuntime.values).where(LocalApiRuntime.id == 1)
         with self.settings.connection_publication_lock, self.db.transaction() as session:
             row = session.get(LocalApiRuntime, 1)
             if not row:
@@ -169,9 +170,11 @@ class LocalApiService:
                 row.values = dict(row.values) | {"phase": "logout_uncertain", "logout_uncertain": True}
 
     def read(self) -> dict[str, Any]:
-        with self.db.sessions() as session:
-            row = session.get(LocalApiRuntime, 1)
-            return dict(row.values) if row else {"applied_mode": "cloud", "phase": "idle"}
+        # No state cache: transitions and ownership boundaries always observe the
+        # current committed row, without constructing an ORM identity-map entry.
+        with self.db.engine.connect() as connection:
+            values = connection.scalar(self._read_query)
+            return values if values is not None else {"applied_mode": "cloud", "phase": "idle"}
 
     def update(self, **updates: Any) -> dict[str, Any]:
         with self.settings.connection_publication_lock, self.db.transaction() as session:
@@ -188,9 +191,12 @@ class LocalApiService:
     def applied(self) -> dict[str, Any]:
         return supervisor_status(self.config)
 
-    def status(self) -> dict[str, Any]:
-        _, settings, _ = self.settings.read()
-        state, applied = self.read(), self.applied() if self.config.managed_local_api else {}
+    def status(self, *, settings: UserSettings | None = None, state: dict[str, Any] | None = None,
+               applied: dict[str, Any] | None = None) -> dict[str, Any]:
+        if settings is None:
+            _, settings, _ = self.settings.read()
+        state = self.read() if state is None else state
+        applied = (self.applied() if self.config.managed_local_api else {}) if applied is None else applied
         phase = state.get("phase", "idle")
         available = bool(applied)
         cloud_reconnect = state.get("action") == "cloud_reconnect"
@@ -208,8 +214,8 @@ class LocalApiService:
         return {"managed": self.config.managed_local_api, "state": applied.get("state", "unavailable"),
                 "desired_mode": settings.bot_api_mode, "applied_mode": state.get("applied_mode"),
                 "operation_id": state.get("operation_id"), "phase": phase, "drain_reason": drain_reason,
-                "message": ("当前部署使用外部管理的本地 API" if not self.config.managed_local_api and not cloud_reconnect else
-                            "本地 API 管理组件未连接，请检查部署" if not available and not cloud_reconnect else
+                "message": ("当前部署使用外部管理的本地 API" if not self.config.managed_local_api and not cloud_reconnect and settings.bot_api_mode == "local" else
+                            "本地 API 管理组件未连接，请检查部署" if not available and not cloud_reconnect and settings.bot_api_mode == "local" else
                             message),
                 "generation": applied.get("generation"), "last_heartbeat_at": iso(applied.get("heartbeat_at")),
                 "cloud_available_at": iso(state.get("cloud_available_at")),
@@ -385,8 +391,7 @@ class LocalApiService:
                 return True
             return False
         if state.get("phase") in {"failed", "blocked", "logout_uncertain"}:
-            runtime.bot_status = {"state": "error", "username": "", "message":
-                                  ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES[state["phase"]])}
+            # Operation failure is projected separately from transport evidence.
             return True
         try:
             values = UserSettings.model_validate_json(self.settings.secrets.decrypt(state["snapshot"])) if state.get("snapshot") else current

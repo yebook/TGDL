@@ -62,7 +62,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，执行 `docker compose up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。远程应用/API 镜像部署暂时关闭；默认启动会从源码构建，本机旧标签不会直接复用。预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
+源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，执行 `docker compose up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。默认启动会从源码构建，本机旧标签不会直接复用。预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
 
 ### 3. 初始化并验证
 

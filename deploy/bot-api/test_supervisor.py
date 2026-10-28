@@ -9,6 +9,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -70,6 +71,55 @@ def settle(supervisor: Any, state: str) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"Expected {state}, got {supervisor.state}")
+
+
+def test_stable_heartbeat_is_bounded_and_state_changes_publish_immediately(service: Any, monkeypatch) -> None:
+    supervisor, _ = service
+    clock = [100.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]))
+    write = module.atomic_write
+    writes = []
+
+    def record(path, value, *args, **kwargs):
+        writes.append(json.loads(value))
+        return write(path, value, *args, **kwargs)
+
+    monkeypatch.setattr(module, "atomic_write", record)
+    supervisor.publish()
+    for increment in (1, 2, 3, 4, 4.99):
+        clock[0] = 100 + increment
+        supervisor.publish()
+    assert len(writes) == 1
+    clock[0] = 105
+    supervisor.publish()
+    assert len(writes) == 2
+    assert writes[-1]["heartbeat_at"] == 1105
+    supervisor.state, supervisor.generation = "running", "new-child"
+    supervisor.publish()
+    assert len(writes) == 3
+    assert writes[-1]["generation"] == "new-child"
+    supervisor.state = "failed"
+    supervisor.publish()
+    assert len(writes) == 4
+    assert writes[-1]["state"] == "failed"
+
+
+def test_failed_heartbeat_write_is_retried_without_waiting(service: Any, monkeypatch) -> None:
+    supervisor, _ = service
+    original = module.atomic_write
+    failed = [False]
+
+    def fail_once(*args, **kwargs):
+        if not failed[0]:
+            failed[0] = True
+            raise OSError("temporary control I/O failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "atomic_write", fail_once)
+    with pytest.raises(OSError):
+        supervisor.publish()
+    supervisor.publish()
+    assert json.loads((supervisor.shared / "applied.json").read_text())["state"] == "waiting_credentials"
 
 
 @pytest.mark.parametrize('scheme', ['http', 'socks5'])

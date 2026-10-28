@@ -559,3 +559,65 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 - [x] Durable queue/schema, local publication/recovery enqueue, private bounded client call, drain-safe runtime cleanup/retry and targeted fault/concurrency tests. Source paths are encrypted before journal persistence with the existing master.key, including DB/WAL privacy and new-instance recovery checks. Failed or corrupt work retains cache and retries independently; native busy defers without uncertain ownership or retry-budget consumption.
 - [x] User storage documentation and executable contracts updated; independent review completed. Initial broad backend run had 422 passed / 11 Windows skips / one outdated ControlledClient fixture failure; added its required local mode and scoped recovery checks passed. Final encryption/schema/recovery39 and further changed-final/FIFO/privacy7 checks passed, Ruff and mypy36 passed. Actual network-none Linux regular hash/FIFO/stat-to-open-race checks exited0 without blocking. Docs23 Markdown/97 links/18 generated pages passed.
 - [x] Running containers, existing runtime/cache/media and unrelated services preserved. No commit, push or deployment performed. Baseline-only initial schema changed; a later existing-container update must explicitly preserve configuration and handle the old development schema, not merely rebuild into the existing database. Parent task remains open for real-device acceptance.
+
+## Idle CPU efficiency increment (2026-10-27)
+
+- Capture offline idle baseline with real isolated DB/control files and fake Telegram client; avoid production data/network.
+- Implement empty-work fast paths, indexed aggregate counts and stable-generation write suppression; retain scheduler cadence and lifecycle barriers.
+- Coalesce unchanged supervisor heartbeat writes; changed states and failed-write retry remain immediate.
+- Run targeted task/group/expiry, runtime recovery/dispatch, cache-cleanup, supervisor and transition tests; run Ruff/type checks and native-bundle identity validation.
+- Independent Trellis check, update executable contracts/docs/changelog and report synthetic evidence with actual-host measurement limitation.
+- Roll back code only if needed; no schema/config changes. Preserve previous uncommitted remote-distribution removal.
+# Idle read processing reduction implementation (2026-10-28)
+
+- Implemented fresh Core singleton reads for settings/runtime, bounded validated
+  settings reuse keyed by current stored data and environment, isolated returned
+  mutable values, and three task-page association batch queries.
+- Added seven targeted cases for decode reuse, same-revision credential change,
+  environment add/change/remove and invalid override, nested mutable isolation,
+  overlapping configuration save/read, validation reuse, and empty/one/twenty-row
+  authenticated query counts with individual-projection DTO parity.
+- Targeted backend regression: 149 passed across idle read/runtime, backup,
+  task deletion, runtime recovery, request-safety runtime, cloud reconnect and
+  consumers, managed local API and local API review. Ruff app/new tests passed;
+  mypy app passed (36 source files). Existing backup roundtrip warms the current
+  configuration then restores another revision/secrets and verifies immediate
+  subsequent reads. No real Telegram or Docker acceptance claimed here.
+- Runtime cadence, native inputs and existing uncommitted changes preserved.
+  Main session owns independent review, matched Docker CPU measurements and
+  final spec/session reporting. Topbar/status inspection batching is deferred.
+- Independent review found no production defect; added current-state/rollback
+  and filtered-page association isolation coverage, efficiency9 passed and
+  Ruff/mypy36 passed. Final Docker source build and non-owner permissions passed.
+  Isolated existing stack updated at localhost18083; init0 and live/ready200,
+  running source hashes match. Matched offline full-runtime samples: connected
+  CPU0.619259->0.566761seconds (~8.5%); blank0.538385->0.455635 (~15.4%).
+  Separate running-container blank sample app1.7366%/supervisor0.0840%; not a
+  matched comparison with the previous day's cgroup measurement. See
+  research/app-idle-optimization-20261028.md for evidence and limitations.
+
+## API switching status coherence (2026-10-28)
+
+- Runtime verified identity now survives same-client transient polling failures;
+  ensure_client returns retry eligibility without declaring a recovered connection.
+  Successful polling restores current identity/readiness, while late old-client
+  results are rejected. Failed current unpublished identity attempts remain visible.
+- Captured one connection-publication-locked saved config/runtime/supervisor snapshot
+  for coherent Bot, API and proxy status; full signature/generation/ACK/proxy checks
+  suppress obsolete identity. Genuine protection/error states remain actionable.
+- Unified topbar and settings connection presentation, target-aware start/stop text,
+  and separated operation failure from transport evidence and unused local process.
+- Initial scoped backend99 passed; extra end-to-end fake polling recovery and local
+  generation/command/protection guards bring connection-status file to6 passing.
+  Frontend90 unit cases, ESLint, vue-tsc/build and backend Ruff/mypy36 passed.
+  Main owns independent review/browser acceptance, docs/spec and local deployment.
+  No live Telegram, real media, deployment or commit performed by implementer.
+- Independent review corrected routine phases appearing as actionable alarms,
+  added authenticated HTTP status isolation (final connection-status7 passed)
+  and desktop/mobile presentation matrix cases. Helper20/lint/typecheck/build
+  and backend Ruff/mypy36 passed. App production build002118c5adc2 packaged final
+  source hashes; isolated local app updated without touching API/data, health200.
+  Docs23files99links18pages passed. Browser assertions passed but first Windows
+  uv-server teardown timed out; narrow manual-server rerun2passed/exit0, temporary
+  server/config cleaned. See
+  research/api-switch-status-verification-20261028.md for final evidence.

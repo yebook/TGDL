@@ -7,6 +7,7 @@ import runpy
 import shutil
 import tarfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -129,3 +130,130 @@ def test_extract_rejects_destination_symlink_before_any_write(bundle_tree: tuple
         H['extract_bundle'](root, bundle, out)
     assert not (out / 'bin').exists()
     assert not list(outside.iterdir())
+
+
+@pytest.mark.parametrize("changed", [
+    "supervisor.py", "entrypoint.sh", "init-volumes.py", "product-version", "app-only",
+])
+def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed: str) -> None:
+    api = tmp_path / "deploy/bot-api"
+    api.mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/verify-image-permissions.py", api.parent / "verify-image-permissions.py")
+    (tmp_path / ".dockerignore").write_text(".runtime/\n")
+    for path in (ROOT / "deploy/bot-api").iterdir():
+        if path.is_file():
+            shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
+    before = H["native_identity"](tmp_path)
+    if changed == "product-version":
+        dockerfile = api / "Dockerfile"
+        dockerfile.write_text(dockerfile.read_text().replace('image.version="0.1.0"', 'image.version="0.2.0"'))
+    elif changed == "app-only":
+        (tmp_path / "frontend").mkdir()
+        (tmp_path / "frontend/app.ts").write_text("app-only update")
+    else:
+        path = api / changed
+        path.write_text(path.read_text() + "\n# runtime-only change\n")
+    assert H["native_identity"](tmp_path) == before
+
+
+@pytest.mark.parametrize("changed", [
+    "native-proxy.patch", "native-progress.patch", "ProgressCache.h", "native-cache-cleanup.patch",
+    "CacheCleanup.h", "upstream-revision", "tdlib-revision", "compiler-toolchain", ".dockerignore",
+])
+def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) -> None:
+    api = tmp_path / "deploy/bot-api"
+    api.mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/verify-image-permissions.py", api.parent / "verify-image-permissions.py")
+    (tmp_path / ".dockerignore").write_text(".runtime/\n")
+    for path in (ROOT / "deploy/bot-api").iterdir():
+        if path.is_file():
+            shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
+    before = H["native_identity"](tmp_path)
+    if changed in {"upstream-revision", "tdlib-revision", "compiler-toolchain"}:
+        path = api / "Dockerfile"
+        old, new = {
+            "upstream-revision": ("e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1", "a" * 40),
+            "tdlib-revision": ("bc9c263e2bfee06aaab41e82db51a103376030bc", "a" * 40),
+            "compiler-toolchain": ("build-essential", "new-toolchain"),
+        }[changed]
+        path.write_text(path.read_text().replace(old, new))
+    else:
+        path = tmp_path / changed if changed == ".dockerignore" else api / changed
+        path.write_text(path.read_text() + "\n# native input changed\n")
+    assert H["native_identity"](tmp_path) != before
+
+
+@pytest.mark.parametrize("case", ["matching", "missing", "stale", "wrong-parent", "wrong-tdlib", "invalid-format"])
+def test_native_manifest_requires_current_sources_and_both_pinned_revisions(tmp_path: Path, case: str) -> None:
+    helper = runpy.run_path(str(ROOT / "deploy/bot-api/native_identity.py"))
+    api = tmp_path / "deploy/bot-api"
+    api.mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/verify-image-permissions.py", api.parent / "verify-image-permissions.py")
+    (tmp_path / ".dockerignore").write_text(".runtime/\n")
+    for path in (ROOT / "deploy/bot-api").iterdir():
+        if path.is_file():
+            shutil.copyfile(path, api / path.name)
+    (api / "prebuilt").mkdir(exist_ok=True)
+    (api / "prebuilt/linux-amd64.tar.gz").write_bytes(b"identity archive fixture")
+    (api / "prebuilt/manifest.json").write_text("identity manifest fixture")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(helper["source_pins"](tmp_path)))
+    manifest = tmp_path / "native.json"
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"synthetic native binary")
+    helper["write_manifest"](tmp_path, manifest, source, binary)
+    if case == "matching":
+        helper["verify_manifest"](tmp_path, manifest, binary)
+        # Runtime-only edits keep the exact compiled native contract.
+        (api / "supervisor.py").write_text("runtime-only edit\n")
+        helper["verify_manifest"](tmp_path, manifest, binary)
+        return
+    if case == "missing":
+        manifest.unlink()
+        expected_error: type[Exception] = FileNotFoundError
+    else:
+        expected_error = ValueError
+        metadata = json.loads(manifest.read_text())
+        if case == "stale":
+            (api / "CacheCleanup.h").write_text("modified native source\n")
+        elif case == "wrong-parent":
+            metadata["bot_api_revision"] = "a" * 40
+        elif case == "wrong-tdlib":
+            metadata["tdlib_revision"] = "a" * 40
+        else:
+            metadata["format"] = True
+        manifest.write_text(json.dumps(metadata))
+    with pytest.raises(expected_error):
+        helper["verify_manifest"](tmp_path, manifest, binary)
+
+
+def test_native_manifest_writer_rejects_unexpected_tdlib_checkout(tmp_path: Path) -> None:
+    helper = runpy.run_path(str(ROOT / "deploy/bot-api/native_identity.py"))
+    api = tmp_path / "deploy/bot-api"
+    api.mkdir(parents=True)
+    shutil.copyfile(ROOT / "deploy/verify-image-permissions.py", api.parent / "verify-image-permissions.py")
+    shutil.copyfile(ROOT / "deploy/bot-api/Dockerfile", api / "Dockerfile")
+    revisions = helper["source_pins"](tmp_path)
+    revisions["tdlib_revision"] = "a" * 40
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(revisions))
+    output = tmp_path / "native.json"
+    with pytest.raises(ValueError, match="source pins"):
+        helper["write_manifest"](tmp_path, output, source, tmp_path / "binary")
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("architecture", ["aarch64", "arm64", "i686"])
+def test_native_manifest_rejects_unsupported_architecture_before_io(tmp_path: Path, architecture: str) -> None:
+    helper = runpy.run_path(str(ROOT / "deploy/bot-api/native_identity.py"))
+    with patch("platform.machine", return_value=architecture):
+        with pytest.raises(ValueError, match="linux/amd64 only"):
+            helper["write_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "source.json", tmp_path / "binary")
+        with pytest.raises(ValueError, match="linux/amd64 only"):
+            helper["verify_manifest"](tmp_path, tmp_path / "native.json", tmp_path / "binary")

@@ -225,3 +225,38 @@
 - Bind observations to the exact Bot/file/job/attempt/API generation. Cancellation, retries, process restart and late replies cannot overwrite another stage or attempt. A progress failure never cancels downloads or releases ownership.
 - Preserve unknown-progress fallback for unavailable/unsupported services and avoid exposing tokens, native file paths or TDLib IDs to WebUI/logs. Keep the service private in standard Compose with no additional user configuration.
 - Verify the actual patched native build in isolation plus scoped backend/UI regressions. Application readiness is not real Telegram/large-file acceptance.
+
+## Remove remote image distribution (2026-10-27)
+
+- Delete product-image publishing automation, registry/mirroring tooling and deployment bundle generation, including paused entrypoints and their obsolete tests/docs.
+- Keep single-file source Compose deployment, native prebuilt archive regeneration/provenance tests, image permission guards and the independent documentation Pages workflow.
+- No native source changes, running-container changes or user-data cleanup are needed.
+
+## Idle resource efficiency (2026-10-27)
+
+- User narrowed this increment to idle CPU only; defer memory changes. User-observed local-mode baseline: app CPU 2.67%, memory 207 MB; bot-api CPU 1.85%, memory 35 MB. These are user reports, not local Docker measurements.
+- Investigate CPU and memory use when no downloads are active; separate application scheduling, native API residency and operating-system file cache where evidence allows.
+- Reduce unnecessary idle work and history-dependent allocations without delaying Bot intake, breaking confirmation/group aggregation, download ownership, API transitions, shutdown or durable recovery.
+- Keep caches bounded and preserve immediate configuration/transition correctness; no forced garbage collection, cache dropping or arbitrary memory caps as substitutes for fixing repeated work.
+- Verify affected runtime paths with offline regression and repeatable profiling. Clearly distinguish local/synthetic measurements from actual Docker/Telegram idle acceptance; do not claim memory savings without evidence.
+
+## Remaining app CPU attribution (2026-10-28)
+
+- Analyze why the actual unconfigured app idle CPU only declined from about 2.93% to 2.67%; CPU only, no memory changes.
+- Measure the complete runtime and worker-thread work, separating settings validation, database operations, filesystem/mount cost, scheduling and Web polling. Isolate profiling overhead and use matching before/after or loop-disabled controls where useful.
+- Preserve existing implementation and running data; use credential-free isolated containers from the same packaged source. Provide measured causes and prioritized safe next steps before another optimization increment.
+
+## Remaining app CPU implementation (authorized 2026-10-28)
+
+- Reduce repeated configuration decoding/validation and singleton read overhead while reading current authoritative configuration and preserving environment overrides, save/restore visibility, revision conflicts and API transition barriers.
+- Batch task-list associations without changing returned details, search, filtering, ordering, pagination or the existing polling cadence.
+- Preserve all previous uncommitted work; do not change memory policy, native code, Telegram pacing or scheduler timing.
+- Run impact-scoped regressions and independent review, then compare matching offline Docker CPU samples using the existing full-runtime harness. Keep real authenticated Telegram acceptance separate.
+
+## API switching and coherent connection status (authorized 2026-10-28)
+
+- Trace and fix cases where switching cloud/local API leaves misleading or stale Bot status. Separate saved target, applied API, managed process health, verified Bot identity and current request protection.
+- User clarified that actual Bot messages work while the interface remains abnormal; prioritize stale presentation/identity restoration rather than adding upstream retries or restarts.
+- Present preparation, required cloud logout/cooldown, process start/stop, verification, completion and actionable failure consistently in topbar and connection settings. Normal transitions must not appear as unrelated Bot failures; retain genuine errors and recovery controls.
+- Preserve offline saves, serialized operations, bounded waits/manual recovery, uncertain logout acknowledgement, Telegram pacing, active-owner draining and current generation/configuration publication barriers. Never add status-triggered network probes or clear request protection to improve labels.
+- Cover recovery after transient errors, obsolete connection results, token/mode changes and asynchronous status updates with focused backend/frontend checks. Preserve earlier pending CPU and source-only deployment changes; no compatibility work or unrelated redesign.

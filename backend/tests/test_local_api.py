@@ -247,7 +247,7 @@ async def test_local_verification_network_failure_waits_for_manual_retry_without
     reloaded = LocalApiService(managed.app.state.settings)
     assert await reloaded.reconcile(runtime)
     assert await reloaded.reconcile(runtime)
-    assert runtime.bot_status["message"] == status["message"]
+    assert runtime.bot_status["state"] == "connecting"  # Failure belongs to the API operation, not transport.
     assert identity.await_count == 2
     logout.assert_awaited_once()
 
@@ -511,7 +511,7 @@ async def test_switch_waits_for_poll_and_notification_durable_results(managed, m
     runtime.client, runtime.bot_id = fake, 123
     runtime.client_signature = runtime.settings.client_signature(runtime.settings.read()[1])
     runtime.bot_status = {"state": "online", "username": "test", "message": ""}
-    runtime.ensure_client = AsyncMock()
+    runtime.ensure_client = AsyncMock(return_value=True)
     with runtime.db.transaction() as session:
         session.add(Notification(id="notice", event_key="notice", chat_id=42, payload={"bot_id": 123, "text": "hello"}))
     monkeypatch.setattr(TelegramClient, "identity", AsyncMock(return_value={"id": 123, "username": "test"}))

@@ -20,6 +20,11 @@ manual-only migration contract only when `Config.managed_local_api` is true.
 - `/api/v1/system/status.local_api`: managed, state, desired_mode, applied_mode,
   operation_id, phase, message, generation, last_heartbeat_at, cloud_available_at,
   can_restart, can_retry. State is independent of Bot identity/online status.
+- `Runtime.ensure_client(...) -> bool` reports whether the current consumer can
+  attempt polling; it does not turn a retained failed transport online.
+- `Runtime.connection_snapshot()` composes current saved settings, Bot, local
+  API and proxy observations in a short publication-lock section. Storage/log
+  inspection and all network operations remain outside that section.
 
 ## 3. Contracts
 
@@ -52,6 +57,25 @@ already holding an unrelated DB write transaction. Close obsolete clients outsid
 the lock. Nonmanaged cloud reconnect must respect the same durable cooldown and
 manual-validation barriers as managed operation; consumer/claim barriers must not
 depend only on managed_local_api.
+
+Verified Bot identity belongs to the exact published client, configuration
+signature and local generation. A transient polling error must not permanently
+erase that identity; retaining it is not proof of transport recovery. A matching
+client may retry while its last error stays visible, and successful polling
+restores readiness and the verified username without an additional identity
+request. Late results from a replaced client cannot overwrite current status.
+Changed/removed tokens, mismatched generation and obsolete signatures must hide
+old identity immediately in status responses, even while old file owners drain.
+Current candidate verification failures remain visible; do not convert every
+missing client into an endless connecting label.
+
+Lifecycle failures stay in the durable API operation projection; do not overwrite
+Bot transport evidence every reconciliation tick. After a target verification
+commits applied mode, a separate consumer can briefly still be connecting.
+Expose that real gap without claiming failure or bypassing publication checks.
+The status snapshot applies current credential-bound request protection without
+resetting it, performs no upstream probes, and never substitutes a saved desired
+mode for verified runtime connectivity.
 
 The API supervisor runs as the configured UID/GID, stays alive without credentials, controls only the
 fixed official API child and uses no Docker socket. Private control volume and
@@ -179,6 +203,10 @@ certify independent process liveness.
 | Child crash | Sanitized state, bounded recovery; manual restart available |
 | Local target identity network failure | Persist LOCAL_API_CONNECTION_FAILED and actionable sanitized message; process running is not Bot readiness; preserve successful logout and request protection |
 | Externally managed API | No managed process command; explicit external status |
+| Same verified client recovers after transient request error | Restore current username/readiness after successful polling, without extra getMe |
+| Old client completes after replacement | Ignore obsolete status result |
+| Token/generation no longer matches | Hide obsolete identity/readiness |
+| Applied target verified, consumer not yet published | Show applied mode with Bot connecting |
 
 ## 5. Good / Base / Bad Cases
 
@@ -211,6 +239,9 @@ Fault tests must cover hanging cooperative identity/close/logout, barrier held
 across repeated reconciliation and retry, fresh retry baselines, normal live
 download waiting, persistent cooldown and uncertain logout after restart, and
 HTTP busy rejection without queued stale connection saves.
+Also cover transient error/success identity restoration, current candidate errors,
+late replaced-client results, immediate token/generation identity suppression,
+coherent status composition, and external local mode without invented management.
 
 Windows Docker Desktop host binds may appear inside Linux containers as
 root-owned mode 777 regardless of host ACLs. Do not relax the control protocol's

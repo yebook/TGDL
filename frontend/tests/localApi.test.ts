@@ -23,7 +23,7 @@ describe('managed API diagnostics', () => {
     expect(botConnectionLabel('error', 'local')).toBe('连接异常')
   })
   it('explains the local API startup phase before a mode switch', () => {
-    expect(localApiPhases.starting).toBe('正在启动本地 API')
+    expect(localApiPhases.starting).toBe('正在应用 API 服务配置')
   })
   it('does not present an unknown applied mode as a successful switch', () => {
     expect(modeLabel(null)).toBe('尚未确认')
