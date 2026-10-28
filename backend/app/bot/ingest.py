@@ -23,7 +23,6 @@ from app.storage.naming import text_summary
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".mpeg", ".mpg"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".tif", ".tiff"}
-NAME_WINDOW_SECONDS = 120
 
 
 class IngestService:
@@ -101,8 +100,7 @@ class IngestService:
                 if not request:
                     name_override = None
                     if pending and pending.name and message["message_id"] > pending.message_id:
-                        if now <= pending.expires_at:
-                            name_override = pending.name
+                        name_override = pending.name
                         pending.name = None  # Consume once, keeping the message watermark for replay safety.
                     request = MediaRequest(id=uid(), bot_id=bot_id, chat_id=chat_id, user_id=user_id,
                                            kind="group" if group_key else "single", group_key=group_key,
@@ -129,16 +127,16 @@ class IngestService:
                 summary = text_summary(text)
                 is_name = bool(summary) and not text.lstrip().startswith(("/", "https://", "http://", "t.me/")) and not any(
                     message.get(field) for field in ("forward_origin", "forward_date", "forward_from", "forward_from_chat"))
-                now = time.time()
                 if pending is None:
                     pending = PendingMediaName(bot_id=bot_id, chat_id=chat_id, user_id=user_id,
-                                               message_id=message["message_id"], name=None, expires_at=now)
+                                               message_id=message["message_id"], name=None)
                     session.add(pending)
                 elif message["message_id"] <= pending.message_id:
                     return
                 pending.message_id = message["message_id"]
-                pending.expires_at = min(now, float(message.get("date") or now)) + NAME_WINDOW_SECONDS
-                pending.name = summary if is_name and pending.expires_at >= now else None
+                pending.name = summary if is_name else None
+                if is_name:
+                    return  # The media confirmation shows the name; do not send an extra acknowledgement.
                 if text.startswith("/status"):
                     rows = list(session.scalars(select(MediaRequest).where(MediaRequest.user_id == user_id,
                                                                             MediaRequest.bot_id == bot_id,
@@ -146,17 +144,11 @@ class IngestService:
                                                 .order_by(MediaRequest.created_at.desc()).limit(5)))
                     response = "\n\n".join(task_message(f"{status_label(r.status)}\n{r.title}", r.id, limit=750)
                                              for r in rows) or "📭 暂无下载任务，发送视频或图片即可开始。"
-                elif is_name and pending.name:
-                    response = (f"✏️ 已暂存名称：{summary}\n"
-                                "请在 2 分钟内发送或转发下一条视频、图片或同组媒体，仅使用一次。\n"
-                                "发送新文字可替换名称，发送 /help 可清除；最终名称请查看下载确认提示。")
-                elif is_name:
-                    response = "⌛ 这条名称消息已超过 2 分钟，请重新发送名称后再发送媒体。"
                 else:
                     response = ("📥 发送或转发视频、图片或一组媒体，我会先整理文件信息，等你确认后再下载。\n"
                                 "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n"
                                 "📋 /status 查看最近任务；/help 查看使用说明。\n"
-                                "✏️ 转发时可先附带一条文字，作为下一条媒体或媒体组的名称（2 分钟内有效）。\n"
+                                "✏️ 转发时可先附带一条文字，作为下一条媒体或媒体组的名称，仅使用一次。\n"
                                 "暂不支持消息链接、音频、GIF 和其他文档。")
                 if not session.scalar(select(Notification).where(Notification.event_key == key)):
                     session.add(Notification(event_key=key, chat_id=chat_id, payload={"text": response, "bot_id": bot_id}))

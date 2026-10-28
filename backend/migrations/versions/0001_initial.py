@@ -64,7 +64,6 @@ def upgrade() -> None:
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('message_id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(length=80), nullable=True),
-    sa.Column('expires_at', sa.Double(), nullable=False),
     sa.PrimaryKeyConstraint('bot_id', 'chat_id', 'user_id')
     )
     op.create_table('sessions',

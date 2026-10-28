@@ -1,4 +1,4 @@
-"""Forwarding comments are one-shot, bounded names, never an implicit media group."""
+"""Forwarding comments are silent, one-shot names, never an implicit media group."""
 import time
 from pathlib import PurePosixPath
 
@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.bot.ingest import IngestService
-from app.db.models import MediaItem, MediaRequest, Notification, PendingMediaName
+from app.db.models import MediaItem, MediaRequest, Notification
 from tests.test_pipeline import confirm_all, message, setup_pipeline
 
 
@@ -20,6 +20,8 @@ def comment(index: int = 1, text: str = "海边旅行") -> dict:
 def test_comment_overrides_original_and_caption_once(client: TestClient, group: str | None) -> None:
     state, ingest = setup_pipeline(client)
     ingest.message(7, comment(), "name")
+    with state.db.sessions() as session:
+        assert list(session.scalars(select(Notification))) == []
     # A new ingest instance demonstrates durable association across intake restarts.
     ingest = IngestService(state.db, state.settings, state.tasks)
     for index in ([2, 3] if group else [2]):
@@ -51,21 +53,18 @@ def test_comment_overrides_original_and_caption_once(client: TestClient, group: 
         assert latest.title == "movie4.mp4"
 
 
-@pytest.mark.parametrize("interruption", ["/start", "/help", "/status", "https://t.me/channel/1", "expired"])
-def test_commands_links_and_expiry_do_not_leak_names(client: TestClient, interruption: str) -> None:
+@pytest.mark.parametrize("interruption", ["/start", "/help", "/status", "https://t.me/channel/1"])
+def test_commands_and_links_clear_names_and_still_reply(client: TestClient, interruption: str) -> None:
     state, ingest = setup_pipeline(client)
     ingest.message(7, comment(), "name")
-    if interruption == "expired":
-        with state.db.transaction() as session:
-            session.get(PendingMediaName, (7, 42, 42)).expires_at = time.time() - 1
-    else:
-        ingest.message(7, comment(2, interruption), "command")
+    ingest.message(7, comment(2, interruption), "command")
     ingest.message(7, message(3), "media")
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         request = session.scalar(select(MediaRequest))
         assert request.name_override is None
         assert request.title == "movie3.mp4"
+        assert session.scalar(select(Notification).where(Notification.event_key == "reply:command")) is not None
 
 
 def test_latest_text_wins_and_other_scopes_cannot_consume(client: TestClient) -> None:
@@ -86,7 +85,7 @@ def test_latest_text_wins_and_other_scopes_cannot_consume(client: TestClient) ->
         assert [row.name_override for row in rows] == [None, None, "新名称"]
 
 
-def test_forwarded_text_and_old_delivery_are_not_fresh_names(client: TestClient) -> None:
+def test_forwarded_text_is_not_a_name_but_old_plain_text_has_no_expiry(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     forwarded = comment()
     forwarded["forward_origin"] = {"type": "channel"}
@@ -95,9 +94,12 @@ def test_forwarded_text_and_old_delivery_are_not_fresh_names(client: TestClient)
     old = comment(3)
     old["date"] = int(time.time()) - 180
     ingest.message(7, old, "old-name")
+    ingest.message(7, old, "old-name-replayed")
     ingest.message(7, message(4), "second-media")
     with state.db.sessions() as session:
-        assert all(row.name_override is None for row in session.scalars(select(MediaRequest)))
+        rows = list(session.scalars(select(MediaRequest).order_by(MediaRequest.created_at)))
+        assert [row.name_override for row in rows] == [None, "海边旅行"]
+        assert session.scalar(select(Notification).where(Notification.event_key == "reply:old-name")) is None
 
 
 def test_name_for_next_group_does_not_rename_group_being_collected(client: TestClient) -> None:
