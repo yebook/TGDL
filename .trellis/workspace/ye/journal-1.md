@@ -1417,3 +1417,13 @@ Blocked remote image deployment/publication; fixed local source tags build by de
 - Backend/frontend default confirmation and documentation examples agree. Saved custom templates and queued messages are preserved; existing users explicitly restore default and save to adopt the new card style.
 - Focused backend98cases covered (97passed initially; corrected one new fixture and reran its case successfully). Frontend template28passed; Ruff, mypy37, frontend lint/typecheck/build passed. Independent reviewer added2non-BMP overflow tests at750/3900UTF16 units, both passed and no outstanding findings. Docs final23Markdown/102links/18pages passed; diff check passed.
 - No Docker update, real Telegram run, commit/push or new version increment for this pending0.1.1 change. Previous pending work preserved; parent remains in_progress.
+## 2026-10-28: Prominent Telegram account risk documentation
+
+- User requested conspicuous ban-risk notices. Added GitHub README warning and VitePress entry-page warning/danger blocks before setup; FAQ account-risk anchor is the canonical explanation. States possible Bot and associated owner account restriction/bans, no cloud/local/proxy/pacing immunity or incident-specific causal diagnosis, and brief practical precautions/official support.
+- Documentation-only scope; no runtime/version/deployment changes. Updated PRD, documentation spec and changelog. Standalone docs build23Markdown/106links/18pages passed; independent review verified generated warning blocks, links and stable FAQ anchor, no findings. Application tests are unnecessary for Markdown-only edits.
+- Prior authorized work committed/pushed as cb6e108 before this increment. Current risk-doc edits remain uncommitted/unpushed; no container update or Telegram action. Parent task remains in_progress.
+## 2026-10-28: Dedicated version upgrade menu
+
+- Moved upgrade/rollback and storage-enrollment instructions from operations to docs/upgrade.md with standalone top-level version-upgrade sidebar item, preserving upgrade and storage-identity-011 anchors. Operations retains maintenance plus concise upgrade pointer; README/changelog/deployment/acceptance targets now use dedicated route, moved backup reference points back to operations.
+- Pending risk warnings preserved. PRD and documentation contract updated; version0.1.1/runtime unchanged. Docs build24Markdown/108relative links/19pages and28published README/changelog URL+anchor checks passed; diff check passed. Independent review verified moved-body parity, generated navigation/anchors, updated links and preserved risk callouts; no findings.
+- Current documentation changes remain uncommitted/unpushed; no container/deployment action. Parent task remains in_progress.

@@ -307,3 +307,29 @@
 - Change presentation only: no extra Telegram requests or notifications, new
   parse mode, ownership/state/pacing changes or broad unrelated regression run.
   Keep messages within existing UTF-16 budgets with complete identifiers.
+
+## Prominent Telegram account risk notices (2026-10-28)
+
+- Place readable prominent warnings near the beginning of README and relevant
+  documentation entry/setup pages, before users create or configure a Bot.
+- Explain potential Bot restrictions/bans and possible associated personal
+  account impact without claiming a proven cause for a specific incident or
+  suggesting either cloud/local API is immune. Pacing/proxy features cannot
+  guarantee safety; project runtime does not log in to a personal account.
+- Link to one detailed explanation with practical precautions and official
+  support guidance. Keep root README links on the published documentation site,
+  avoid duplicated long warnings and change no runtime/deployment behavior.
+- Validate documentation rendering, link targets and warning visibility; no
+  backend/browser/runtime regression is needed for text-only documentation.
+
+## Dedicated upgrade documentation menu (2026-10-28)
+
+- Move version upgrade, rollback and associated one-time storage enrollment
+  instructions to a dedicated `upgrade` page with a visible standalone sidebar
+  entry named `版本升级`, rather than nesting the guide inside operations.
+- Keep maintenance/troubleshooting content in operations and link to the new
+  page where useful. Update README, changelog and public guide links, including
+  moved sections' own relative references. Avoid duplicate long instructions,
+  stale anchors or unpublished-version redirects.
+- Preserve the pending risk warnings and all runtime/deployment behavior;
+  validate navigation, generated pages and link targets with the docs build.

@@ -44,6 +44,18 @@ its source is curated public Markdown, with `/TGDL/` as the default site base.
   maintenance and troubleshooting. Developer tooling/acceptance/Pages authoring
   belongs in a secondary collapsed group. Remove obsolete system-page directions
   when controls move; normal log/backup/recovery help remains discoverable.
+- Version upgrade is a dedicated `upgrade.md` page with its own visible
+  `版本升级` sidebar item, not a subsection inside operations/troubleshooting.
+  Keep upgrade, rollback and related storage-enrollment steps together; link
+  back to operations for full backup/maintenance details. Update published
+  README/changelog URLs and internal links when moving these sections.
+- Put a prominent Telegram account-risk callout before Bot/account setup in
+  README and public onboarding/deployment entry pages. State potential Bot
+  restrictions/bans and possible associated personal-account impact, without
+  claiming proven causation for an individual incident. Neither cloud/local API,
+  proxies nor request pacing guarantee immunity. Link short notices to one
+  detailed risk explanation with practical precautions and official support;
+  never recommend restriction evasion or imply personal-account login is used.
 - Product numeric version comes from backend/app/version.json and matches
   runtime. Publish the root CHANGELOG as single-source site content, with actual
   record dates and no invented release/tag history. Shared metadata used by docs

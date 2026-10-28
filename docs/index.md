@@ -20,6 +20,10 @@ features:
     details: Docker 部署，数据与媒体分开持久化；保留源码构建，配套镜像待首次发布。
 ---
 
+::: danger 使用前请了解账号风险
+**Bot 可能被 Telegram 限制或封禁，关联的 Bot 所有者个人账号也可能受限或被封禁。** 云端、本地 API 和请求保护均不能保证免于限制。接入前请阅读 [账号风险与异常处理](faq.md#account-risk)。
+:::
+
 云端下载上限 **20 MB**；大文件可在同一 WebUI 切换到本地 Bot API。先完成 [第一次下载](quick-start.md)，再按需调整 [日常设置](settings.md)、查看 [任务与进度](usage.md) 或 [备份配置](configuration-backup.md)。
 
 当前处于开发阶段，版本与本轮变更见 [更新日志](changelog.md)。真实 Telegram、Docker 宿主机与代理链路的验收范围见 [验证说明](verification.md)。仅处理实际发送或转发给 Bot 的媒体，不处理消息链接，不登录个人账号。

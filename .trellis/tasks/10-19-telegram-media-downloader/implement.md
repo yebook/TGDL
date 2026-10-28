@@ -673,3 +673,32 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
 - Focused storage/pipeline/templates/cache-cleanup tests: 78 passed, one Windows
   symlink-privilege skip. Ruff app/tests/tools/scripts/deploy and mypy app36 pass.
   No Docker update, real Telegram, media deletion, commit or push performed.
+
+## Prominent Telegram account-risk documentation (2026-10-28)
+
+- Added visible README and public-home warnings before onboarding; deployment,
+  first-download and API setup guides link to one explicit FAQ account-risk anchor.
+  Clearly distinguish possible Bot and personal-owner restrictions/bans from
+  unproven incident causes. Cloud/local API, proxies and pacing provide no immunity.
+- Canonical guidance keeps Bot-only login boundaries, authorized private use,
+  compliant media, bounded traffic, waiting/stopping on problems, sanitized
+  evidence and official support; no evasion or guaranteed safety/recovery claims.
+- Docs-only build passed twice after final wording: 23 Markdown files, 106 relative
+  links and 18 generated pages including anchors/base/output exclusions. A focused
+  generated-output check verified README's published FAQ anchor, rendered warning
+  classes and resolved links from four entry pages. No app tests, runtime/container
+  changes, version bump, real Telegram actions, commit or push.
+
+## Standalone version upgrade guide (2026-10-28)
+
+- Moved the full source-upgrade, rollback and download-root re-enrollment guide
+  from operations to public upgrade.md, with a direct standalone sidebar item
+  between daily-use and maintenance groups. Operations retains a short link;
+  README, changelog, deployment and Docker acceptance links use the new route.
+- Preserved explicit upgrade/storage-identity anchors, backup links, existing
+  account-risk notices and version0.1.1. No compatibility redirects or runtime,
+  workflow, container, commit or push changes.
+- Independent docs build passed:24 Markdown inputs,108 relative links,19 public
+  pages and anchor/base/output checks. Validated28 published README/CHANGELOG
+  URLs against generated paths and decoded anchors, plus new sidebar presence
+  and removal of long upgrade sections from operations. git diff --check passed.

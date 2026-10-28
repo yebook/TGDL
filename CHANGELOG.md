@@ -15,6 +15,8 @@
 
 ### 改进
 
+- 文档站新增独立的“版本升级”菜单，集中说明源码更新、备份、验证及失败回退。
+- README 与文档站入门页面增加醒目的 Telegram Bot／个人账号受限及封禁风险提示，并集中说明注意事项。
 - Bot 提示增加状态表情和中文说明，统一确认、排队、结果与按钮反馈，任务编号仍单独展示。
 - 版本提升至 `0.1.1`，补充 Git／ZIP 源码部署的升级、完整备份、版本检查和失败回退步骤。
 - 下载目录不再新建 `.tgd-root` 标记，目录识别信息保存在应用数据目录；缺少原文件名时优先使用消息文字命名，同组文件添加序号区分。
@@ -65,4 +67,4 @@
 - 为连接切换及页面请求补充超时与恢复处理，提供保留表单输入的状态重新同步入口；正常下载、云端冷却及退出结果确认仍遵守原有保护。
 - 云端代理生效变更按顺序重建连接，不执行云端退出或本地 API 重启；代理关闭时只编辑未生效参数不会触发重连。
 
-真实 Telegram 大文件、代理及 Docker 宿主机完整链路仍需实机验收，详见 [验证范围](https://yebook.github.io/TGDL/verification.html)。更新前请阅读 [备份与回滚](https://yebook.github.io/TGDL/operations.html#upgrade)，第三方组件适用自身许可证，见 [构建来源](https://github.com/yebook/TGDL/blob/main/deploy/sources.md)。
+真实 Telegram 大文件、代理及 Docker 宿主机完整链路仍需实机验收，详见 [验证范围](https://yebook.github.io/TGDL/verification.html)。更新前请阅读 [备份与回滚](https://yebook.github.io/TGDL/upgrade.html#upgrade)，第三方组件适用自身许可证，见 [构建来源](https://github.com/yebook/TGDL/blob/main/deploy/sources.md)。
