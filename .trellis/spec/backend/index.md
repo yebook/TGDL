@@ -2,6 +2,8 @@
 
 Read [runtime-contracts.md](runtime-contracts.md) before editing this layer and
 [acceptance-contracts.md](acceptance-contracts.md) for local/API acceptance tooling.
+Read [storage-identity-contracts.md](storage-identity-contracts.md) for marker-free
+download root enrollment and missing/replaced mount protection.
 Read [cloud-api-contracts.md](cloud-api-contracts.md) for cloud/local transport,
 mode switching, proxy and acquisition recovery changes.
 Read [managed-api-contracts.md](managed-api-contracts.md) for WebUI-managed local

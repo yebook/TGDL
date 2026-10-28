@@ -1,5 +1,5 @@
 # Disposable verifier only; never used in the deployment topology.
-ARG TGDL_API_IMAGE=tgd-bot-api-source:0.1.0
+ARG TGDL_API_IMAGE=tgd-bot-api-source:0.1.1
 FROM ${TGDL_API_IMAGE}
 USER root
 RUN apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends strace g++ && rm -rf /var/lib/apt/lists/*

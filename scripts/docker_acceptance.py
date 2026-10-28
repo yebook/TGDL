@@ -210,12 +210,31 @@ class Smoke:
         self.helper("from pathlib import Path; "
                     "assert Path('/work/original/data/master.key').read_bytes() == "
                     "Path('/work/restored/data/master.key').read_bytes()")
-        self.start("restored")
-        self.verify_state()
         self.helper("from pathlib import Path; a=Path('/work/original'); b=Path('/work/restored'); "
                     "identities=list((a/'data').glob('storage-identity-*.json')); assert identities; "
                     "assert all(p.read_bytes()==(b/'data'/p.name).read_bytes() for p in identities); "
-                    "assert (a/'downloads/.tgd-root').read_bytes()==(b/'downloads/.tgd-root').read_bytes()")
+                    "assert not (a/'downloads/.tgd-root').exists(); "
+                    "assert not (b/'downloads/.tgd-root').exists()")
+        # A copied directory is deliberately a new storage identity. Verify the
+        # copied data first, then explicitly re-enroll only this disposable root.
+        self.helper("import sys; sys.path.insert(0, '/app/backend'); "
+                    "from pathlib import Path; from app.core.errors import AppError; "
+                    "from app.storage.files import Storage\n"
+                    "root=Path('/work/restored')\n"
+                    "try:\n"
+                    "    Storage(root/'downloads', root/'data', 0).check()\n"
+                    "except AppError as error:\n"
+                    "    assert error.code == 'STORAGE_CHANGED'\n"
+                    "else:\n"
+                    "    raise AssertionError('Copied root must require explicit re-enrollment')")
+        self.helper("import hashlib,json; from pathlib import Path; a=Path('/work/original'); b=Path('/work/restored'); "
+                    "name='storage-identity-'+hashlib.sha256(b'default').hexdigest()[:16]+'.json'; "
+                    "identity=json.loads((b/'data'/name).read_bytes()); "
+                    "assert identity['inode']==(a/'downloads').stat().st_ino; "
+                    "assert identity['inode']!=(b/'downloads').stat().st_ino; "
+                    "(b/'data'/name).unlink()")
+        self.start("restored")
+        self.verify_state()
         self.passed("stopped_backup_restore")
 
     def cleanup(self) -> None:

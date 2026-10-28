@@ -19,6 +19,7 @@ MANIFESTS = (
     "frontend/package.json", "compose.yaml", ".env.example", "Dockerfile", "deploy/bot-api/Dockerfile",
     "deploy/bot-api/Dockerfile.verify-native", "deploy/bot-api/Dockerfile.verify-progress",
     "deploy/bot-api/Dockerfile.verify-cache-cleanup",
+    "docs/deployment.md", "docs/development.md", "docs/docker-acceptance.md",
 )
 
 
@@ -62,7 +63,7 @@ def test_bump_plans_all_mirrors_without_touching_dependencies(tmp_path: Path) ->
     metadata = tmp_path / "backend/app/version.json"
     metadata.write_text(json.dumps({"version": "0.2.0"}), encoding="utf-8")
     changes = version_tool["planned_updates"](tmp_path)
-    assert len(changes) == 9
+    assert len(changes) == 12
     for path, content in changes.items():
         path.write_bytes(content.encode("utf-8"))
     assert version_tool["planned_updates"](tmp_path) == {}

@@ -259,8 +259,8 @@ class TelegramClient:
         if callback:
             request_id, nonce = callback
             markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="确认下载", callback_data=f"y:{request_id}:{nonce}"),
-                InlineKeyboardButton(text="取消", callback_data=f"n:{request_id}:{nonce}")]])
+                InlineKeyboardButton(text="✅ 确认下载", callback_data=f"y:{request_id}:{nonce}"),
+                InlineKeyboardButton(text="❌ 取消", callback_data=f"n:{request_id}:{nonce}")]])
         result = await self.request(lambda: self.bot.send_message(chat_id, text, reply_markup=markup, request_timeout=30), chat_id, method="sendMessage")
         return result.message_id
 

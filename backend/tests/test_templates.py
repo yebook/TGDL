@@ -175,3 +175,69 @@ def test_confirmation_rejects_incomplete_frozen_file_plan(client: TestClient) ->
     with state.db.sessions() as session:
         assert list(session.scalars(select(Job))) == []
         assert session.get(MediaRequest, request_id).status == "awaiting_confirmation"
+
+
+@pytest.mark.parametrize("original", [None, "", " \n\t\u200b"])
+def test_missing_original_uses_caption_without_treating_title_as_extension(original: str | None) -> None:
+    request = MediaRequest(id="r", created_at=0, kind="single")
+    item = MediaItem(id="abcdef012345", media_type="image", original_name=original, caption_snippet="旅行 1.2")
+    assert planned_name(item, request, "{name}", "UTC", 1) == "旅行 1.2.jpg"
+    item.caption_snippet = "测试.mp4"
+    item.media_type = "video"
+    assert planned_name(item, request, "{name}", "UTC", 1) == "测试.mp4.mp4"
+    item.original_name = "real.MKV"
+    assert planned_name(item, request, "{name}", "UTC", 1) == "real.MKV"
+    item.original_name = None
+    item.caption_snippet = " \u200b\n"
+    assert planned_name(item, request, "{name}", "UTC", 1) == "video_abcdef012345.mp4"
+
+
+def test_group_caption_index_safety_templates_and_collision() -> None:
+    request = MediaRequest(id="r", created_at=0, kind="group")
+    item = MediaItem(id="abcdef012345", media_type="video", original_name=None)
+    caption = "../CON/\u200b测试" + "视" * 90
+    name = planned_name(item, request, "{name}", "UTC", 2, caption=caption)
+    assert name.endswith("_2.mp4") and len(name.encode("utf-8")) <= 180
+    assert "/" not in name and ".." not in name and "\u200b" not in name
+    assert planned_name(item, request, "{date}_{name}_{index}", "UTC", 2, caption="旅行") == "19700101_旅行_2.mp4"
+    explicit = planned_name(item, request, "{name}_{index}", "UTC", 2, caption="视" * 80)
+    assert explicit.endswith("_2.mp4") and not explicit.endswith("_2_2.mp4")
+    assert len(explicit.encode("utf-8")) <= 180
+    assert planned_name(item, request, "{name}_{{index}}", "UTC", 2, caption="旅行") == "旅行_{index}_2.mp4"
+    used: set[str] = set()
+    assert unique_name(name, used) == name
+    collision = unique_name(name, used)
+    assert collision != name and collision.endswith("_2_2.mp4")
+    assert len(collision.encode("utf-8")) <= 180
+
+
+def test_group_first_caption_shared_in_order_and_frozen_before_consent(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    patch = SettingsPatch(revision=2, filename_template="{name}")
+    state.settings.save(patch, state.settings.candidate(patch))
+    for index in (3, 2, 1):
+        payload = message(index, "g")
+        if index == 1:
+            payload.pop("video")
+            payload["photo"] = [{"file_id": "photo1", "file_unique_id": "photo-unique", "file_size": 3}]
+            payload["caption"] = "旅行\n合辑"
+        elif index == 2:
+            payload["video"].pop("file_name")
+        # Third item retains its actual filename, which takes priority.
+        ingest.message(7, payload, f"in{index}")
+    with state.db.transaction() as session:
+        request = session.scalar(select(MediaRequest))
+        request.collect_until = 0
+        request_id, nonce = request.id, request.nonce
+    state.tasks.freeze_due()
+    with state.db.sessions() as session:
+        request = session.get(MediaRequest, request_id)
+        assert request.title == "旅行 合辑"
+        items = list(session.scalars(select(MediaItem).order_by(MediaItem.message_id)))
+        assert [item.planned_filename for item in items] == ["旅行 合辑_1.jpg", "旅行 合辑_2.mp4", "movie3.mp4"]
+        card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
+        assert all(item.planned_filename in card.payload["text"] for item in items)
+    assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
+    with state.db.sessions() as session:
+        assert sorted(job.relative_path.rsplit("/", 1)[1] for job in session.scalars(select(Job))) == [
+            "movie3.mp4", "旅行 合辑_1.jpg", "旅行 合辑_2.mp4"]

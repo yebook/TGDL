@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, parseUserIds, percent } from '../src/api/format'
+import { bytes, duration, parseUserIds, percent } from '../src/api/format'
+
+describe('human-readable duration', () => {
+  it.each([
+    [0, '0秒'], [0.9, '0秒'], [45, '45秒'], [59.9, '59秒'],
+    [60, '1分'], [135, '2分15秒'], [3599, '59分59秒'],
+    [3600, '1小时'], [4110, '1小时8分30秒'], [86400, '24小时'],
+  ])('formats %s seconds as %s', (value, expected) => {
+    expect(duration(value)).toBe(expected)
+  })
+  it.each([null, undefined, NaN, Infinity, -Infinity, -1, -0.1])('does not invent a duration for %s', value => {
+    expect(duration(value)).toBe('—')
+  })
+})
 
 describe('accurate unknown progress and user input', () => {
   it('does not manufacture progress when Telegram has not reported a size', () => {

@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.bot.grouping import GROUP_MAX_SECONDS, GROUP_MIN_SECONDS, GROUP_QUIET_SECONDS
+from app.bot.messages import status_label
 from app.core.errors import AppError
 from app.db.models import IngestUpdate, MediaItem, MediaRequest, Notification, PollCursor, uid
 from app.db.session import Database
@@ -111,10 +112,13 @@ class IngestService:
                                                                             MediaRequest.bot_id == bot_id,
                                                                             MediaRequest.deleted_at.is_(None))
                                                 .order_by(MediaRequest.created_at.desc()).limit(5)))
-                    response = "\n\n".join(task_message(f"{r.title}: {r.status}", r.id, limit=750)
-                                             for r in rows) or "暂无下载任务"
+                    response = "\n\n".join(task_message(f"{status_label(r.status)}\n{r.title}", r.id, limit=750)
+                                             for r in rows) or "📭 暂无下载任务，发送视频或图片即可开始。"
                 else:
-                    response = "请直接发送或转发视频、图片或媒体组；收到后点击确认下载。暂不支持消息链接、音频、GIF 和其他文档。\n/status 查看最近任务"
+                    response = ("📥 发送或转发视频、图片或一组媒体，我会先整理文件信息，等你确认后再下载。\n"
+                                "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n"
+                                "📋 /status 查看最近任务；/help 查看使用说明。\n"
+                                "暂不支持消息链接、音频、GIF 和其他文档。")
                 key = f"reply:{inbox_id}"
                 if not session.scalar(select(Notification).where(Notification.event_key == key)):
                     session.add(Notification(event_key=key, chat_id=chat_id, payload={"text": response, "bot_id": bot_id}))
@@ -122,40 +126,40 @@ class IngestService:
     def callback(self, payload: dict[str, Any]) -> str:
         data = str(payload.get("data", "")).split(":")
         if len(data) != 3 or data[0] not in {"y", "n"} or not data[1] or not data[2]:
-            raise AppError("INVALID_CALLBACK", "这个按钮已失效，请重新发送媒体获取确认提示")
+            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送媒体获取确认提示")
         user = payload.get("from", payload.get("from_user", {}))
         try:
             user_id = int(user.get("id", 0))
             chat_id = int(payload.get("message", {}).get("chat", {}).get("id", 0))
         except (TypeError, ValueError, AttributeError):
-            raise AppError("INVALID_CALLBACK", "这个按钮已失效，请重新发送媒体获取确认提示") from None
+            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送媒体获取确认提示") from None
         try:
             state = self.tasks.confirm(data[1], data[2], user_id, chat_id,
                                        "confirm" if data[0] == "y" else "cancel")
         except AppError as exc:
             if exc.code == "FORBIDDEN":
-                raise AppError("FORBIDDEN", "无法操作此请求，请使用获授权的账号重新发送媒体", 403) from None
+                raise AppError("FORBIDDEN", "⚠️ 无法操作此请求，请使用获授权的账号重新发送媒体", 403) from None
             raise
         messages = {
-            "deleted": "任务记录已删除，如需下载请重新发送媒体",
-            "queued": "已加入下载队列，请等待下载结果",
-            "fetching": "任务正在下载，请等待下载结果",
-            "saving": "文件正在保存，请稍候",
-            "retry_wait": "下载暂时失败，正在等待自动重试",
-            "waiting_existing": "正在等待相同文件的下载结果，无需重复确认",
-            "recovery_blocked": "任务正在等待恢复，请在 WebUI 查看状态",
-            "cancelling": "任务正在取消，请等待处理结果",
-            "succeeded": "文件已下载成功，无需重复确认",
-            "already_exists": "文件已保存，无需重复下载",
-            "partial_success": "部分文件已保存，请在 WebUI 查看详情或重试失败项",
-            "failed": "下载失败，请在 WebUI 查看原因并重试",
-            "cancelled": "该请求已取消，如需下载请重新发送媒体",
-            "expired": "确认已过期，未开始下载。请重新发送媒体获取新的确认提示",
-            "configuration_changed": "保存配置已变更，正在生成新的确认提示，请使用新提示操作",
-            "collecting": "正在生成确认提示，请稍候再操作",
-            "awaiting_confirmation": "请使用最新的确认提示操作",
+            "deleted": "🗑️ 任务记录已删除，如需下载请重新发送媒体",
+            "queued": "⏳ 已加入下载队列，请等待下载结果",
+            "fetching": "📥 任务正在下载，请等待下载结果",
+            "saving": "📥 任务正在下载或正在保存，请稍候",
+            "retry_wait": "⏳ 下载暂时失败，正在等待自动重试",
+            "waiting_existing": "⏳ 正在等待相同文件的下载结果，无需重复确认",
+            "recovery_blocked": "⚠️ 任务正在等待恢复，请在 WebUI 查看状态",
+            "cancelling": "⏳ 任务正在取消，请等待处理结果",
+            "succeeded": "✅ 文件已下载成功，无需重复确认",
+            "already_exists": "✅ 文件已保存，无需重复下载",
+            "partial_success": "⚠️ 部分文件已保存，请在 WebUI 查看详情或重试失败项",
+            "failed": "❌ 下载失败，请在 WebUI 查看原因并重试",
+            "cancelled": "❌ 该请求已取消，如需下载请重新发送媒体",
+            "expired": "⌛ 确认已过期，未开始下载。请重新发送媒体获取新的确认提示",
+            "configuration_changed": "🔄 保存配置已变更，正在生成新的确认提示，请使用新提示操作",
+            "collecting": "⏳ 正在生成确认提示，请稍候再操作",
+            "awaiting_confirmation": "📥 请使用最新的确认提示操作",
         }
-        text = messages.get(state, "请在 WebUI 查看任务的最新状态")
+        text = messages.get(state, "⚠️ 请在 WebUI 查看任务的最新状态")
         if data[0] == "n" and state in {"queued", "fetching", "saving", "retry_wait", "waiting_existing", "recovery_blocked"}:
             text += "。如需取消，请前往 WebUI 操作"
         return text

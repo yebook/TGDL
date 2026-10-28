@@ -4,7 +4,7 @@
 
 **[在线文档](https://yebook.github.io/TGDL/)** · [第一次下载](https://yebook.github.io/TGDL/quick-start.html) · [更新日志](https://yebook.github.io/TGDL/changelog.html) · [问题反馈](https://github.com/yebook/TGDL/issues)
 
-目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。默认部署文件已改为拉取配套生产镜像，公开镜像尚待首次发布；**目前可用的启动方式仍是下方源码构建**。真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
+目前尚未正式发布；[当前版本与更新日志](https://yebook.github.io/TGDL/changelog.html) 可在文档站查看。部署统一使用下方的源码构建方式。真实 Telegram 大文件、Docker 宿主机和代理完整链路的验收范围见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
 
 ## 怎么使用
 
@@ -81,6 +81,7 @@ docker compose ps
 | 下载大文件、获取应用凭据、配置代理 | [本地 API 与网络](https://yebook.github.io/TGDL/telegram-api.html) |
 | 查看进度、管理任务和目录 | [任务与归档](https://yebook.github.io/TGDL/usage.html) · [提示与命名](https://yebook.github.io/TGDL/templates.html) |
 | 迁移配置、处理故障 | [配置备份](https://yebook.github.io/TGDL/configuration-backup.html) · [维护](https://yebook.github.io/TGDL/operations.html) · [常见问题](https://yebook.github.io/TGDL/faq.html) |
+| 更新现有部署、失败回退 | [版本升级步骤](https://yebook.github.io/TGDL/operations.html#upgrade) |
 
 ## 参与与安全
 

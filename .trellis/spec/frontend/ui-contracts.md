@@ -19,6 +19,13 @@ at the form boundary. Preserve environment read-only rules, current saved
 durations and previously issued cards. Template examples use only
 `{expires_in_minutes}`; unsupported variables are rejected.
 
+Task file durations use `api/format.duration(number|null|undefined)` for Chinese
+hours/minutes/seconds with whole-second truncation and omitted zero units:
+`135 -> 2分15秒`, `4110 -> 1小时8分30秒`, `0 -> 0秒`; invalid, missing or
+negative input returns `—`. Media metadata is labelled `视频时长`, progress
+elapsed time `耗时`; do not confuse `duration_seconds` with `elapsed_seconds`.
+API numeric seconds, timing and progress calculations remain unchanged.
+
 The settings form uses `novalidate`: native step validation with a 0.5-minute
 minimum and a one-minute step can block valid integer minutes.
 Keep explicit frontend and API range validation. Browser tests must submit the

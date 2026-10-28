@@ -1,6 +1,6 @@
 [project]
 name = "tgd-backend"
-version = "0.1.0"
+version = "0.1.1"
 description = "Self-hosted Telegram media download manager"
 requires-python = ">=3.12,<3.13"
 dependencies = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "pydantic>=2.10,<3", "sqlalchemy>=2.0,<3", "alembic>=1.14,<2", "aiogram[proxy]>=3.18,<4", "argon2-cffi>=23.1,<26", "cryptography>=44,<47", "filelock>=3.17,<4", "tzdata>=2025.1"]

@@ -113,7 +113,10 @@ Never read deployment `.env`, credentials or user data. Bot Token remains empty;
 no Bot API container or Telegram calls. Generate disposable credentials internally.
 Output schema_version=1, fixed check statuses/error codes and unverified gates;
 never print API/Docker response bodies, credentials or paths. Stop before copying
-SQLite and keys together; preserve storage identity and marker bytes unchanged.
+SQLite and keys together; assert copied storage identity metadata is unchanged,
+without requiring a `.tgd-root` output marker. A copied download directory has a
+new inode: verify its sentinel content and distinct identity, then explicitly
+remove only this disposable root's precise identity JSON before re-enrollment.
 Restore uses the same filesystem and container paths, not a different-device
 migration. Keep cleanup restricted to exact owned resources; if container removal
 fails, do not remove data it may still be using.
@@ -131,8 +134,9 @@ fails, do not remove data it may still be using.
 
 Good: save non-Bot settings, recreate, restore stopped backup and verify login,
 revision, storage identity and sentinel bytes. Base: initialized disposable app
-has no configured Bot. Bad: test touches `.runtime/local-docker`, edits identity
-to force restoration success, or uses a synthetic backend fixture in the image.
+has no configured Bot. Bad: test touches `.runtime/local-docker`, rewrites identity
+to disguise a mismatch, or uses a synthetic backend fixture in the image. Explicit
+verified re-enrollment of the copied disposable root must be visible in the test.
 
 ### 6. Tests Required
 

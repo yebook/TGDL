@@ -37,7 +37,7 @@ Settings persistence and online validation are separate. `PATCH /api/v1/settings
 
 After token changes, gate new polling/dispatch/notifications on the connected token digest matching saved settings. Claim queued jobs for the verified bot_id only; retain the matching client/id snapshot across asynchronous operations. Existing in-flight workers keep their ownership until completion. Never send another Bot's durable notifications through a newly connected client. Regression checks must prove offline saving while identity lookup fails, manual validation without persisted revision/secret changes, and cross-Bot job/outbox isolation.
 
-Persist updates/cursor before advancing polling. Confirmation precedes getFile. Download and notification retries are independent. Stream into a part file, hash and fsync, publish using non-overwriting hard link and persist journal through uncertain boundaries. Existing successful files are not fetched again. Local HTTP cancellation does not prove Telegram stopped getFile: uncertain jobs retain global slots until reconciliation. Root marker/device changes block storage without fallback.
+Persist updates/cursor before advancing polling. Confirmation precedes getFile. Download and notification retries are independent. Stream into a part file, hash and fsync, publish using non-overwriting hard link and persist journal through uncertain boundaries. Existing successful files are not fetched again. Local HTTP cancellation does not prove Telegram stopped getFile: uncertain jobs retain global slots until reconciliation. Missing roots or changed device/inode identity block storage without fallback; identity metadata lives under application data, without a download-directory marker. See storage-identity-contracts.md.
 
 Local publication also atomically enqueues independent `CacheCleanup` work using
 `PublishJournal.api_source_path_encrypted`. See [cache-cleanup-contracts.md](cache-cleanup-contracts.md).
@@ -130,7 +130,7 @@ Saving proxy configuration is not activation; fresh exact supervisor command/con
 | Stale settings revision | 409 |
 | Invalid schema/range | 422; no secret echo |
 | Existing destination | Never overwrite |
-| Missing/changed root marker | Fail or recovery block; no alternate directory |
+| Missing root or changed device/inode identity | Fail or recovery block; no alternate directory |
 | Desired-file write failure | Persisted and applied states reported separately |
 | Expired confirmation/cancel button | Visible expired guidance; no jobs created |
 | Repeated confirm / cancel after confirmation | Report actual state; no duplicate jobs or false cancellation |

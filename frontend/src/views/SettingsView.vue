@@ -323,7 +323,7 @@ onMounted(load)
             </div>
             <dl class="template-variables" aria-label="文件名变量"><div v-for="[key, description] in filenameVariables" :key="key"><dt><code>{{ '{' + key + '}' }}</code></dt><dd>{{ description }}</dd></div></dl>
           </div>
-          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：保留原名。</li><li><code v-text="'{date}_{name}'" />：收件日期与原名。</li><li><code v-text="'{date}_{type}_{index}'" />：日期、类型与序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。文件名会清理不支持的字符，过长时缩短；重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置。</p></div></details>
+          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：原文件名，缺失时用消息标题。</li><li><code v-text="'{date}_{name}'" />：收件日期与文件名称。</li><li><code v-text="'{date}_{type}_{index}'" />：日期、类型与序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。文件名优先使用原名，缺失时使用消息标题，再无标题则自动命名。同组共用消息标题；用标题命名的组内文件会加序号，模板已有序号变量时不重复添加。文件名会清理不支持的字符，过长时缩短；重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置。</p></div></details>
         </section>
 
         <section v-show="section === 'maintenance'" class="panel settings-section">

@@ -9,6 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.bot.grouping import GROUP_MAX_SECONDS
+from app.bot.messages import failure_hint, status_label
 from app.core.errors import AppError
 from app.core.templates import render_confirmation
 from app.db.models import Attempt, IngestUpdate, Job, MediaItem, MediaRequest, Notification, uid
@@ -17,7 +18,7 @@ from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.settings import SettingsService
 from app.storage.files import contained
-from app.storage.naming import fit_name, planned_name, request_summary, unique_name
+from app.storage.naming import fit_name, planned_name, request_caption, request_summary, unique_name
 
 ACTIVE = {"queued", "fetching", "saving", "cancelling", "retry_wait", "waiting_existing", "recovery_blocked"}
 TERMINAL = {"succeeded", "already_exists", "failed", "cancelled"}
@@ -81,11 +82,16 @@ def project(session: Session, request: MediaRequest) -> None:
         request.status, request.updated_at = state, time.time()
         if not any(s in ACTIVE for s in states):
             request.result_revision += 1
-            labels = {"succeeded": "下载成功", "already_exists": "文件已保存", "partial_success": "部分完成",
-                      "cancelled": "已取消", "failed": "下载失败"}
-            lines = [f"{labels[state]}：{request.title}"]
+            lines = [f"{status_label(state)}：{request.title}"]
             for job in jobs:
-                lines.append(f"{job.state}: {job.relative_path}" + (f"（{job.error_message}）" if job.error_message else ""))
+                line = f"{status_label(job.state)} · {job.relative_path}"
+                if job.state == "failed":
+                    line += f"（{failure_hint(job.error_code)}）"
+                lines.append(line)
+            if state in {"failed", "partial_success"}:
+                lines.append("请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。")
+            elif state == "cancelled":
+                lines.append("已保存的文件会保留。如需再次下载，请重新发送媒体。")
             enqueue(session, request, f"result:{request.id}:{request.result_revision}", "\n".join(lines))
 
 
@@ -163,9 +169,10 @@ class TaskService:
                 request.expires_at = time.time() + settings.confirmation_timeout_seconds
                 used: set[str] = set()
                 lines = []
+                caption = request_caption(items)
                 for index, item in enumerate(items, start=1):
                     item.planned_filename = unique_name(planned_name(
-                        item, request, settings.filename_template, settings.timezone, index), used)
+                        item, request, settings.filename_template, settings.timezone, index, caption=caption), used)
                     lines.append(f"{item.planned_filename} · {format_bytes(item.size_bytes)}")
                 sizes = [item.size_bytes for item in items]
                 text = render_confirmation(settings.confirmation_template, {
@@ -215,7 +222,7 @@ class TaskService:
                 session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,
                                 relative_path=f"{request.destination}/{name}", max_auto_retries=settings.max_auto_retries))
             request.status, request.updated_at = "queued", time.time()
-            enqueue(session, request, f"queued:{request.id}", f"已加入下载队列：{request.title}")
+            enqueue(session, request, f"queued:{request.id}", f"⏳ 已加入下载队列：{request.title}\n完成后会在这里通知你。")
             return "queued"
 
     def _dto(self, session: Session, request: MediaRequest, detail: bool = False, *,

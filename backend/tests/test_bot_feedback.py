@@ -8,9 +8,11 @@ from sqlalchemy import func, select
 from test_pipeline import message, setup_pipeline
 
 from app.bot.client import TelegramClient
+from app.bot.messages import STATUS_LABELS
 from app.core.errors import AppError
-from app.db.models import Job, MediaRequest
+from app.db.models import Job, MediaItem, MediaRequest, Notification
 from app.schemas.contracts import SettingsPatch
+from app.services.tasks import project
 
 
 def pending_request(client: TestClient):
@@ -26,8 +28,8 @@ def pending_request(client: TestClient):
 
 def test_confirmation_feedback_is_idempotent_and_cancel_is_truthful(client: TestClient) -> None:
     state, ingest, request_id, payload = pending_request(client)
-    assert ingest.callback(payload) == "已加入下载队列，请等待下载结果"
-    assert ingest.callback(payload) == "已加入下载队列，请等待下载结果"
+    assert ingest.callback(payload) == "⏳ 已加入下载队列，请等待下载结果"
+    assert ingest.callback(payload) == "⏳ 已加入下载队列，请等待下载结果"
     payload["data"] = payload["data"].replace("y:", "n:", 1)
     assert "如需取消，请前往 WebUI 操作" in ingest.callback(payload)
     assert state.tasks.detail(request_id)["status"] == "queued"
@@ -43,6 +45,86 @@ def test_confirmation_feedback_is_idempotent_and_cancel_is_truthful(client: Test
         for action in ("y", "n"):
             payload["data"] = action + payload["data"][1:]
             assert expected in ingest.callback(payload)
+
+
+@pytest.mark.parametrize("command", ["/start", "/help", "/status"])
+def test_friendly_commands_preserve_single_reply(client: TestClient, command: str) -> None:
+    state, ingest = setup_pipeline(client)
+    incoming = {"message_id": 1, "from": {"id": 42}, "chat": {"id": 42, "type": "private"}, "text": command}
+    ingest.message(7, incoming, "command")
+    ingest.message(7, incoming, "command")
+    with state.db.sessions() as session:
+        notes = list(session.scalars(select(Notification)))
+        assert len(notes) == 1
+        text = notes[0].payload["text"]
+        assert ("📭 暂无下载任务" if command == "/status" else "📥 发送或转发") in text
+
+
+def test_status_translates_states_and_keeps_full_ids(client: TestClient) -> None:
+    state, ingest = setup_pipeline(client)
+    with state.db.transaction() as session:
+        for number, status in enumerate(["queued", "saving", "retry_wait", "partial_success", "already_exists"]):
+            session.add(MediaRequest(id=f"friendly-{number}", bot_id=7, user_id=42, chat_id=42,
+                                     title="🌅" * 80, status=status, collect_until=0))
+    ingest.message(7, {"message_id": 1, "from": {"id": 42}, "chat": {"id": 42, "type": "private"},
+                       "text": "/status"}, "status")
+    with state.db.sessions() as session:
+        text = session.scalar(select(Notification)).payload["text"]
+    for number, status in enumerate(["queued", "saving", "retry_wait", "partial_success", "already_exists"]):
+        assert STATUS_LABELS[status] in text
+        assert f"任务编号：friendly-{number}" in text
+        assert status not in text
+    assert len(text.encode("utf-16-le")) // 2 <= 3900
+    assert "\ufffd" not in text
+
+
+@pytest.mark.parametrize("states,expected", [
+    (["succeeded", "failed"], "⚠️ 部分完成"),
+    (["failed", "failed"], "❌ 下载失败"),
+    (["already_exists", "already_exists"], "✅ 文件已保存，无需重复下载"),
+    (["cancelled", "cancelled"], "❌ 已取消"),
+    (["succeeded", "succeeded"], "✅ 下载成功"),
+])
+def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClient, states: list[str], expected: str) -> None:
+    state, _, request_id, payload = pending_request(client)
+    state.tasks.confirm(request_id, payload["data"].split(":")[2], 42, 42, "confirm")
+    with state.db.transaction() as session:
+        first = session.scalar(select(Job))
+        first.state = states[0]
+        second = MediaItem(request_id=request_id, bot_id=7, chat_id=42, message_id=2,
+                           file_id="synthetic", media_type="video")
+        session.add(second)
+        session.flush()
+        session.add(Job(request_id=request_id, item_id=second.id, state=states[1],
+                        relative_path="day/two.mp4", error_code="CLOUD_FILE_TOO_LARGE",
+                        error_message="secret-raw-upstream-error"))
+        session.flush()
+        project(session, session.get(MediaRequest, request_id))
+    with state.db.sessions() as session:
+        text = session.scalar(select(Notification).where(Notification.event_key.like("result:%"))).payload["text"]
+    assert text.startswith(expected)
+    assert text.endswith(f"\n任务编号：{request_id}")
+    assert "secret-raw-upstream-error" not in text
+    for status in states:
+        assert STATUS_LABELS[status] in text
+        assert status not in text
+    if states[1] == "failed":
+        assert "20 MB" in text and "切换本地 API" in text
+        assert "已保存的文件会保留" in text
+
+
+async def test_confirmation_buttons_keep_protocol_and_plain_text() -> None:
+    telegram = object.__new__(TelegramClient)
+    telegram.safety = None
+    telegram.bot = Mock()
+    telegram.bot.send_message = AsyncMock(return_value=Mock(message_id=123))
+    assert await telegram.send(42, "📥 <标题>", ("task", "nonce")) == 123
+    args, kwargs = telegram.bot.send_message.call_args
+    assert args == (42, "📥 <标题>")
+    assert "parse_mode" not in kwargs
+    buttons = kwargs["reply_markup"].inline_keyboard[0]
+    assert [(b.text, b.callback_data) for b in buttons] == [
+        ("✅ 确认下载", "y:task:nonce"), ("❌ 取消", "n:task:nonce")]
 
 
 @pytest.mark.parametrize("expired", [False, True])

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { MediaItem } from '../api/types'
-import { bytes } from '../api/format'
+import { bytes, duration } from '../api/format'
 import { mediaProgress } from '../api/mediaProgress'
 
 const props = defineProps<{ item: MediaItem }>()
@@ -10,7 +10,7 @@ const progress = computed(() => mediaProgress(props.item))
 
 <template>
   <div class="media-progress">
-    <p class="progress-caption">{{ progress.label }}<span v-if="item.elapsed_seconds != null"> · {{ Math.floor(item.elapsed_seconds) }} 秒</span></p>
+    <p class="progress-caption">{{ progress.label }}<span v-if="item.elapsed_seconds != null"> · 耗时 {{ duration(item.elapsed_seconds) }}</span></p>
     <el-progress v-if="progress.percentage != null" :percentage="progress.percentage" :stroke-width="6" :aria-label="progress.label" />
     <div v-else class="indeterminate-progress" role="progressbar" :aria-label="progress.label" aria-valuemin="0" aria-valuemax="100"><span /></div>
     <p v-if="progress.measured" class="muted">{{ progress.verb }} {{ bytes(progress.completedBytes) }}<template v-if="progress.totalBytes != null"> / {{ progress.estimated ? '约 ' : '' }}{{ bytes(progress.totalBytes) }}</template><template v-if="progress.speedBps != null"> · {{ bytes(progress.speedBps) }}/s</template></p>

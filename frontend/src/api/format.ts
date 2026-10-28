@@ -4,6 +4,14 @@ export function bytes(value: number | null | undefined): string {
   const unit = Math.min(Math.floor(Math.log(Math.max(value, 1)) / Math.log(1024)), 4)
   return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${['B', 'KB', 'MB', 'GB', 'TB'][unit]}`
 }
+export function duration(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  const totalSeconds = Math.floor(value)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor(totalSeconds % 3600 / 60)
+  const seconds = totalSeconds % 60
+  return `${hours ? `${hours}小时` : ''}${minutes ? `${minutes}分` : ''}${seconds || !totalSeconds ? `${seconds}秒` : ''}`
+}
 export function dateTime(value: string | null | undefined): string {
   if (!value) return '—'
   const date = new Date(value)

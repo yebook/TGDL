@@ -621,3 +621,55 @@ M0 的锁定依赖、health、构建配置及模拟文件链路已完成；官�
   uv-server teardown timed out; narrow manual-server rerun2passed/exit0, temporary
   server/config cleaned. See
   research/api-switch-status-verification-20261028.md for final evidence.
+
+## Friendly Bot presentation (2026-10-28)
+
+- Added sparse, meaningful emoji and concise Chinese to the default confirmation
+  card, confirmation/cancel buttons, welcome/help, queue, status, result and
+  existing callback alerts. Shared presentation labels replace raw internal
+  state codes; saving remains neutral about download versus final-output saving.
+- Result files retain their correct individual success/existing/failure states.
+  Known failure codes use fixed actionable reasons; unknown failures link to
+  WebUI without interpolating raw upstream error strings. Full task identifiers
+  remain on a separate reserved line. No state, identifiers, pacing, parse mode,
+  notification count, persistent title/path or existing message changes.
+- Frontend default and preview, docs example and restore-default instructions
+  match backend. Existing saved/custom confirmation templates are retained;
+  restoring the default and saving opts into the new card for future requests.
+- Scoped backend feedback/templates/archive/deletion/pipeline run: 97 passed,
+  one newly added status fixture failed for missing collect_until; corrected the
+  fixture and reran only that case (1 passed). Ruff passed and mypy37 passed.
+  Frontend template28 passed, ESLint and production build including vue-tsc
+  passed. No broad browser/backend run, Docker update, live Telegram acceptance,
+  commit or push. Independent review owns extra message-budget/parity coverage.
+
+## Readable file durations (2026-10-28)
+
+- Added shared Chinese duration formatting for task-detail download elapsed time
+  and video metadata. Explicit labels distinguish download elapsed time from video
+  length; whole seconds truncate as before, invalid values use an em dash, and
+  zero remains visible. No API, runtime, completed-job timing or polling changes.
+- Frontend unit command ran all 13 files / 108 cases successfully (including new
+  minute/hour boundary, fractional-second and invalid-value cases). ESLint and
+  production build with vue-tsc passed; git diff --check passed. No Docker update,
+  real Telegram test, commit or push performed for this presentation-only change.
+
+## Clean download output and caption filename fallback (2026-10-28)
+
+- Replaced output-tree `.tgd-root` creation/dependency with strict device/inode
+  directory identity in the existing per-root data JSON. Missing/replaced roots
+  remain blocked, malformed and old records produce actionable errors, and
+  unrecognized existing output files are never deleted. Documented exact default
+  identity reset only after stop, backup and mount verification; intentional
+  directory copies require explicit re-enrollment, not automatic acceptance.
+- Card planning shares the first normalized caption in message order across
+  group members. Filename priority is nonblank original, caption, existing
+  generated fallback. Caption-derived group files reserve a numeric suffix;
+  actual template index variables are retained once with caption byte-budgeting,
+  whereas escaped literal braces are not index placeholders. Existing templates,
+  safe extension/byte limits, collisions and frozen confirmation plans remain.
+- Updated filename variable/help text, user storage/backup documentation, and
+  offline Docker acceptance's copied-root rejection/re-enrollment assumptions.
+- Focused storage/pipeline/templates/cache-cleanup tests: 78 passed, one Windows
+  symlink-privilege skip. Ruff app/tests/tools/scripts/deploy and mypy app36 pass.
+  No Docker update, real Telegram, media deletion, commit or push performed.

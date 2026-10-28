@@ -121,7 +121,7 @@ Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓�
 修改本地 API 源码补丁时，先编译实际镜像，再运行专用传输检查。以下命令在项目根目录执行，不挂载应用数据，不填写真实凭据；专用检查镜像安装 `strace`，只在断网容器中验证。
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.1.0 .
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.1.1 .
 docker build -f deploy/bot-api/Dockerfile.verify-native -t tgd-native-transport-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-transport-acceptance
 ```
@@ -135,7 +135,7 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.1.0 -t tgd-native-progress-acceptance .
+docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.1.1 -t tgd-native-progress-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-progress-acceptance
 ```
 

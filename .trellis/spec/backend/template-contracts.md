@@ -13,15 +13,17 @@ scripts, expressions or filesystem paths.
 these fields with the usual revision, source and editable semantics.
 `MediaItem.planned_filename` is nullable during collection and mandatory when
 confirming a frozen card.
+`app.bot.messages.status_label(state: str) -> str` formats Bot-only state labels;
+it never changes persisted states or the API's enum values.
 
 ## 3. Contracts
 
 Default confirmation text (actual newlines):
 
 ```text
-确认下载：{title}
-保存到：{destination}
-确认有效期：{expires_in_minutes} 分钟
+📥 确认下载：{title}
+📁 保存到：{destination}
+⏳ 确认有效期：{expires_in_minutes} 分钟
 {files}
 ```
 
@@ -36,17 +38,43 @@ is bounded to 3500 UTF-16 units. On overflow, reserve literal text then budget
 each placeholder occurrence, shortening values with `…` so a long early field
 does not hide all later fields. Apply a final surrogate-safe cap if the literal
 text alone exceeds the limit. Example preview follows the same bound.
+
+Bot-owned messages use concise Chinese status text with sparse meaningful emoji;
+never show internal status enums as user-facing result or `/status` labels.
+Emoji decorate messages/buttons only, never persisted titles, filenames, folder
+names, callback data or event keys. Keep the system task-ID line unchanged and
+reserve UTF-16 space for the complete ID, including astral emoji in the body.
+Use actionable safe reasons for known failures and WebUI guidance for unknown
+errors, without interpolating arbitrary upstream exception text. Preserve the
+existing notification cadence and all authorization/state/request-safety rules.
+Changing the default must not rewrite saved custom templates or queued payloads;
+existing users can explicitly restore the default and save it in WebUI.
 Filename variables are `name` (stem), `date` (YYYYMMDD), `time` (HHMMSS),
 `datetime` (YYYYMMDD_HHMMSS), `type` (video/image), `index` (1-based integer in
 message order), and `id` (short media item ID). Date/time use request creation time
 and the configured timezone when the card freezes.
+
+`request_caption(items)` selects the first nonblank normalized caption from
+message-ordered members. `planned_name(..., *, caption=None)` uses a nonblank
+original filename first, that shared caption second, and the existing generated
+media name last. `{name}` is the resulting stem. A caption containing dots is
+text, not a source extension; retain the media's normal extension independently.
+For caption-derived group names reserve `_<message-order-index>` immediately
+before the extension after rendering/truncation, unless the template already
+contains an actual `{index}` placeholder. Escaped `{{index}}` is literal text and
+does not suppress the suffix. Original-name members retain their ordinary
+template behavior; all members still participate in deterministic collision checks.
+For an indexed template, reserve its literal/other-variable/extension budget
+before truncating caption substitutions (including repeated `{name}` fields),
+so the actual index survives. If template literals alone exceed the byte cap,
+reserve an end suffix as a fallback even when an index placeholder exists.
 
 `title` is the persisted caption-derived request title without an appended request ID,
 shared with the task API and Bot status/result messages; do not derive a separate
 display-only title in a template consumer. `destination` follows date-first
 archives (`YYYY-MM-DD` for singles; a safe caption/fallback group folder below
 that date for groups), as defined in runtime-contracts.md. Caption text never
-changes filename template variables or creates extra path levels. Old cards and
+changes the template grammar or creates extra path levels. Old cards and
 their stored destinations/titles remain unchanged.
 
 New task notifications append a system-owned line `任务编号：<full request ID>`
@@ -88,6 +116,9 @@ remains offline and does not mean the Bot is connected.
 | Empty/whitespace or out-of-range length | Reject; preserve saved settings |
 | Filename template contains directory/control syntax | Reject; never create template-defined directories |
 | Original name contains unsafe characters | Sanitize substituted value; retain safe extension |
+| Original name missing/blank | Shared caption stem, otherwise generated fallback |
+| Caption-derived group name | Numeric message-order index; preserve suffix within byte limit |
+| Unknown Bot status/error | Safe Chinese fallback and WebUI guidance, no raw enum/exception |
 | Settings revision conflict | 409; retain unsaved editor input |
 | Template changed after card generation | Existing planned names stay fixed |
 
@@ -102,10 +133,17 @@ braces as another expression, or silently renaming an already confirmed job.
 
 Assert template validation and offline persistence, all supported variables,
 escaped/literal braces, readable/unknown sizes, original-name sanitation,
+shared caption fallback across mixed groups, numeric suffix preservation,
 extension-preserving byte limits, deterministic collisions, card-time snapshots,
 missing-snapshot rejection and current defaults. Browser tests verify persistence,
 example preview, reset, invalid input and short mobile layout. No real Bot or
 existing runtime data is used by these tests.
+
+For Bot-copy changes, verify default/backend-preview parity, Chinese status/result
+labels, meaningful failure guidance, confirmation/cancel/expired callback feedback,
+unchanged callback payloads, complete separate IDs at emoji-heavy UTF-16 limits,
+and custom template preservation. Use focused helper/integration tests rather
+than real Telegram requests for presentation-only edits.
 
 ## 7. Wrong vs Correct
 

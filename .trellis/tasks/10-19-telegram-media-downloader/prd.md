@@ -260,3 +260,50 @@
 - Present preparation, required cloud logout/cooldown, process start/stop, verification, completion and actionable failure consistently in topbar and connection settings. Normal transitions must not appear as unrelated Bot failures; retain genuine errors and recovery controls.
 - Preserve offline saves, serialized operations, bounded waits/manual recovery, uncertain logout acknowledgement, Telegram pacing, active-owner draining and current generation/configuration publication barriers. Never add status-triggered network probes or clear request protection to improve labels.
 - Cover recovery after transient errors, obsolete connection results, token/mode changes and asynchronous status updates with focused backend/frontend checks. Preserve earlier pending CPU and source-only deployment changes; no compatibility work or unrelated redesign.
+
+## Human-readable per-file elapsed time (2026-10-28)
+
+- Task details show download elapsed time using Chinese hours/minutes/seconds
+  instead of a large raw seconds value. Keep API numeric seconds and timing
+  calculations unchanged; distinguish download elapsed from media duration.
+- Reuse a shared formatter with finite/nonnegative handling and existing
+  whole-second truncation. Verify only formatting boundaries and frontend checks.
+
+## Clean download output and caption-based filenames (2026-10-28)
+
+- Avoid persistent auxiliary files such as `.tgd-root` in the download directory;
+  retain storage identity and missing/replaced mount protection using metadata in
+  the application's data directory. Never delete media or trust a replaced root
+  as an automatic repair. In-progress temporary media files remain necessary.
+- When saving, prefer a nonblank original filename, then the message's normalized
+  caption/title, then the existing generated fallback. For a media group, share
+  its message caption across members and append each member's numeric index when
+  using a caption-derived name, even when some siblings have original filenames.
+- Preserve templates, media extensions, safe bounded path components,
+  non-overwrite guarantees and frozen confirmation/retry paths. Update the user
+  descriptions and verify only the affected naming/storage boundaries.
+
+## Patch version and upgrade instructions (2026-10-28)
+
+- Increment the canonical numeric patch version to `0.1.1` and synchronize owned
+  package, build, deployment and documentation mirrors. Do not create a Git tag,
+  release, commit, push or update containers without a corresponding request.
+- Add practical source-deployment upgrade steps for Git and ZIP users, including
+  stopped consistent backup, preservation of environment/persistent directories,
+  source update, cached rebuild/recreation, status/version checks and rollback.
+- Explain the download-root identity change and precise deliberate re-enrollment
+  when upgrading unpublished data; never automatically reset user databases,
+  media or unrelated metadata. Link the guide from deployment documentation.
+
+## Friendly Bot messages (2026-10-28)
+
+- Use concise Chinese text and a few meaningful emoji for Bot welcome/help,
+  confirmation, queue, result, status and existing button feedback. Make success,
+  failure, partial completion, waiting, cancellation and expired confirmation easy
+  to recognize without relying on emoji alone or internal state codes.
+- Preserve full task IDs on their own line, safe error guidance, custom templates,
+  persisted titles/names and already-issued messages. Match default confirmation
+  examples and WebUI previews; users may restore/save the new default explicitly.
+- Change presentation only: no extra Telegram requests or notifications, new
+  parse mode, ownership/state/pacing changes or broad unrelated regression run.
+  Keep messages within existing UTF-16 budgets with complete identifiers.

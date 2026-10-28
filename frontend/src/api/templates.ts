@@ -1,13 +1,13 @@
 import { bytes } from './format'
 
-export const defaultConfirmationTemplate = '确认下载：{title}\n保存到：{destination}\n确认有效期：{expires_in_minutes} 分钟\n{files}'
+export const defaultConfirmationTemplate = '📥 确认下载：{title}\n📁 保存到：{destination}\n⏳ 确认有效期：{expires_in_minutes} 分钟\n{files}'
 export const defaultFilenameTemplate = '{name}_{id}'
 export const confirmationVariables = [
   ['title', '消息标题'], ['file_count', '文件数量'], ['total_size', '总大小（未知时显示未知）'],
   ['files', '文件清单（含大小）'], ['destination', '保存目录'], ['expires_in_minutes', '确认有效期（分钟）'],
 ] as const
 export const filenameVariables = [
-  ['name', '原文件名，不含扩展名'], ['date', '日期 YYYYMMDD'], ['time', '时间 HHMMSS'],
+  ['name', '原名主体；缺失时用消息标题，再自动命名'], ['date', '日期 YYYYMMDD'], ['time', '时间 HHMMSS'],
   ['datetime', '日期时间 YYYYMMDD_HHMMSS'], ['type', 'video 或 image'], ['index', '顺序，从 1 开始'], ['id', '短 ID'],
 ] as const
 

@@ -3,6 +3,7 @@ import re
 import unicodedata
 from datetime import datetime
 from pathlib import PurePosixPath
+from string import Formatter
 from zoneinfo import ZoneInfo
 
 from app.core.templates import render_template
@@ -17,8 +18,12 @@ def text_summary(value: str | None) -> str:
     return text if len(text) <= 80 else text[:79].rstrip() + "…"
 
 
+def request_caption(items: list[MediaItem]) -> str:
+    return next((summary for item in items if (summary := text_summary(item.caption_snippet))), "")
+
+
 def request_summary(request: MediaRequest, items: list[MediaItem]) -> str:
-    caption = next((item.caption_snippet for item in items if item.caption_snippet), None)
+    caption = request_caption(items)
     original = next((item.original_name for item in items if text_summary(item.original_name)), None)
     fallback = f"媒体组（{len(items)} 个文件）" if request.kind == "group" else (
         "视频" if items[0].media_type == "video" else "图片")
@@ -32,26 +37,48 @@ def fit_name(stem: str, extension: str, suffix: str = "") -> str:
     return stem + suffix + extension
 
 
-def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone: str, index: int) -> str:
+def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone: str, index: int,
+                 *, caption: str | None = None) -> str:
     fallback = ".mp4" if item.media_type == "video" else ".jpg"
     # Extract extension before sanitization/truncation so long Unicode stems cannot lose it.
-    original = item.original_name or f"{item.media_type}_{item.id}{fallback}"
+    original = item.original_name if text_summary(item.original_name) else None
+    caption = text_summary(item.caption_snippet if caption is None else caption)
+    from_caption = original is None and bool(caption)
+    original = original or f"{item.media_type}_{item.id}{fallback}"
     extension = PurePosixPath(original).suffix
     if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension):
         extension = fallback
         stem = original
     else:
         stem = original[:-len(extension)]
+    if from_caption:
+        # A dotted caption is still title text, never an alleged file extension.
+        stem = caption
     date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
-    rendered = render_template(template, {
+    values = {
         "name": safe_name(stem, item.media_type), "id": item.id[:8], "type": item.media_type,
         "date": date.strftime("%Y%m%d"), "time": date.strftime("%H%M%S"),
         "datetime": date.strftime("%Y%m%d_%H%M%S"), "index": str(index),
-    })
+    }
+    fields = [field for _, field, _, _ in Formatter().parse(template)]
+    indexed = "index" in fields
+    group_caption = from_caption and request.kind == "group"
+    # Reserve explicit index and template text before shortening caption values.
+    # Otherwise a long Unicode title could push an existing {index} past the cap.
+    suffix = f"_{index}" if group_caption and not indexed else ""
+    if group_caption and indexed and (occurrences := fields.count("name")):
+        overhead = len(render_template(template, values | {"name": ""}).encode("utf-8"))
+        budget = max(0, (180 - len(extension.encode("utf-8")) - overhead) // occurrences)
+        values["name"] = values["name"].encode("utf-8")[:budget].decode("utf-8", errors="ignore").rstrip(" .")
+    rendered = render_template(template, values)
     # An explicitly supplied matching extension is not duplicated.
-    if rendered.lower().endswith(extension.lower()):
+    if rendered.lower().endswith(extension.lower()) and (not from_caption or template.lower().endswith(extension.lower())):
         rendered = rendered[:-len(extension)]
-    return fit_name(rendered, extension)
+    if group_caption and indexed and len(rendered.encode("utf-8")) + len(extension.encode("utf-8")) > 180:
+        # Extremely long template literals can overflow even without a caption.
+        # Keep the group number visible at the end in that exceptional case.
+        suffix = f"_{index}"
+    return fit_name(rendered, extension, suffix)
 
 
 def unique_name(name: str, used: set[str]) -> str:

@@ -261,10 +261,11 @@ def test_path_safety_and_exclusive_publication(config: Config) -> None:
     assert final.read_bytes() == b"old"
 
 
-def test_storage_marker_loss_does_not_reinitialize(client: TestClient, config: Config) -> None:
+def test_storage_root_replacement_does_not_reinitialize(client: TestClient, config: Config) -> None:
     storage = client.app.state.storage.get("default")
     storage.check()
-    (config.download_root / ".tgd-root").unlink()
+    config.download_root.rename(config.download_root.with_name("original-downloads"))
+    config.download_root.mkdir()
     with pytest.raises(AppError):
         storage.check()
     assert not (config.download_root / ".tgd-root").exists()

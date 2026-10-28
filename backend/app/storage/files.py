@@ -5,7 +5,6 @@ import re
 import shutil
 import stat
 import time
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -59,27 +58,42 @@ class Storage:
         self.identity_path = data_dir / f"storage-identity-{hashlib.sha256(root_id.encode()).hexdigest()[:16]}.json"
 
     def initialize(self) -> None:
-        if self.identity_path.exists():
+        if self.identity_path.exists() or self.identity_path.is_symlink():
             return
-        # Root must already be mounted/provisioned by the deployer. Never recreate it.
-        if not self.root.is_dir() or self.root.is_symlink():
-            raise AppError("STORAGE_UNAVAILABLE", "下载目录未挂载或不可用")
-        marker = self.root / ".tgd-root"
-        if marker.is_symlink():
-            raise AppError("UNSAFE_PATH", "存储标记不可为符号链接")
-        if not marker.exists():
-            private_file(marker, uuid.uuid4().hex.encode())
-        identity = {"marker": marker.read_text(), "device": self.root.stat().st_dev}
-        private_file(self.identity_path, json.dumps(identity).encode())
+        # Root must already exist. Keep identity outside the media output tree.
+        private_file(self.identity_path, json.dumps(self._root_identity()).encode())
+
+    def _root_identity(self) -> dict[str, int]:
+        metadata = self.root.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_ino <= 0:
+            raise AppError("STORAGE_UNAVAILABLE", "下载目录未挂载、不是实际目录或无法识别其身份")
+        return {"device": metadata.st_dev, "inode": metadata.st_ino}
+
+    def _read_identity(self) -> dict[str, int]:
+        # Fail closed for malformed/replaced metadata, including unpublished old
+        # marker-based records. Never silently enroll a different download root.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        if self.identity_path.is_symlink():
+            raise AppError("UNSAFE_PATH", "存储身份文件不可为符号链接")
+        with os.fdopen(os.open(self.identity_path, flags), "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size > 512:
+                raise AppError("UNSAFE_PATH", "存储身份文件不是独立的普通文件")
+            try:
+                identity = json.loads(stream.read(513))
+            except (ValueError, UnicodeError):
+                identity = None
+        if (not isinstance(identity, dict) or set(identity) != {"device", "inode"}
+                or any(type(value) is not int or value < 0 for value in identity.values())
+                or identity["inode"] == 0):
+            raise AppError("STORAGE_CHANGED", "存储身份记录无效；请停服确认下载挂载后，按文档重新登记该目录")
+        return identity
 
     def check(self, required: int = 0, *, check_space: bool = True) -> dict[str, Any]:
         if not self.identity_path.exists():
             self.initialize()
-        identity = json.loads(self.identity_path.read_text())
-        marker = self.root / ".tgd-root"
-        if not self.root.is_dir() or self.root.is_symlink() or marker.is_symlink() or not marker.is_file():
-            raise AppError("STORAGE_UNAVAILABLE", "存储挂载或标记已丢失")
-        if marker.read_text() != identity["marker"] or self.root.stat().st_dev != identity["device"]:
+        identity = self._read_identity()
+        if self._root_identity() != identity:
             raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
         usage = shutil.disk_usage(self.root)
         if check_space and usage.free < self.minimum_free + required:

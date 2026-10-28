@@ -210,7 +210,7 @@ async def test_cloud_publication_never_enqueues_local_cleanup(client):
         assert session.get(CacheCleanup, job_id) is None
 
 
-@pytest.mark.parametrize("changed", ["missing", "modified", "marker"])
+@pytest.mark.parametrize("changed", ["missing", "modified", "root"])
 async def test_changed_final_retains_only_cache_copy(client, monkeypatch, changed):
     state, _, _, job_id, source = await published(client)
     with state.db.sessions() as session:
@@ -220,7 +220,9 @@ async def test_changed_final_retains_only_cache_copy(client, monkeypatch, change
     elif changed == "modified":
         final.write_bytes(b"ABCDEF")  # Same size is insufficient for safe removal.
     else:
-        (state.runtime.config.download_root / ".tgd-root").write_text("different-storage")
+        root = state.runtime.config.download_root
+        root.rename(root.with_name("original-downloads"))
+        root.mkdir()
     telegram = ready(state.runtime, monkeypatch)
     assert await state.runtime.cleanup_cache()
     telegram.delete_file_cache.assert_not_awaited()
