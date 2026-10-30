@@ -78,3 +78,16 @@ export interface DiagnosticLogStatus {
 export interface DiagnosticLogExport {
   events: Array<Record<string, string | number | boolean | null>>; truncated: boolean
 }
+export interface NetworkProbeResult {
+  state: 'reachable' | 'failed' | 'timeout' | 'not_run' | 'not_applicable'
+  latency_ms: number | null; http_status: number | null
+  failure_kind: 'dns' | 'proxy_connection' | 'proxy_auth' | 'tcp' | 'tls' | 'timeout' | 'network_unknown' | null
+  failure_stage: 'dns' | 'proxy' | 'connect' | 'tls' | 'response' | 'unknown' | null
+}
+export interface NetworkTestResult {
+  checked_at: string; settings_revision: number; origin: 'app'; route: 'direct' | 'proxy'
+  proxy_scheme: 'http' | 'socks5' | null; bot_api_mode: 'cloud' | 'local'
+  telegram: NetworkProbeResult; google: NetworkProbeResult; local_api_tcp: NetworkProbeResult
+  local_api: LocalApiStatus | null; proxy_status: Settings['proxy_status']
+  local_api_upstream: 'unverified' | 'not_applicable'; next_allowed_at: string
+}

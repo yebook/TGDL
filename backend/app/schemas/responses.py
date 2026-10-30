@@ -169,6 +169,30 @@ class LocalApiStatus(BaseModel):
     can_retry: bool
 
 
+class NetworkProbeResult(BaseModel):
+    state: Literal["reachable", "failed", "timeout", "not_run", "not_applicable"]
+    latency_ms: int | None = None
+    http_status: int | None = None
+    failure_kind: Literal["dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown"] | None = None
+    failure_stage: Literal["dns", "proxy", "connect", "tls", "response", "unknown"] | None = None
+
+
+class NetworkTestResponse(BaseModel):
+    checked_at: str
+    settings_revision: int
+    origin: Literal["app"] = "app"
+    route: Literal["direct", "proxy"]
+    proxy_scheme: Literal["http", "socks5"] | None
+    bot_api_mode: Literal["cloud", "local"]
+    telegram: NetworkProbeResult
+    google: NetworkProbeResult
+    local_api_tcp: NetworkProbeResult
+    local_api: LocalApiStatus | None
+    proxy_status: ProxyStatus
+    local_api_upstream: Literal["unverified", "not_applicable"]
+    next_allowed_at: str
+
+
 class DiagnosticLogStatus(BaseModel):
     state: Literal["ready", "error"]
     message: str

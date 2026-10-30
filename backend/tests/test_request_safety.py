@@ -204,7 +204,33 @@ async def test_guard_storage_failure_blocks_transport(client: TestClient, monkey
     telegram = TelegramClient(TOKEN, client.app.state.runtime.config)
     telegram.safety = safety
     operation = AsyncMock()
-    with pytest.raises(SafetyDeferred, match="请求保护状态不可用"):
+    with pytest.raises(SafetyDeferred, match="请求保护状态不可用") as error:
         await telegram.request(operation)
+    assert error.value.reason == "protection_unavailable" and not error.value.sent
     operation.assert_not_awaited()
     await telegram.close()
+
+
+@pytest.mark.parametrize("values,reason", [
+    ({"next_start": 1005}, "pacing"),
+    ({"cooldown": 1100}, "cooldown"),
+    ({"backoff": 1100}, "backoff"),
+    ({"cooldown": 1050, "backoff": 1100}, "cooldown"),
+    ({"auth_paused": True}, "auth_paused"),
+])
+async def test_deferral_evidence_preserves_protection_and_never_sends(client: TestClient, values, reason) -> None:
+    safety, _ = guard(client)
+    with client.app.state.db.transaction() as session:
+        session.add(RequestSafety(credential=digest(TOKEN), values=values))
+    telegram = TelegramClient(TOKEN, client.app.state.runtime.config)
+    telegram.safety = safety
+    operation = AsyncMock()
+    try:
+        with pytest.raises(SafetyDeferred) as error:
+            await telegram.request(operation)
+        assert error.value.reason == reason and not error.value.sent
+        operation.assert_not_awaited()
+        with client.app.state.db.sessions() as session:
+            assert session.get(RequestSafety, digest(TOKEN)).values == values
+    finally:
+        await telegram.close()

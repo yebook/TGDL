@@ -2,6 +2,95 @@ import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import type { DownloadProgress, SystemStatus } from '../src/api/types'
 
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }]) {
+  test(`network diagnostics keep independent results and unsaved input at ${viewport.width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport)
+    await login(page)
+    await settings(page)
+    const panel = page.getByTestId('network-test')
+    const token = page.getByLabel('Bot Token', { exact: true })
+    await token.fill('unsaved-network-draft')
+    await page.route('**/api/v1/system/status', route => route.abort(), { times: 1 })
+    await page.getByRole('button', { name: '刷新状态', exact: true }).click()
+    await expect(panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true })).toBeEnabled()
+    await panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true }).focus()
+    let calls = 0
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    await page.route('**/api/v1/system/network-test', async route => {
+      calls++
+      // Delay a real API response, never synthesize successful REST data.
+      const response = await route.fetch()
+      await held
+      await route.fulfill({ response })
+    })
+    await page.keyboard.press('Enter')
+    await expect(panel).toHaveAttribute('aria-busy', 'true')
+    await expect(panel.getByRole('button')).toBeDisabled()
+    expect(calls).toBe(1)
+    release()
+    await expect(panel).toHaveAttribute('aria-busy', 'false')
+    if (await panel.getByRole('alert').count()) {
+      await expect(panel.getByRole('alert')).toContainText('间隔至少 10 秒')
+      await expect(panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true })).toBeEnabled({ timeout: 15000 })
+      await panel.getByRole('button').click()
+    }
+    await expect(panel).toContainText('Telegram HTTPS')
+    await expect(panel).toContainText('HTTP 302')
+    await expect(panel).toContainText('Google HTTPS')
+    await expect(panel).toContainText('超时')
+    await expect(panel).toContainText('TCP 连接失败')
+    await expect(panel).not.toContainText('上游：未验证')
+    await expect(panel).toContainText('不测试草稿')
+    await expect(token).toHaveValue('unsaved-network-draft')
+    await expect(page.locator('.save-bar')).toContainText('有尚未保存的修改')
+    await noOverflow(page)
+    await panel.scrollIntoViewIfNeeded()
+    const box = await panel.getByRole('button').boundingBox()
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+    await page.screenshot({ path: testInfo.outputPath(`network-results-${viewport.width}.png`) })
+    await panel.locator('.network-probes').scrollIntoViewIfNeeded()
+    await expect(panel.locator('.network-probes')).toBeInViewport({ ratio: 1 })
+    await page.screenshot({ path: testInfo.outputPath(`network-probes-${viewport.width}.png`) })
+
+    // Save an unrelated ordinary setting while retaining the old result.
+    await token.fill('')
+    await page.getByRole('button', { name: '下载与保存', exact: true }).click()
+    const duration = page.getByLabel('确认有效期（分钟）', { exact: true })
+    await duration.fill(String(Number(await duration.inputValue()) + 1))
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.save-bar')).toContainText('所有修改已保存')
+    await page.getByRole('button', { name: '连接 Telegram', exact: true }).click()
+    await expect(panel).toContainText('历史结果')
+  })
+}
+
+test('network diagnostics discard a late result after changing sections and retain no post-logout result', async ({ page }) => {
+  await login(page)
+  await settings(page)
+  const panel = page.getByTestId('network-test')
+  let release!: () => void
+  let fetched!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  const received = new Promise<void>(resolve => { fetched = resolve })
+  await page.route('**/api/v1/system/network-test', async route => {
+    const response = await route.fetch()
+    fetched()
+    await held
+    await route.fulfill({ response }).catch(() => {})
+  })
+  await panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true }).click()
+  await received
+  await page.getByRole('button', { name: '下载与保存', exact: true }).click()
+  release()
+  await page.getByRole('button', { name: '连接 Telegram', exact: true }).click()
+  await expect(panel).toHaveAttribute('aria-busy', 'false')
+  await expect(panel.locator('.network-results')).toHaveCount(0)
+  await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  await expect(page.getByLabel('管理员账号', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('network-test')).toHaveCount(0)
+})
+
 async function login(page: Page) {
   await page.goto('/')
   await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')

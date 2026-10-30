@@ -9,7 +9,7 @@ import random
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from aiogram.exceptions import (
     TelegramConflictError,
@@ -29,6 +29,7 @@ from app.services.diagnostics import DiagnosticLog
 
 # Keep persisted deadlines representable on supported platforms and in the UI.
 MAX_DEADLINE = 253402214400.0
+SafetyDeferralReason = Literal["pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable"]
 
 
 def checked_values(raw: Any) -> dict[str, Any]:
@@ -51,9 +52,11 @@ def checked_values(raw: Any) -> dict[str, Any]:
 
 
 class SafetyDeferred(AppError):
-    def __init__(self, message: str, retry_at: float | None = None, *, sent: bool = False) -> None:
+    def __init__(self, message: str, retry_at: float | None = None, *, sent: bool = False,
+                 reason: SafetyDeferralReason = "protection_unavailable") -> None:
         super().__init__("BOT_REQUEST_PAUSED", message, 429)
         self.retry_at, self.sent = retry_at, sent
+        self.reason = reason
 
 
 class RequestSafetyService:
@@ -100,11 +103,13 @@ class RequestSafetyService:
             values = checked_values(row.values)
             deadline = max(values.get("cooldown", 0), values.get("backoff", 0))
             if deadline > now:
-                raise SafetyDeferred("Telegram 请求正在等待限流或连接退避结束", deadline)
+                cooldown = values.get("cooldown", 0) > now
+                raise SafetyDeferred("Telegram 要求等待，暂缓新请求" if cooldown else "连接请求正在退避等待",
+                                     deadline, reason="cooldown" if cooldown else "backoff")
             if values.get("auth_paused") and not probe:
-                raise SafetyDeferred("Bot 凭据被拒绝，已暂停自动请求，请检查 Token 后手动重试")
+                raise SafetyDeferred("Bot 凭据被拒绝，已暂停自动请求，请检查 Token 后手动重试", reason="auth_paused")
             if probe and values.get("manual_at", 0) > now:
-                raise SafetyDeferred("手动重试过于频繁，请稍后再试", values["manual_at"])
+                raise SafetyDeferred("手动重试过于频繁，请稍后再试", values["manual_at"], reason="pacing")
             chats = {key: value for key, value in values.get("chats", {}).items() if value > now}
             start = max(values.get("next_start", 0), chats.get(str(chat_id), 0) if chat_id is not None else 0)
             if start > now:
@@ -130,12 +135,12 @@ class RequestSafetyService:
                 if accepted:
                     return
                 if at - started > 1.2:
-                    raise SafetyDeferred("正在按聊天频率发送，请稍后重试", at)
+                    raise SafetyDeferred("正在按聊天频率发送，请稍后重试", at, reason="pacing")
                 await asyncio.sleep(max(0.001, at - now))
         except AppError:
             raise
         except Exception as exc:
-            raise SafetyDeferred("请求保护状态不可用，已暂停 Telegram 请求") from exc
+            raise SafetyDeferred("请求保护状态不可用，已暂停 Telegram 请求", reason="protection_unavailable") from exc
 
     def observe(self, token: str, error: Exception | None, *, probe: bool = False,
                 retry_after: float | None = None, unauthorized: bool = False, transient: bool = False) -> None:

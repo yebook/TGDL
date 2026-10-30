@@ -19,6 +19,7 @@ from app.db.models import Job, LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.diagnostics import classify_error
+from app.services.network_errors import classify_network_failure
 from app.services.request_safety import SafetyDeferred
 
 BUSY_PHASES = {"draining", "logging_out", "starting", "verifying", "cooldown"}
@@ -34,7 +35,7 @@ ERROR_MESSAGES = {"LOCAL_API_CREDENTIALS": "请填写 API ID 和 API Hash 后保
                   "LOCAL_API_PROXY": "网络配置尚未生效，请检查本地 API 服务及代理地址、端口后重试",
                   "LOCAL_API_START_FAILED": "本地 API 进程启动失败，请检查凭据和网络后重试",
                   "LOCAL_API_COMMAND_TIMEOUT": "本地 API 操作等待超时，请检查服务状态后重试",
-                  "LOCAL_API_CONNECTION_FAILED": "本地 API 进程已启动，但 Bot 连接验证失败；请检查应用与本地 API 之间的连接，以及本地 API 的 Telegram 网络或代理。进程运行不代表 Bot 已就绪，排查后可手动重试",
+                  "LOCAL_API_CONNECTION_FAILED": "本地 API 进程已启动，但 Bot 连接验证失败，原因尚未确定；请运行网络连通测试，并检查应用与本地 API 的连接、服务日志、保存配置及 Telegram 网络或代理。进程运行不代表 Bot 已就绪，排查后需手动重试",
                   "LOCAL_API_PREFLIGHT_FAILED": "云端 Bot 预检查失败，请检查 Token 和云端代理后重试"}
 
 
@@ -176,16 +177,28 @@ class LocalApiService:
             values = connection.scalar(self._read_query)
             return values if values is not None else {"applied_mode": "cloud", "phase": "idle"}
 
-    def update(self, **updates: Any) -> dict[str, Any]:
+    def update(self, *, diagnostic_error: BaseException | None = None, **updates: Any) -> dict[str, Any]:
         with self.settings.connection_publication_lock, self.db.transaction() as session:
             row = session.get(LocalApiRuntime, 1)
             assert row
-            row.values = dict(row.values) | updates
+            prior = dict(row.values)
+            row.values = prior | updates
             values = dict(row.values)
         if self.diagnostics and "phase" in updates:
+            code = classify_error(diagnostic_error)[0] if diagnostic_error is not None else None
+            reason = None
+            if updates.get("error_code") == "LOCAL_API_CONNECTION_FAILED" or code == "NETWORK_ERROR":
+                code = "NETWORK_ERROR"
+                reason = classify_network_failure(diagnostic_error)[0] if diagnostic_error is not None else "network_unknown"
+            elif code in {"RATE_LIMITED", "UNAUTHORIZED", "BOT_REQUEST_PAUSED"}:
+                reason = ("cooldown" if code == "RATE_LIMITED" else "auth_paused" if code == "UNAUTHORIZED"
+                          else getattr(diagnostic_error, "reason", None))
             self.diagnostics.emit("local_api_transition", dedupe=True, level="info",
                                   outcome=updates["phase"], mode=values.get("target_mode"),
-                                  error_code="NETWORK_ERROR" if updates.get("error_code") == "LOCAL_API_CONNECTION_FAILED" else None)
+                                  error_code=code, reason=reason,
+                                  stage=prior.get("phase") if updates["phase"] in {"failed", "blocked", "logout_uncertain"} else updates["phase"],
+                                  action=values.get("action") or prior.get("action"),
+                                  operation_id=values.get("operation_id") or prior.get("operation_id"))
         return values
 
     def applied(self) -> dict[str, Any]:
@@ -255,6 +268,10 @@ class LocalApiService:
             if state.get("logout_uncertain") and acknowledge:
                 state.update(logout_uncertain=False, logout_done=True)
             row.values = state
+        if self.diagnostics:
+            self.diagnostics.emit("local_api_action", level="info", outcome="queued", stage="draining",
+                                  mode=state.get("target_mode"), operation_id=state.get("operation_id"),
+                                  action="restart" if restart else "acknowledge_retry" if acknowledge else "retry")
         return self.status()
 
     def validate_allowed(self, candidate: UserSettings) -> None:
@@ -443,6 +460,8 @@ class LocalApiService:
                              if state.get("cloud_snapshot") else values.model_copy(update={"bot_api_mode": "cloud"}))
                     client = TelegramClient(cloud.bot_token, self.config, cloud)
                     client.safety = runtime.safety
+                    client.diagnostic_action = state.get("action")
+                    client.diagnostic_operation_id = state.get("operation_id")
                     try:
                         # Known credential/proxy errors fail before the logout attempt.
                         await self.prepare_verification(runtime, cloud.bot_token)
@@ -458,10 +477,10 @@ class LocalApiService:
                         await asyncio.to_thread(self.update, phase="failed" if auth_paused else "draining", logout_uncertain=False,
                                                 cloud_available_at=state.get("cloud_available_at", 0))
                         return True
-                    except Exception:
+                    except Exception as exc:
                         uncertain = (await asyncio.to_thread(self.read)).get("logout_uncertain", False)
                         await asyncio.to_thread(self.update, phase="logout_uncertain" if uncertain else "failed",
-                                                error_code="" if uncertain else "LOCAL_API_PREFLIGHT_FAILED")
+                                                error_code="" if uncertain else "LOCAL_API_PREFLIGHT_FAILED", diagnostic_error=exc)
                         return True
                     finally:
                         await waits.close_candidate(client)
@@ -515,6 +534,8 @@ class LocalApiService:
                     candidate = values.model_copy(update={"bot_api_mode": target})
                     client = TelegramClient(candidate.bot_token, self.config, candidate)
                     client.safety = runtime.safety
+                    client.diagnostic_action = state.get("action")
+                    client.diagnostic_operation_id = state.get("operation_id")
                     try:
                         await self.prepare_verification(runtime, values.bot_token)
                         identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
@@ -545,7 +566,8 @@ class LocalApiService:
         except Exception as exc:
             latest = await asyncio.to_thread(self.read)
             await asyncio.to_thread(self.update, phase="logout_uncertain" if latest.get("logout_uncertain") else "failed",
-                                    error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED")
+                                    error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED",
+                                    diagnostic_error=exc)
             return True
 
     async def prepare_verification(self, runtime: Any, token: str) -> None:

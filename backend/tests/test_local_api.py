@@ -238,13 +238,17 @@ async def test_local_verification_network_failure_waits_for_manual_retry_without
     assert "进程已启动" in status["message"] and "网络或代理" in status["message"]
     assert "synthetic-private-detail" not in status["message"]
     events = runtime.diagnostics.export()["events"]
-    assert any(event.get("event") == "local_api_transition" and event.get("outcome") == "failed"
-               and event.get("error_code") == "NETWORK_ERROR" for event in events)
+    failed = next(event for event in events if event.get("event") == "local_api_transition" and event.get("outcome") == "failed"
+                  and event.get("error_code") == "NETWORK_ERROR")
+    assert failed["action"] == "switch" and failed["operation_id"] == state["operation_id"]
+    assert failed["stage"] == "verifying"
+    assert failed["reason"] == ("timeout" if isinstance(failure, TimeoutError) else "network_unknown")
     assert "synthetic-private-detail" not in json.dumps(events)
 
     # Repeated reconciliation and a fresh service instance retain the failure;
     # neither status reads nor a later tick may issue another identity request.
     reloaded = LocalApiService(managed.app.state.settings)
+    reloaded.diagnostics = runtime.diagnostics
     assert await reloaded.reconcile(runtime)
     assert await reloaded.reconcile(runtime)
     assert runtime.bot_status["state"] == "connecting"  # Failure belongs to the API operation, not transport.
@@ -252,6 +256,9 @@ async def test_local_verification_network_failure_waits_for_manual_retry_without
     logout.assert_awaited_once()
 
     reloaded.action(False)
+    assert reloaded.read()["operation_id"] == state["operation_id"]
+    accepted = next(event for event in runtime.diagnostics.export()["events"] if event["event"] == "local_api_action")
+    assert accepted["action"] == "retry" and accepted["operation_id"] == state["operation_id"]
     assert await reloaded.reconcile(runtime)
     heartbeat(reloaded, command_id=reloaded.read()["command_id"], state="running", generation="new")
     assert not await reloaded.reconcile(runtime)

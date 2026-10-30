@@ -50,6 +50,28 @@ def seed_request_safety(app: FastAPI, scenario: str) -> None:
     patch_method.object(TelegramClient, "identity", identity).start()
 
 
+def seed_network_diagnostics(app: FastAPI) -> None:
+    """Replace only network primitives; the real diagnostic API/limits still run."""
+    from app.schemas.contracts import ProxySettings
+    from app.schemas.responses import NetworkProbeResult
+    from app.services.network_diagnostics import TELEGRAM_URL
+
+    async def https(proxy: ProxySettings, url: str) -> NetworkProbeResult:
+        await asyncio.sleep(0.15)
+        if url == TELEGRAM_URL:
+            return NetworkProbeResult(state="reachable", latency_ms=120, http_status=302)
+        return NetworkProbeResult(state="timeout", latency_ms=5000,
+                                  failure_kind="timeout", failure_stage="unknown")
+
+    async def tcp() -> NetworkProbeResult:
+        return NetworkProbeResult(state="failed", latency_ms=2,
+                                  failure_kind="tcp", failure_stage="connect")
+
+    service = app.state.network_diagnostics
+    patch_method.object(service, "_probe_https", https).start()
+    patch_method.object(service, "_probe_tcp", tcp).start()
+
+
 def seed(app: FastAPI) -> None:
     """Represent deterministic historical tasks, then exercise real REST mutations."""
     db = app.state.db
@@ -126,6 +148,7 @@ def main() -> None:
         async def fixture_lifespan(application: FastAPI) -> AsyncIterator[None]:
             async with original_lifespan(application):
                 seed(application)
+                seed_network_diagnostics(application)
                 seed_request_safety(application, os.getenv("E2E_REQUEST_SAFETY", ""))
                 heartbeat = None
                 if config.managed_local_api:

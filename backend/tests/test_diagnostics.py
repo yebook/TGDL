@@ -1,6 +1,9 @@
 import asyncio
+import errno
 import json
 import os
+import socket
+import ssl
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -44,6 +47,67 @@ def test_projection_strict_values_and_types(tmp_path: Path) -> None:
     assert SECRET not in log._path().read_text()
     for invalid in ({"event": []}, {"event": "telegram_request", "timestamp": "2026-13-20T00:00:00Z"}, []):
         assert project_event(invalid) == {}
+
+
+def test_evidence_fields_use_identical_write_export_and_dedup_projection(tmp_path: Path) -> None:
+    log = DiagnosticLog(tmp_path)
+    safe = {"reason": "dns", "stage": "verifying", "action": "restart", "operation_id": "a" * 32}
+    log.emit("local_api_transition", dedupe=True, outcome="failed", **safe)
+    log.emit("local_api_transition", dedupe=True, outcome="failed", **safe)
+    # Another operation/phase/reason must retain its own first evidence.
+    for change in ({"operation_id": "b" * 32}, {"action": "switch"}, {"reason": "tls"}, {"stage": "starting"}):
+        log.emit("local_api_transition", dedupe=True, outcome="failed", **(safe | change))
+    log.emit("local_api_transition", reason=SECRET, stage=SECRET, action=SECRET, operation_id=SECRET)
+    # Reprojection also excludes untrusted values added directly to disk.
+    with log._path().open("a") as stream:
+        stream.write(json.dumps({"event": "local_api_transition", "timestamp": "2026-10-20T00:00:00Z",
+                                 "reason": SECRET, "stage": SECRET, "action": SECRET, "operation_id": SECRET}) + "\n")
+    events = log.export()["events"]
+    assert len([event for event in events if event.get("outcome") == "failed" and event["event"] != "event_summary"]) == 5
+    assert any(event.get("suppressed_count") == 1 and event.get("operation_id") == "a" * 32 for event in events)
+    assert SECRET not in json.dumps(events)
+    # Caller-controlled evidence did not reach disk through the writer either.
+    assert SECRET not in log._path().read_text().splitlines()[5]
+
+
+@pytest.mark.parametrize("cause,reason,stage", [
+    (socket.gaierror(-2, SECRET), "dns", "dns"),
+    (ConnectionRefusedError(errno.ECONNREFUSED, SECRET), "tcp", "connect"),
+    (ssl.SSLError(SECRET), "tls", "tls"),
+    (TimeoutError(SECRET), "timeout", "unknown"),
+    (None, "network_unknown", "unknown"),
+])
+def test_sdk_wrapped_network_evidence_never_parses_error_text(tmp_path: Path, cause, reason, stage) -> None:
+    error = TelegramNetworkError(method=GetMe(), message=SECRET)
+    error.__cause__ = cause
+    log = DiagnosticLog(tmp_path)
+    log.request("local", "getMe", error=error, action="restart", operation_id="c" * 20)
+    event = log.export()["events"][0]
+    assert event["error_code"] == "NETWORK_ERROR"
+    assert (event["reason"], event["stage"]) == (reason, stage)
+    assert event["action"] == "restart" and event["operation_id"] == "c" * 20
+    assert SECRET not in log._path().read_text()
+
+
+def test_normal_pacing_is_unsent_and_does_not_manufacture_recovery(tmp_path: Path) -> None:
+    log = DiagnosticLog(tmp_path)
+    for _ in range(20):
+        log.request("cloud", "getUpdates", error=SafetyDeferred(SECRET, reason="pacing"))
+    log.request("cloud", "getUpdates", empty=True)
+    events = log.export()["events"]
+    assert [event["event"] for event in events] == ["request_deferred", "event_summary"]
+    assert events[0]["reason"] == "pacing" and events[0]["stage"] == "before_send"
+    assert "http_status" not in events[0]  # Local pacing is not a Telegram 429.
+    assert events[1]["suppressed_count"] == 19
+
+
+@pytest.mark.parametrize("reason,code,status", [("cooldown", "RATE_LIMITED", 429), ("auth_paused", "UNAUTHORIZED", 401)])
+def test_issued_rejection_is_not_logged_as_unsent_deferral(tmp_path: Path, reason, code, status) -> None:
+    log = DiagnosticLog(tmp_path)
+    log.request("cloud", "downloadFile", error=SafetyDeferred(SECRET, sent=True, reason=reason))
+    event = log.export()["events"][0]
+    assert event["event"] == "telegram_request" and event["outcome"] == "failed"
+    assert (event["reason"], event["stage"], event["error_code"], event["http_status"]) == (reason, "response", code, status)
 
 
 def test_persistence_repetition_empty_poll_and_recovery(tmp_path: Path) -> None:

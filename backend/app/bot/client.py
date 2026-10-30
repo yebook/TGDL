@@ -38,6 +38,8 @@ class TelegramClient:
     def __init__(self, token: str, config: Config, settings: UserSettings | None = None) -> None:
         settings = settings or UserSettings()
         self.safety: RequestSafetyService | None = None
+        self.diagnostic_action: str | None = None
+        self.diagnostic_operation_id: str | None = None
         self.mode = settings.bot_api_mode
         proxy = None
         if self.mode == "cloud" and settings.proxy.enabled:
@@ -123,7 +125,8 @@ class TelegramClient:
                 await asyncio.to_thread(diagnostic.request, self.mode, method, error=error,
                                         duration_ms=int(max(0, time.monotonic() - started) * 1000),
                                         empty=empty, scope=digest(self.bot.token),
-                                        http_status=getattr(error, "diagnostic_http_status", None))
+                                        http_status=getattr(error, "diagnostic_http_status", None),
+                                        action=self.diagnostic_action, operation_id=self.diagnostic_operation_id)
             except Exception:
                 diagnostic.error = True
 
@@ -146,7 +149,8 @@ class TelegramClient:
             if self.safety and not (isinstance(exc, AppError) and exc.code == "CACHE_CLEANUP_BUSY"):
                 await asyncio.to_thread(self.safety.observe, self.bot.token, exc)
                 if isinstance(exc, (TelegramRetryAfter, TelegramUnauthorizedError)):
-                    raise SafetyDeferred("Telegram 请求已暂停，请等待或检查 Bot 凭据", sent=True) from exc
+                    raise SafetyDeferred("Telegram 请求已暂停，请等待或检查 Bot 凭据", sent=True,
+                                         reason="cooldown" if isinstance(exc, TelegramRetryAfter) else "auth_paused") from exc
             raise
         await self.record(method, None, started, empty=method == "getUpdates" and not result)
         if self.safety:
@@ -233,7 +237,8 @@ class TelegramClient:
                     await asyncio.to_thread(self.safety.observe, self.bot.token, None,
                                             retry_after=wait if response.status == 429 else None,
                                             unauthorized=response.status == 401)
-                    paused = SafetyDeferred("Telegram 已暂停文件请求，请等待或检查 Bot 凭据", sent=True)
+                    paused = SafetyDeferred("Telegram 已暂停文件请求，请等待或检查 Bot 凭据", sent=True,
+                                            reason="cooldown" if response.status == 429 else "auth_paused")
                     paused.diagnostic_http_status = response.status  # type: ignore[attr-defined]
                     raise paused
                 if response.status != 200:

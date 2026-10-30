@@ -27,9 +27,11 @@ from aiohttp import ClientError
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.errors import AppError
+from app.services.network_errors import classify_network_failure
 
 EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
-          "request_deferred", "task_result", "local_api_transition", "event_summary", "request_protection", "cache_cleanup"}
+          "request_deferred", "task_result", "local_api_transition", "local_api_action", "bot_recovery",
+          "event_summary", "request_protection", "cache_cleanup"}
 METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut"}
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
@@ -41,6 +43,11 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "CLOUD_DOWNLOAD_REJECTED", "INVALID_API_PATH", "PUBLISH_COLLISION", "PUBLISH_UNCERTAIN",
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
           "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY"}
+REASONS = {"pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable",
+           "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown"}
+STAGES = {"before_send", "dns", "proxy", "connect", "tls", "response", "unknown",
+          "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
+ACTIONS = {"switch", "restart", "recover_restart", "cloud_reconnect", "retry", "acknowledge_retry", "bot_retry"}
 Scalar = str | int | float | bool | None
 
 
@@ -50,7 +57,8 @@ def project_event(value: Any) -> dict[str, Scalar]:
         return {}
     output: dict[str, Scalar] = {"event": value["event"]}
     for key, allowed in (("level", {"info", "warning", "error"}), ("mode", {"cloud", "local"}),
-                         ("method", METHODS), ("outcome", OUTCOMES), ("error_code", ERRORS)):
+                         ("method", METHODS), ("outcome", OUTCOMES), ("error_code", ERRORS),
+                         ("reason", REASONS), ("stage", STAGES), ("action", ACTIONS)):
         if isinstance(value.get(key), str) and value[key] in allowed:
             output[key] = value[key]
     for key in ("timestamp", "retry_at"):
@@ -63,7 +71,7 @@ def project_event(value: Any) -> dict[str, Scalar]:
                 pass
     if "timestamp" not in output:
         return {}
-    for key in ("task_id", "job_id", "request_id"):
+    for key in ("task_id", "job_id", "request_id", "operation_id"):
         raw = value.get(key)
         if isinstance(raw, str) and re.fullmatch(r"(?:[0-9a-f]{16}|[0-9a-f]{20}|[0-9a-f]{32})", raw):
             output[key] = raw
@@ -111,22 +119,41 @@ class DiagnosticLog:
 
     def request(self, mode: str, method: str, *, error: BaseException | None = None,
                 duration_ms: int = 0, empty: bool = False, scope: str = "",
-                http_status: int | None = None) -> None:
+                http_status: int | None = None, action: str | None = None,
+                operation_id: str | None = None) -> None:
         key = (scope, mode, method)
         with self.lock:
             if error is not None:
                 code, status = classify_error(error)
+                reason = stage = None
+                if code == "BOT_REQUEST_PAUSED":
+                    reason = getattr(error, "reason", None)
+                    stage = "response" if getattr(error, "sent", False) else "before_send"
+                    if getattr(error, "sent", False):
+                        code, status = (("RATE_LIMITED", 429) if reason == "cooldown" else
+                                        ("UNAUTHORIZED", 401) if reason == "auth_paused" else (code, status))
+                elif code == "NETWORK_ERROR":
+                    reason, stage = classify_network_failure(error)
+                elif code in {"RATE_LIMITED", "UNAUTHORIZED"}:
+                    reason = "cooldown" if code == "RATE_LIMITED" else "auth_paused"
+                    stage = "response"
                 status = http_status or status
+                if status is not None:
+                    stage = "response"
                 if status in {400, 401, 403, 409, 429}:
                     code = {400: "BAD_REQUEST", 401: "UNAUTHORIZED", 403: "FORBIDDEN", 409: "CONFLICT", 429: "RATE_LIMITED"}[status]
                 elif status is not None and status >= 500:
                     code = "SERVER_ERROR"
-                if len(self.failures) >= 256:
-                    self.failures.clear()
-                self.failures[key] = self.clock()
+                # A denied local reservation is not a failed network request. In
+                # particular, normal pacing must not manufacture a later recovery.
+                if code not in {"BOT_REQUEST_PAUSED", "CANCELLED"}:
+                    if len(self.failures) >= 256:
+                        self.failures.clear()
+                    self.failures[key] = self.clock()
                 self.emit("request_deferred" if code == "BOT_REQUEST_PAUSED" else "telegram_request",
                           dedupe=True, mode=mode, method=method, outcome="deferred" if code == "BOT_REQUEST_PAUSED" else "cancelled" if code == "CANCELLED" else "failed",
-                          error_code=code, http_status=status, level="warning", duration_ms=duration_ms)
+                          error_code=code, http_status=status, level="warning", duration_ms=duration_ms,
+                          reason=reason, stage=stage, action=action, operation_id=operation_id)
             else:
                 recovered = key in self.failures
                 self.failures.pop(key, None)
@@ -134,7 +161,8 @@ class DiagnosticLog:
                     self.flush()
                 if recovered or not empty:
                     self.emit("telegram_recovered" if recovered else "telegram_request", mode=mode, method=method,
-                              outcome="success", level="info", duration_ms=duration_ms)
+                              outcome="success", level="info", duration_ms=duration_ms,
+                              action=action, operation_id=operation_id)
 
     def _path(self, index: int = 0) -> Path:
         return self.directory / ("events.jsonl" + (f".{index}" if index else ""))
@@ -199,7 +227,9 @@ class DiagnosticLog:
                 return
             with self.lock:
                 if dedupe:
-                    key = tuple(str(payload.get(name, "")) for name in ("event", "mode", "method", "outcome", "error_code", "task_id", "job_id"))
+                    key = tuple(str(payload.get(name, "")) for name in (
+                        "event", "mode", "method", "outcome", "error_code", "task_id", "job_id",
+                        "reason", "stage", "action", "operation_id"))
                     prior = self.repeated.get(key)
                     if prior and self.clock() - prior[0] < 60:
                         self.repeated[key] = (prior[0], min(prior[1] + 1, 1_000_000_000), payload)

@@ -24,7 +24,7 @@ from app.bot.client import TelegramClient
 from app.core.config import Config
 from app.core.errors import AppError
 from app.core.security import Secrets, digest, new_token, password_hasher, private_file, verify_password
-from app.db.models import Admin, MediaRequest, Session
+from app.db.models import Admin, MediaRequest, Session, uid
 from app.db.session import Database
 from app.schemas.backup import BackupExport, BackupExportResponse, BackupInput, BackupPreview, BackupRestore
 from app.schemas.contracts import (
@@ -42,6 +42,7 @@ from app.schemas.responses import (
     DiagnosticLogStatus,
     ErrorResponse,
     LocalApiStatus,
+    NetworkTestResponse,
     RequestSafetyStatus,
     SettingsResponse,
     SetupStatus,
@@ -53,6 +54,7 @@ from app.schemas.responses import (
 )
 from app.services import connection_waits as waits
 from app.services.config_backup import MAX_BACKUP_REQUEST_BYTES, ConfigBackupService
+from app.services.network_diagnostics import NetworkDiagnosticsService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
@@ -76,11 +78,12 @@ def create_app(config: Config | None = None) -> FastAPI:
     runtime: Runtime
     crypto: Secrets
     backups: ConfigBackupService
+    network_diagnostics: NetworkDiagnosticsService
     attempts: dict[str, deque[float]] = defaultdict(deque)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        nonlocal db, settings, tasks, storage, runtime, crypto, backups
+        nonlocal db, settings, tasks, storage, runtime, crypto, backups, network_diagnostics
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         lock = FileLock(cfg.data_dir / "instance.lock")
         try:
@@ -96,6 +99,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             tasks = TaskService(db, settings)
             storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes)
             runtime = Runtime(db, cfg, settings, tasks, storage)
+            network_diagnostics = NetworkDiagnosticsService(settings, runtime.local_api)
             with db.sessions() as session:
                 initialized = session.get(Admin, 1) is not None
             bootstrap = cfg.data_dir / "bootstrap.key"
@@ -104,6 +108,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             application.state.db, application.state.settings = db, settings
             application.state.tasks, application.state.runtime = tasks, runtime
             application.state.storage = storage
+            application.state.network_diagnostics = network_diagnostics
             application.state.ready = True
             await asyncio.to_thread(runtime.maintain_diagnostics)
             runtime.diagnostics.emit("service_started", level="info")
@@ -366,6 +371,16 @@ def create_app(config: Config | None = None) -> FastAPI:
     def export_logs() -> dict[str, Any]:
         return runtime.diagnostics.export()
 
+    @application.post("/api/v1/system/network-test", dependencies=[Depends(auth)], response_model=NetworkTestResponse)
+    async def test_network(request: Request) -> NetworkTestResponse:
+        # No caller-supplied target, configuration, token or alternate route.
+        if request.query_params:
+            raise AppError("VALIDATION_ERROR", "网络检测不接受参数", 422)
+        async for chunk in request.stream():
+            if chunk:
+                raise AppError("VALIDATION_ERROR", "网络检测不接受参数", 422)
+        return await network_diagnostics.run()
+
     @application.delete("/api/v1/system/logs", dependencies=[Depends(auth)], response_model=DiagnosticLogStatus)
     def clear_logs() -> dict[str, Any]:
         return runtime.diagnostics.clear()
@@ -405,14 +420,25 @@ def create_app(config: Config | None = None) -> FastAPI:
             status = await asyncio.to_thread(runtime.safety.status, candidate.bot_token)
             if not status["can_retry"]:
                 raise AppError("BOT_RETRY_UNAVAILABLE", status["message"] or "当前无需恢复 Bot 凭据", 409)
+            operation_id = uid()
+            await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="info", outcome="queued",
+                                    action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
             client = TelegramClient(candidate.bot_token, cfg, candidate)
             client.safety = runtime.safety
+            client.diagnostic_action = "bot_retry"
+            client.diagnostic_operation_id = operation_id
             try:
                 identity = await waits.network(client.identity(probe=True), waits.IDENTITY_TIMEOUT)
                 await asyncio.to_thread(runtime.remember_identity, identity)
+                await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="info", outcome="success",
+                                        action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
             except AppError:
+                await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="warning", outcome="failed",
+                                        action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
                 raise
             except Exception as exc:
+                await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="warning", outcome="failed",
+                                        action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
                 raise AppError("BOT_VALIDATION_FAILED", "Bot 验证未成功，请检查凭据和连接后重试", 422) from exc
             finally:
                 await waits.close_candidate(client)

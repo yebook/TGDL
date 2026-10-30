@@ -16,6 +16,7 @@ import DiagnosticLogPanel from '../components/DiagnosticLogPanel.vue'
 import SettingsSource from '../components/SettingsSource.vue'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
 import SettingsBackup from '../components/SettingsBackup.vue'
+import NetworkTestPanel from '../components/NetworkTestPanel.vue'
 
 const emit = defineEmits<{ dirty: [value: boolean] }>()
 const settings = ref<Settings>()
@@ -261,7 +262,8 @@ onMounted(load)
           <p class="field-hint proxy-mode-hint">云端和本地 API 使用相同的代理设置。开启后通过所填代理连接 Telegram；关闭后使用容器默认网络，不会自动读取宿主机的系统代理。保存后自动应用，无需额外 Compose 文件。代理地址须可从容器访问，127.0.0.1 指向容器自身。</p>
           <div class="proxy-saved-state"><div class="proxy-state-heading"><strong>代理生效状态</strong><span class="proxy-state-label">{{ proxyLabels[proxyStatus?.state ?? ''] || proxyStatus?.state || '等待确认' }}</span></div><el-alert :title="proxyStatus?.message || proxyMessages[proxyStatus?.state ?? ''] || '代理状态等待后台确认。'" :type="proxyStatus?.state === 'active' ? 'success' : ['failed', 'unavailable'].includes(proxyStatus?.state ?? '') ? 'error' : 'info'" :closable="false" show-icon /><details v-if="debug" class="settings-details"><summary>查看配置详情</summary><div class="details-content"><p>已保存版本 {{ proxyStatus?.desired_revision ?? '—' }} / 已应用版本 {{ proxyStatus?.applied_revision ?? '—' }}</p><p>状态对应已保存配置；Bot 是否连接请查看上方服务状态。</p></div></details></div>
         </div>
-          <BotSafetyPanel :status="liveSystem?.bot.request_safety" :disabled="busy || backupBusy || dirty || conflict" :stale="!!statusError" @changed="botSafetyChanged" />
+          <NetworkTestPanel :revision="Math.max(settings.revision, liveSystem?.proxy.desired_revision ?? 0)" :active="section === 'connection'" :draft="dirty" :disabled="busy || syncing || backupBusy" :outcome-unknown="writeOutcomeUnknown" />
+          <BotSafetyPanel :status="liveSystem?.bot.request_safety" :local-api="liveSystem?.local_api" :disabled="busy || backupBusy || dirty || conflict" :stale="!!statusError" @changed="botSafetyChanged" />
           <LocalApiPanel :detailed="debug" :status="liveSystem?.local_api" :bot="liveSystem?.bot" :draft="dirty" :disabled="busy || syncing || backupBusy || writeOutcomeUnknown" :stale="!!statusError" @changed="localApiChanged" @sync="refreshStatus" />
           <p v-if="dirty" class="field-hint">服务重试使用已保存配置；当前未保存的输入会保留。</p>
           <details class="settings-details"><summary>连接与切换须知</summary><div class="details-content"><p>保存与连接校验分开；已保存选择与实际使用可能暂时不同，请查看服务状态。切换期间 Bot 会暂停接收，已排队任务会保留。</p><p v-if="liveSystem?.local_api?.managed">填写本地 API 凭据、按需设置下方代理并保存，后台等待网络就绪和下载安全结束后切换。云端退出后回切需等待至少 10 分钟，WebUI 持续可用。</p><p v-else>当前为外部管理模式，请按部署指南配置本地服务。</p><p>其他程序须停止使用同一个 Bot。更换 Bot 身份前，请结束原 Bot 的活动和待确认请求。</p></div></details>
