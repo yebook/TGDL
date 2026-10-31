@@ -1,9 +1,9 @@
-"""One bounded, read-only diagnostic round from the application network namespace."""
+"""One bounded read-only round with explicit app/API network origins."""
 import asyncio
 import ssl
 import time
 from collections.abc import Coroutine, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -14,9 +14,16 @@ from aiohttp_socks import ProxyConnector, ProxyType
 
 from app.core.errors import AppError
 from app.schemas.contracts import ProxySettings
-from app.schemas.responses import LocalApiStatus, NetworkProbeResult, NetworkTestResponse, ProxyStatus
+from app.schemas.responses import (
+    LocalApiStatus,
+    NetworkProbeResult,
+    NetworkTestResponse,
+    ProxyStatus,
+    TelegramProtocolResult,
+)
 from app.services.local_api import LocalApiService
 from app.services.network_errors import classify_network_failure
+from app.services.protocol_diagnostics import protocol_round
 from app.services.settings import SettingsService
 
 TELEGRAM_URL = "https://api.telegram.org/"
@@ -37,6 +44,8 @@ class ProbeSnapshot:
     mode: Literal["cloud", "local"]
     local_api: LocalApiStatus | None
     proxy_status: ProxyStatus
+    applied: dict[str, Any] = field(default_factory=dict)
+    runtime_state: dict[str, Any] = field(default_factory=dict)
 
 
 class NetworkDiagnosticsService:
@@ -63,7 +72,8 @@ class NetworkDiagnosticsService:
             observed = None
             proxy_status = ProxyStatus(state="unavailable", desired_revision=revision, applied_revision=None,
                                        message="网络配置应用状态暂不可用，请刷新系统状态")
-        return ProbeSnapshot(revision, values.proxy.model_copy(deep=True), values.bot_api_mode, observed, proxy_status)
+        return ProbeSnapshot(revision, values.proxy.model_copy(deep=True), values.bot_api_mode, observed,
+                             proxy_status, applied, state)
 
     async def run(self) -> NetworkTestResponse:
         now = time.monotonic()
@@ -91,7 +101,7 @@ class NetworkDiagnosticsService:
             }
             if snapshot.mode == "local":
                 operations["local_api_tcp"] = self._probe_tcp()
-            results = await self._round(operations)
+            results, protocol = await asyncio.gather(self._round(operations), self._probe_protocol(snapshot))
             return NetworkTestResponse(
                 checked_at=checked_at, settings_revision=snapshot.revision,
                 route="proxy" if snapshot.proxy.enabled else "direct",
@@ -99,11 +109,14 @@ class NetworkDiagnosticsService:
                 bot_api_mode=snapshot.mode, telegram=results["telegram"], google=results["google"],
                 local_api_tcp=results.get("local_api_tcp", NetworkProbeResult(state="not_applicable")),
                 local_api=snapshot.local_api, proxy_status=snapshot.proxy_status,
-                local_api_upstream="unverified" if snapshot.mode == "local" else "not_applicable",
+                telegram_protocol=protocol,
                 next_allowed_at=iso(self._next_allowed_at),
             )
         finally:
             self._running = False
+
+    async def _probe_protocol(self, snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+        return await protocol_round(self.settings, self.local_api, snapshot)
 
     async def _round(self, operations: Mapping[str, Coroutine[Any, Any, NetworkProbeResult]]) -> dict[str, NetworkProbeResult]:
         started = time.monotonic()

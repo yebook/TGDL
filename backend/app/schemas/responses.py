@@ -177,6 +177,28 @@ class NetworkProbeResult(BaseModel):
     failure_stage: Literal["dns", "proxy", "connect", "tls", "response", "unknown"] | None = None
 
 
+class TelegramProtocolTarget(BaseModel):
+    dc: int
+    host: str
+    port: int
+    state: Literal["reachable", "failed", "timeout"]
+    latency_ms: int | None = None
+    failure_kind: Literal["dns", "proxy_connection", "proxy_auth", "tcp", "timeout", "protocol", "network_unknown"] | None = None
+
+
+class TelegramProtocolResult(BaseModel):
+    state: Literal["reachable", "partial", "failed", "timeout", "unavailable", "unsupported", "not_applicable"]
+    origin: Literal["bot_api"] = "bot_api"
+    route: Literal["direct", "proxy"]
+    settings_revision: int
+    coverage: Literal["fixed_production_dcs"] = "fixed_production_dcs"
+    targets: list[TelegramProtocolTarget] = []
+    applied_route: Literal["matched", "different", "unavailable"] = "unavailable"
+    observed_generation: str | None = None
+    observed_command_id: str | None = None
+    reason: Literal["helper_unavailable", "stale_observation", "configuration_changed", "round_timeout"] | None = None
+
+
 class NetworkTestResponse(BaseModel):
     checked_at: str
     settings_revision: int
@@ -189,7 +211,7 @@ class NetworkTestResponse(BaseModel):
     local_api_tcp: NetworkProbeResult
     local_api: LocalApiStatus | None
     proxy_status: ProxyStatus
-    local_api_upstream: Literal["unverified", "not_applicable"]
+    telegram_protocol: TelegramProtocolResult
     next_allowed_at: str
 
 

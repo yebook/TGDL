@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
-import type { DownloadProgress, SystemStatus } from '../src/api/types'
+import type { DownloadProgress, NetworkTestResult, SystemStatus } from '../src/api/types'
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }]) {
   test(`network diagnostics keep independent results and unsaved input at ${viewport.width}`, async ({ page }, testInfo) => {
@@ -12,8 +12,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     await token.fill('unsaved-network-draft')
     await page.route('**/api/v1/system/status', route => route.abort(), { times: 1 })
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
-    await expect(panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true })).toBeEnabled()
-    await panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true }).focus()
+    await expect(panel.getByRole('button', { name: '检测网络连通性', exact: true })).toBeEnabled()
+    await panel.getByRole('button', { name: '检测网络连通性', exact: true }).focus()
     let calls = 0
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
@@ -32,15 +32,18 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     await expect(panel).toHaveAttribute('aria-busy', 'false')
     if (await panel.getByRole('alert').count()) {
       await expect(panel.getByRole('alert')).toContainText('间隔至少 10 秒')
-      await expect(panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true })).toBeEnabled({ timeout: 15000 })
+      await expect(panel.getByRole('button', { name: '检测网络连通性', exact: true })).toBeEnabled({ timeout: 15000 })
       await panel.getByRole('button').click()
     }
     await expect(panel).toContainText('Telegram HTTPS')
     await expect(panel).toContainText('HTTP 302')
     await expect(panel).toContainText('Google HTTPS')
-    await expect(panel).toContainText('超时')
-    await expect(panel).toContainText('TCP 连接失败')
-    await expect(panel).not.toContainText('上游：未验证')
+    await expect(panel).toContainText('HTTP 204')
+    await expect(panel.getByTestId('telegram-protocol')).toContainText('Telegram 协议连接超时')
+    await expect(panel.getByTestId('telegram-protocol')).toContainText('149.154.175.50:5222')
+    await expect(panel.getByTestId('telegram-protocol')).toContainText('API 进程已应用被测路线')
+    await expect(panel.getByTestId('network-api-operation')).toContainText('操作失败')
+    await expect(panel).toContainText('HTTPS 可达，但本地 API 容器中的 Telegram 协议连接未通过')
     await expect(panel).toContainText('不测试草稿')
     await expect(token).toHaveValue('unsaved-network-draft')
     await expect(page.locator('.save-bar')).toContainText('有尚未保存的修改')
@@ -49,8 +52,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     const box = await panel.getByRole('button').boundingBox()
     expect(box?.height).toBeGreaterThanOrEqual(44)
     await page.screenshot({ path: testInfo.outputPath(`network-results-${viewport.width}.png`) })
-    await panel.locator('.network-probes').scrollIntoViewIfNeeded()
-    await expect(panel.locator('.network-probes')).toBeInViewport({ ratio: 1 })
+    await panel.getByTestId('telegram-protocol').getByRole('heading').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath(`network-protocol-${viewport.width}.png`) })
+    await panel.locator('.network-results > .network-probes').scrollIntoViewIfNeeded()
+    await expect(panel.locator('.network-results > .network-probes')).toBeInViewport({ ratio: 1 })
     await page.screenshot({ path: testInfo.outputPath(`network-probes-${viewport.width}.png`) })
 
     // Save an unrelated ordinary setting while retaining the old result.
@@ -79,7 +84,7 @@ test('network diagnostics discard a late result after changing sections and reta
     await held
     await route.fulfill({ response }).catch(() => {})
   })
-  await panel.getByRole('button', { name: '测试 Telegram 与 Google', exact: true }).click()
+  await panel.getByRole('button', { name: '检测网络连通性', exact: true }).click()
   await received
   await page.getByRole('button', { name: '下载与保存', exact: true }).click()
   release()
@@ -90,6 +95,74 @@ test('network diagnostics discard a late result after changing sections and reta
   await expect(page.getByLabel('管理员账号', { exact: true })).toBeVisible()
   await expect(page.getByTestId('network-test')).toHaveCount(0)
 })
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }]) {
+  test(`network diagnostics distinguish coverage, applied route and API failures at ${viewport.width}`, async ({ page }, testInfo) => {
+    // Explicit presentation fixtures. Real endpoint/framing is covered separately;
+    // these snapshots do not claim that a Telegram exchange was performed here.
+    await page.setViewportSize(viewport)
+    await login(page)
+    await settings(page)
+    await page.clock.install()
+    const panel = page.getByTestId('network-test')
+    const good = { state: 'reachable' as const, latency_ms: 12, http_status: 200, failure_kind: null, failure_stage: null }
+    const value: NetworkTestResult = {
+      checked_at: new Date().toISOString(), settings_revision: 1, origin: 'app', route: 'direct', proxy_scheme: null, bot_api_mode: 'local',
+      telegram: good, google: good, local_api_tcp: { ...good, http_status: null },
+      local_api: { managed: true, state: 'running', desired_mode: 'local', applied_mode: 'local', operation_id: 'fixture-operation', phase: 'failed', drain_reason: null, message: 'API 连接验证失败', generation: 'fixture-generation', last_heartbeat_at: new Date().toISOString(), cloud_available_at: null, can_restart: true, can_retry: true },
+      proxy_status: { state: 'disabled', desired_revision: 1, applied_revision: 1, message: '' },
+      telegram_protocol: { state: 'partial', origin: 'bot_api', route: 'direct', settings_revision: 1, coverage: 'fixed_production_dcs', targets: [
+        { dc: 1, host: '149.154.175.50', port: 443, state: 'reachable', latency_ms: 15, failure_kind: null },
+        { dc: 1, host: '149.154.175.50', port: 5222, state: 'failed', latency_ms: 20, failure_kind: 'protocol' },
+      ], applied_route: 'different', observed_generation: 'fixture-generation', observed_command_id: 'fixture-command', reason: null },
+      next_allowed_at: new Date().toISOString(),
+    }
+    await page.route('**/api/v1/system/network-test', route => route.fulfill({ json: value }))
+    const detect = async () => {
+      await panel.getByRole('button', { name: '检测网络连通性', exact: true }).click()
+      await expect(panel).toHaveAttribute('aria-busy', 'false')
+    }
+    await detect()
+    const protocol = panel.getByTestId('telegram-protocol')
+    await expect(protocol).toContainText('部分线路握手失败')
+    await expect(protocol).toContainText('协议握手未通过')
+    await expect(protocol).toContainText('API 进程路线与本次检测不同')
+    await expect(panel).toContainText('不能将其视为全部线路正常')
+    await noOverflow(page)
+    await protocol.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath(`network-partial-${viewport.width}.png`) })
+
+    value.telegram_protocol.state = 'reachable'
+    value.telegram_protocol.applied_route = 'matched'
+    value.telegram_protocol.targets[1] = { ...value.telegram_protocol.targets[1]!, state: 'reachable', failure_kind: null }
+    await page.clock.fastForward(11000)
+    await detect()
+    await expect(protocol).toContainText('被测线路握手通过')
+    await expect(panel.getByTestId('network-api-operation')).toContainText('操作失败')
+    await expect(panel).toContainText('API 操作仍为失败状态')
+    await expect(protocol).toContainText('不验证 Bot 身份、全部 Telegram 线路或消息收发')
+
+    value.telegram_protocol = { ...value.telegram_protocol, state: 'unsupported', targets: [], applied_route: 'unavailable' }
+    await page.clock.fastForward(11000)
+    await detect()
+    await expect(protocol).toContainText('此 API 不支持协议检测')
+    await expect(protocol).not.toContainText('握手通过')
+    await expect(panel).toContainText('应用侧 HTTPS 成功不能代替这项检测')
+
+    value.telegram_protocol = { ...value.telegram_protocol, state: 'unavailable', reason: 'helper_unavailable' }
+    await page.clock.fastForward(11000)
+    await detect()
+    await expect(protocol).toContainText('协议检测暂不可用')
+    await expect(protocol).toContainText('本地 API 容器未返回有效协议结果')
+    await expect(panel).toContainText('检查管理组件与镜像是否已更新')
+
+    value.telegram_protocol.reason = 'configuration_changed'
+    await page.clock.fastForward(11000)
+    await detect()
+    await expect(panel).toContainText('检测期间配置或 API 进程发生变化')
+    await noOverflow(page)
+  })
+}
 
 async function login(page: Page) {
   await page.goto('/')

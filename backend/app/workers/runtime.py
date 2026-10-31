@@ -237,14 +237,17 @@ class Runtime:
         """Only a current identity may become the active client. No network or await."""
         signature = self.settings.client_signature(settings)
         with self.settings.connection_publication_lock:
-            _, latest, _ = self.settings.read()
+            revision, latest, _ = self.settings.read()
             latest_transition = self.local_api.read()
             if (self.settings.client_signature(latest) != signature
                     or latest_transition.get("operation_id") != transition.get("operation_id")
                     or latest_transition.get("phase") != transition.get("phase")):
                 return False
             if settings.bot_api_mode == "local" and self.config.managed_local_api:
-                if self.local_api.applied().get("generation") != generation:
+                applied = self.local_api.applied()
+                if (applied.get("generation") != generation
+                        or self.settings.proxy_status(revision, latest, applied=applied, runtime_state=latest_transition)["state"]
+                        != ("active" if latest.proxy.enabled else "disabled")):
                     return False
             self.remember_identity(identity)
             self.worker.credential_hash = digest(settings.bot_token)

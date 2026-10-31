@@ -37,6 +37,18 @@ def check_app_import(backend: Path) -> None:
     assert actual == expected, f"Imported unexpected application module: {actual}"
 
 
+def check_api_import(library: Path) -> None:
+    # An externally mounted verifier has its own script directory on sys.path;
+    # run_path does not add the supervisor's directory for sibling imports.
+    sys.path.insert(0, str(library))
+    module = importlib.import_module("protocol_probe")
+    assert module.__file__ is not None, "API helper has no source location"
+    actual = Path(module.__file__).resolve()
+    assert actual == (library / "protocol_probe.py").resolve(), f"Imported unexpected API helper module: {actual}"
+    for name in ("tgd-api-supervisor.py", "tgd-init-volumes.py", "protocol_probe.py"):
+        runpy.run_path(str(library / name), run_name="permission_check")
+
+
 def main() -> None:
     if sys.argv[1] == "app":
         root = Path("/app")
@@ -51,11 +63,11 @@ def main() -> None:
     elif sys.argv[1] == "api":
         for name in ("/usr", "/usr/local", "/usr/local/lib"):
             check(Path(name))
-        for name in ("/entrypoint.sh", "/usr/local/lib/tgd-api-supervisor.py", "/usr/local/lib/tgd-init-volumes.py"):
+        for name in ("/entrypoint.sh", "/usr/local/lib/tgd-api-supervisor.py",
+                     "/usr/local/lib/tgd-init-volumes.py", "/usr/local/lib/protocol_probe.py"):
             path = Path(name)
             check(path)
-            if path.suffix == ".py":
-                runpy.run_path(str(path), run_name="permission_check")
+        check_api_import(Path("/usr/local/lib"))
         assert os.access("/entrypoint.sh", os.X_OK)
     else:
         raise ValueError("Expected app or api")

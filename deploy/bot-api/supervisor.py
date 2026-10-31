@@ -14,13 +14,16 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import protocol_probe
 from cryptography.fernet import Fernet, InvalidToken
+from protocol_probe import load_request
 
 MAX_BYTES = 8192
 HEARTBEAT_INTERVAL = 5.0  # Remains well inside the application's 15-second stale limit.
@@ -138,6 +141,47 @@ class Supervisor:
         self.latest_revision = -1
         self.published_state: dict[str, Any] | None = None
         self.published_at = 0.0
+        self.diagnostic_process: subprocess.Popen[bytes] | None = None
+        self.diagnostic_request: dict[str, Any] | None = None
+        self.seen_diagnostics: dict[str, float] = {}
+        self.diagnostic_deadline = 0.0
+
+    def stop_diagnostic(self) -> None:
+        process = self.diagnostic_process
+        if process is not None:
+            if process.poll() is None:
+                # Kill only the read-only helper. Native API lifecycle is separate.
+                process.kill()
+            process.wait(timeout=1)
+        self.diagnostic_process = None
+        self.diagnostic_request = None
+
+    def diagnostic_tick(self) -> None:
+        try:
+            request = load_request(self.shared)
+        except (OSError, ValueError, InvalidToken, TypeError, KeyError):
+            request = None
+        if self.diagnostic_process is not None:
+            if (request != self.diagnostic_request or time.monotonic() >= self.diagnostic_deadline
+                    or self.diagnostic_process.poll() is not None):
+                self.stop_diagnostic()
+            else:
+                return
+        now = time.time()
+        self.seen_diagnostics = {identifier: expiry for identifier, expiry in self.seen_diagnostics.items()
+                                 if expiry > now}
+        if request is None or request['request_id'] in self.seen_diagnostics or len(self.seen_diagnostics) >= 64:
+            return
+        self.seen_diagnostics[request['request_id']] = request['expires_at']
+        self.diagnostic_request = request
+        self.diagnostic_deadline = time.monotonic() + max(0, request['expires_at'] - time.time())
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TGD_BOT_TOKEN', 'TGD_PROXY'}
+                       and not key.startswith('TGD_NATIVE_PROXY_')}
+        environment['TGD_LOCAL_API_CONTROL_DIR'] = str(self.shared)
+        self.diagnostic_process = subprocess.Popen(
+            [sys.executable, str(protocol_probe.__file__)],
+            env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def publish(self) -> None:
         value = {
@@ -323,6 +367,9 @@ class Supervisor:
                 self.failures = 4
                 self.state, self.error_code = "failed", "process_start_failed"
         self.publish()
+        # Independent subprocess: DNS, remote peers and proxy auth cannot block
+        # child ownership or the five-second heartbeat on this thread.
+        self.diagnostic_tick()
 
 
 def main() -> None:
@@ -356,6 +403,7 @@ def main() -> None:
                 pass
             time.sleep(1)
     finally:
+        supervisor.stop_diagnostic()
         supervisor.stop_process()
         supervisor.state = "stopped"
         supervisor.publish()

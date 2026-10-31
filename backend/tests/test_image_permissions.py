@@ -70,6 +70,55 @@ def test_external_script_selects_exact_application_source(tmp_path: Path, cached
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("cached_decoy", [False, True])
+def test_external_script_selects_exact_api_helper(tmp_path: Path, cached_decoy: bool) -> None:
+    library = tmp_path / "api-library"
+    library.mkdir()
+    (library / "protocol_probe.py").write_text("SOURCE = 'canonical'\n")
+    (library / "tgd-api-supervisor.py").write_text("import protocol_probe\nassert protocol_probe.SOURCE == 'canonical'\n")
+    (library / "tgd-init-volumes.py").write_text("")
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "protocol_probe.py").write_text("SOURCE = 'decoy'\n")
+    external = tmp_path / "external"
+    external.mkdir()
+    script = external / "probe.py"
+    script.write_text(
+        "import importlib, runpy, sys\n"
+        "from pathlib import Path\n"
+        "library, decoy, verifier, cached = sys.argv[1:]\n"
+        "assert library not in sys.path, sys.path\n"
+        "try:\n"
+        "    runpy.run_path(str(Path(library) / 'tgd-api-supervisor.py'), run_name='permission_check')\n"
+        "except ModuleNotFoundError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('fixture masked the external verifier import failure')\n"
+        "sys.path.insert(0, decoy)\n"
+        "if cached == 'yes':\n"
+        "    importlib.import_module('protocol_probe')\n"
+        "check = runpy.run_path(verifier)['check_api_import']\n"
+        "if cached == 'yes':\n"
+        "    try:\n"
+        "        check(Path(library))\n"
+        "    except AssertionError as exc:\n"
+        "        assert 'unexpected API helper module' in str(exc), exc\n"
+        "    else:\n"
+        "        raise AssertionError('incorrect cached API helper was accepted')\n"
+        "else:\n"
+        "    check(Path(library))\n"
+        "    assert importlib.import_module('protocol_probe').SOURCE == 'canonical'\n",
+        encoding="utf-8",
+    )
+    environment = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, str(script), str(library), str(decoy), str(VERIFIER),
+         "yes" if cached_decoy else "no"],
+        cwd=library, env=environment, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("kind", ["app", "api"])
 def test_final_layer_repairs_restrictive_copy_modes(kind: str) -> None:
     """Opt-in real Docker regression, using local images and no native build.
@@ -93,6 +142,7 @@ def test_final_layer_repairs_restrictive_copy_modes(kind: str) -> None:
         if kind == "app" else {
             "deploy/bot-api/entrypoint.sh": "/entrypoint.sh",
             "deploy/bot-api/supervisor.py": "/usr/local/lib/tgd-api-supervisor.py",
+            "backend/app/services/protocol_probe.py": "/usr/local/lib/protocol_probe.py",
             "deploy/bot-api/init-volumes.py": "/usr/local/lib/tgd-init-volumes.py",
         }
     )

@@ -54,10 +54,11 @@ RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
 LABEL org.opencontainers.image.version="0.1.1"
 COPY --chmod=0755 deploy/bot-api/entrypoint.sh /entrypoint.sh
 COPY --chmod=0644 deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
+COPY --chmod=0644 backend/app/services/protocol_probe.py /usr/local/lib/protocol_probe.py
 COPY --chmod=0644 deploy/bot-api/init-volumes.py /usr/local/lib/tgd-init-volumes.py
 # Normalize the final image filesystem, independently of COPY metadata.
 RUN chmod 0755 /usr /usr/local /usr/local/lib /entrypoint.sh && \
-    chmod 0644 /usr/local/lib/tgd-api-supervisor.py /usr/local/lib/tgd-init-volumes.py
+    chmod 0644 /usr/local/lib/tgd-api-supervisor.py /usr/local/lib/protocol_probe.py /usr/local/lib/tgd-init-volumes.py
 COPY --chmod=0644 deploy/verify-image-permissions.py /usr/local/lib/tgd-verify-permissions.py
 RUN chmod 0644 /usr/local/lib/tgd-verify-permissions.py
 USER 1000:1000

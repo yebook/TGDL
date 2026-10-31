@@ -89,7 +89,7 @@ async def test_independent_targets_no_token_and_cloud_not_applicable(
     assert result.telegram.state == telegram and result.google.state == google
     assert result.origin == "app" and result.route == "direct" and result.proxy_scheme is None
     assert result.local_api_tcp.state == "not_applicable"
-    assert result.local_api is None and result.local_api_upstream == "not_applicable"
+    assert result.local_api is None and result.telegram_protocol.state == "not_applicable"
     assert result.settings_revision == diagnostic.settings.read()[0]
     assert datetime.fromisoformat(result.checked_at).tzinfo is not None
 
@@ -109,7 +109,7 @@ async def test_local_tcp_and_process_observations_remain_separate(
     result = await diagnostic.run()
     assert result.local_api_tcp.state == "failed"
     assert result.telegram.state == "reachable"
-    assert result.local_api_upstream == "unverified"
+    assert result.telegram_protocol.state == "unsupported"
     assert result.local_api is not None and not result.local_api.managed
     assert diagnostic.local_api.read() == before_state
 
@@ -211,7 +211,7 @@ async def test_supervisor_observation_failure_does_not_block_saved_route_or_chan
     fake_probes(monkeypatch, {name: NetworkProbeResult(state="reachable") for name in ("telegram", "google")})
     result = await diagnostic.run()
     assert result.telegram.state == "reachable" and result.local_api is None
-    assert result.local_api_upstream == "unverified" and result.proxy_status.state == "unavailable"
+    assert result.telegram_protocol.state == "unsupported" and result.proxy_status.state == "unavailable"
     assert "private-password" not in result.model_dump_json()
     assert safety.status("123:fixture") == protection
 

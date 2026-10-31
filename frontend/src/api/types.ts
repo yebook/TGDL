@@ -89,5 +89,18 @@ export interface NetworkTestResult {
   proxy_scheme: 'http' | 'socks5' | null; bot_api_mode: 'cloud' | 'local'
   telegram: NetworkProbeResult; google: NetworkProbeResult; local_api_tcp: NetworkProbeResult
   local_api: LocalApiStatus | null; proxy_status: Settings['proxy_status']
-  local_api_upstream: 'unverified' | 'not_applicable'; next_allowed_at: string
+  telegram_protocol: TelegramProtocolResult; next_allowed_at: string
+}
+export interface TelegramProtocolTarget {
+  dc: number; host: string; port: number
+  state: 'reachable' | 'failed' | 'timeout'; latency_ms: number | null
+  failure_kind: 'dns' | 'proxy_connection' | 'proxy_auth' | 'tcp' | 'timeout' | 'protocol' | 'network_unknown' | null
+}
+export interface TelegramProtocolResult {
+  state: 'reachable' | 'partial' | 'failed' | 'timeout' | 'unavailable' | 'unsupported' | 'not_applicable'
+  origin: 'bot_api'; route: 'direct' | 'proxy'; settings_revision: number; coverage: 'fixed_production_dcs'
+  targets: TelegramProtocolTarget[]
+  applied_route: 'matched' | 'different' | 'unavailable'
+  observed_generation: string | null; observed_command_id: string | null
+  reason: 'helper_unavailable' | 'stale_observation' | 'configuration_changed' | 'round_timeout' | null
 }

@@ -53,23 +53,36 @@ def seed_request_safety(app: FastAPI, scenario: str) -> None:
 def seed_network_diagnostics(app: FastAPI) -> None:
     """Replace only network primitives; the real diagnostic API/limits still run."""
     from app.schemas.contracts import ProxySettings
-    from app.schemas.responses import NetworkProbeResult
-    from app.services.network_diagnostics import TELEGRAM_URL
+    from app.schemas.responses import NetworkProbeResult, TelegramProtocolResult, TelegramProtocolTarget
+    from app.services.network_diagnostics import TELEGRAM_URL, ProbeSnapshot
+    from app.services.protocol_probe import TARGETS
 
     async def https(proxy: ProxySettings, url: str) -> NetworkProbeResult:
         await asyncio.sleep(0.15)
         if url == TELEGRAM_URL:
             return NetworkProbeResult(state="reachable", latency_ms=120, http_status=302)
-        return NetworkProbeResult(state="timeout", latency_ms=5000,
-                                  failure_kind="timeout", failure_stage="unknown")
+        return NetworkProbeResult(state="reachable", latency_ms=80, http_status=204)
 
     async def tcp() -> NetworkProbeResult:
-        return NetworkProbeResult(state="failed", latency_ms=2,
-                                  failure_kind="tcp", failure_stage="connect")
+        return NetworkProbeResult(state="reachable", latency_ms=2)
+
+    async def protocol(snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+        # Fake only the remote diagnostic boundary. The real service still
+        # constructs the response, preserves API failure and enforces limits.
+        await asyncio.sleep(0.15)
+        return TelegramProtocolResult(
+            state="timeout", route="proxy" if snapshot.proxy.enabled else "direct",
+            settings_revision=snapshot.revision, applied_route="matched",
+            observed_generation="e2e-process-instance", observed_command_id="e2e-control",
+            targets=[TelegramProtocolTarget(dc=dc, host=host, port=port, state="timeout",
+                                             latency_ms=5000, failure_kind="timeout")
+                     for dc, host, port in TARGETS],
+        )
 
     service = app.state.network_diagnostics
     patch_method.object(service, "_probe_https", https).start()
     patch_method.object(service, "_probe_tcp", tcp).start()
+    patch_method.object(service, "_probe_protocol", protocol).start()
 
 
 def seed(app: FastAPI) -> None:
@@ -150,6 +163,9 @@ def main() -> None:
                 seed(application)
                 seed_network_diagnostics(application)
                 seed_request_safety(application, os.getenv("E2E_REQUEST_SAFETY", ""))
+                if not scenario:
+                    application.state.runtime.local_api.update(
+                        applied_mode="local", phase="failed", error_code="LOCAL_API_CONNECTION_FAILED")
                 heartbeat = None
                 if config.managed_local_api:
                     service = application.state.runtime.local_api

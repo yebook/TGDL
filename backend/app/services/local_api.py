@@ -90,9 +90,10 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
     network_changed = proxy_changed and candidate.bot_api_mode == "local"
     if changed or network_changed or connection_changed and state.get("phase") in {"failed", "blocked"} or token_changed and candidate.bot_token and state.get("applied_mode") == "local":
         old_token = os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", ""))) or candidate.bot_token
-        cloud_snapshot = candidate.model_copy(update={"bot_token": old_token, "proxy": UserSettings.model_validate(
-            {"proxy": json.loads(os.environ["TGD_PROXY"]) if "TGD_PROXY" in os.environ else old_proxy}).proxy,
-            "bot_api_mode": "cloud"})
+        # Preserve the Bot being migrated, but use the route just saved by the
+        # operator. Retaining the old proxy traps pre-logout recovery on the
+        # broken route even after a working proxy has been saved.
+        cloud_snapshot = candidate.model_copy(update={"bot_token": old_token, "bot_api_mode": "cloud"})
         state.update(operation_id=uid(), phase="draining", action="switch", target_mode=candidate.bot_api_mode,
                      snapshot=crypto.encrypt(candidate.model_dump_json()), command_id=None,
                      credential_revision=settings.revision + 1, error_code="",
@@ -530,6 +531,7 @@ class LocalApiService:
                     await asyncio.to_thread(self.update, phase="draining", action="switch", command_id=None)
                     return True
                 await asyncio.to_thread(self.update, phase="verifying")
+                identity = None
                 if values.bot_token:
                     candidate = values.model_copy(update={"bot_api_mode": target})
                     client = TelegramClient(candidate.bot_token, self.config, candidate)
@@ -539,7 +541,6 @@ class LocalApiService:
                     try:
                         await self.prepare_verification(runtime, values.bot_token)
                         identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
-                        await asyncio.to_thread(runtime.remember_identity, identity)
                     except Exception as exc:
                         if target == "local" and (classify_error(exc)[0] == "NETWORK_ERROR"
                                 or isinstance(exc, AppError) and exc.code == "LOCAL_API_OPERATION_TIMEOUT"):
@@ -547,11 +548,7 @@ class LocalApiService:
                         raise
                     finally:
                         await waits.close_candidate(client)
-                await asyncio.to_thread(self.update, applied_mode=target, phase="idle", operation_id=None,
-                                        applied_command_id=command_id, applied_credential_revision=state.get("credential_revision", 0),
-                                        applied_generation=applied.get("generation"),
-                                        command_id=None, snapshot=None, cloud_snapshot=None, logout_done=target == "local", logout_required=False, error_code="")
-                return False
+                return not await asyncio.to_thread(self.complete_verification, runtime, values, target, state, applied, identity)
         except waits.ConsumerBusy:
             started = state.get("drain_wait_started_at")
             if started is None:
@@ -568,6 +565,36 @@ class LocalApiService:
             await asyncio.to_thread(self.update, phase="logout_uncertain" if latest.get("logout_uncertain") else "failed",
                                     error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED",
                                     diagnostic_error=exc)
+            return True
+
+    def complete_verification(self, runtime: Any, values: UserSettings, target: str, state: dict[str, Any],
+                              applied: dict[str, Any], identity: dict[str, Any] | None) -> bool:
+        """Discard identity results from a superseded operation or child. No awaits."""
+        with self.settings.connection_publication_lock:
+            revision, current, _ = self.settings.read()
+            latest = self.read()
+            if (latest.get("operation_id") != state.get("operation_id")
+                    or latest.get("command_id") != state.get("command_id") or latest.get("phase") != "verifying"
+                    or any(getattr(current, key) != getattr(values, key) for key in (
+                        "bot_token", "bot_api_mode", "telegram_api_id", "telegram_api_hash"))
+                    or self.settings.proxy_signature(current) != self.settings.proxy_signature(values)):
+                return False
+            fresh = self.applied()
+            if (fresh.get("command_id") != state.get("command_id")
+                    or fresh.get("credential_revision") != state.get("credential_revision", 0)
+                    or fresh.get("state") != ("running" if target == "local" else "stopped")):
+                return False
+            if target == "local" and (
+                    fresh.get("generation") != applied.get("generation")
+                    or self.settings.proxy_status(revision, current, applied=fresh, runtime_state=latest)["state"]
+                    != ("active" if current.proxy.enabled else "disabled")):
+                return False
+            if identity is not None:
+                runtime.remember_identity(identity)
+            self.update(applied_mode=target, phase="idle", operation_id=None,
+                        applied_command_id=state["command_id"], applied_credential_revision=state.get("credential_revision", 0),
+                        applied_generation=fresh.get("generation"),
+                        command_id=None, snapshot=None, cloud_snapshot=None, logout_done=target == "local", logout_required=False, error_code="")
             return True
 
     async def prepare_verification(self, runtime: Any, token: str) -> None:

@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from cryptography.fernet import Fernet
 
+sys.path.insert(0, str(Path(__file__).parents[2] / "backend" / "app" / "services"))
 spec = importlib.util.spec_from_file_location("tgd_api_supervisor", Path(__file__).with_name("supervisor.py"))
 assert spec is not None and spec.loader is not None
 module = importlib.util.module_from_spec(spec)
@@ -48,7 +49,96 @@ def service(tmp_path: Path) -> Any:
         shared, cache, command=[sys.executable, str(fake)], port=port, retry_delay=0,
     )
     yield supervisor, key
+    supervisor.stop_diagnostic()
     supervisor.stop_process()
+
+
+def diagnostic_request(supervisor: Any, key: bytes, identifier: str = "a" * 32) -> dict[str, Any]:
+    proxy = {"enabled": False, "scheme": "socks5", "host": "", "port": 1080, "username": "", "password": ""}
+    value = {"version": 1, "request_id": identifier, "expires_at": time.time() + 7,
+             "settings_revision": 1, "proxy_signature": module.protocol_probe.proxy_signature(proxy),
+             "proxy": proxy, "generation": None, "command_id": None, "credential_revision": None}
+    supervisor.shared.chmod(0o700)
+    module.atomic_write(supervisor.shared / module.protocol_probe.REQUEST_FILE, Fernet(key).encrypt(json.dumps(value).encode()))
+    return value
+
+
+@pytest.mark.parametrize("stop_reason", ["cancel", "deadline", "supersede"])
+def test_diagnostic_helper_is_bounded_reaped_and_does_not_block_heartbeat(
+        service: Any, monkeypatch: pytest.MonkeyPatch, stop_reason: str) -> None:
+    supervisor, key = service
+    helper = supervisor.shared / "fake_helper.py"
+    marker = supervisor.shared / "helper-started"
+    helper.write_text("import os, time\nfrom pathlib import Path\n"
+        "assert not any(name in os.environ for name in ['TELEGRAM_API_ID','TELEGRAM_API_HASH','TGD_BOT_TOKEN','TGD_PROXY','TGD_NATIVE_PROXY_PASSWORD'])\n"
+        f"Path({str(marker)!r}).write_text('ready')\ntime.sleep(60)\n", encoding="utf-8")
+    monkeypatch.setattr(module.protocol_probe, "__file__", str(helper))
+    for name in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TGD_BOT_TOKEN", "TGD_PROXY", "TGD_NATIVE_PROXY_PASSWORD"):
+        monkeypatch.setenv(name, "fixture-private-secret")
+    diagnostic_request(supervisor, key)
+    started = time.monotonic()
+    supervisor.tick()
+    process = supervisor.diagnostic_process
+    assert process is not None
+    deadline = time.monotonic() + 3
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert marker.exists()
+    # A blocked resolver/remote socket lives only in the helper. Repeated
+    # supervisor work and forced heartbeat publication stay prompt.
+    old = json.loads((supervisor.shared / "applied.json").read_bytes())["heartbeat_at"]
+    for _ in range(5):
+        supervisor.published_at = time.monotonic() - 6
+        supervisor.tick()
+    assert time.monotonic() - started < 3
+    assert json.loads((supervisor.shared / "applied.json").read_bytes())["heartbeat_at"] >= old
+    assert supervisor.process is None and supervisor.state == "waiting_credentials"
+    if stop_reason == "cancel":
+        (supervisor.shared / module.protocol_probe.REQUEST_FILE).unlink()
+    elif stop_reason == "deadline":
+        supervisor.diagnostic_deadline = time.monotonic() - 1
+    else:
+        diagnostic_request(supervisor, key, "b" * 32)
+    supervisor.diagnostic_tick()
+    assert process.poll() is not None
+    if stop_reason == "supersede":
+        assert supervisor.diagnostic_process is not None and supervisor.diagnostic_process is not process
+    else:
+        assert supervisor.diagnostic_process is None
+        supervisor.diagnostic_tick()
+        assert supervisor.diagnostic_process is None  # Same request cannot replay.
+    assert not (supervisor.shared / "desired.json").exists()
+
+
+def test_invalid_expired_or_foreign_diagnostic_request_cannot_spawn(service: Any) -> None:
+    supervisor, key = service
+    value = diagnostic_request(supervisor, key)
+    value["expires_at"] = time.time() - 1
+    module.atomic_write(supervisor.shared / module.protocol_probe.REQUEST_FILE, Fernet(key).encrypt(json.dumps(value).encode()))
+    supervisor.diagnostic_tick()
+    assert supervisor.diagnostic_process is None
+    value["expires_at"] = time.time() + 6
+    module.atomic_write(supervisor.shared / module.protocol_probe.REQUEST_FILE, Fernet(Fernet.generate_key()).encrypt(json.dumps(value).encode()))
+    supervisor.diagnostic_tick()
+    assert supervisor.diagnostic_process is None
+
+
+def test_diagnostic_nonce_cannot_replay_after_superseding_round(
+        service: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor, key = service
+    helper = supervisor.shared / "fake_helper.py"
+    helper.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    monkeypatch.setattr(module.protocol_probe, "__file__", str(helper))
+    original = diagnostic_request(supervisor, key)
+    supervisor.diagnostic_tick()
+    first = supervisor.diagnostic_process
+    diagnostic_request(supervisor, key, "b" * 32)
+    supervisor.diagnostic_tick()
+    second = supervisor.diagnostic_process
+    assert first is not None and second is not None and first.poll() is not None
+    module.atomic_write(supervisor.shared / module.protocol_probe.REQUEST_FILE, Fernet(key).encrypt(json.dumps(original).encode()))
+    supervisor.diagnostic_tick()
+    assert second.poll() is not None and supervisor.diagnostic_process is None
 
 
 def command(supervisor: Any, key: bytes, identifier: str, action: str = "start", **changes: Any) -> None:

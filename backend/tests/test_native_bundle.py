@@ -133,7 +133,7 @@ def test_extract_rejects_destination_symlink_before_any_write(bundle_tree: tuple
 
 
 @pytest.mark.parametrize("changed", [
-    "supervisor.py", "entrypoint.sh", "init-volumes.py", "product-version", "app-only",
+    "supervisor.py", "entrypoint.sh", "init-volumes.py", "product-version", "app-only", "protocol-helper",
 ])
 def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed: str) -> None:
     api = tmp_path / "deploy/bot-api"
@@ -153,6 +153,10 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
     elif changed == "app-only":
         (tmp_path / "frontend").mkdir()
         (tmp_path / "frontend/app.ts").write_text("app-only update")
+    elif changed == "protocol-helper":
+        helper = tmp_path / "backend/app/services/protocol_probe.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("# Runtime-only diagnostic helper change\n")
     else:
         path = api / changed
         path.write_text(path.read_text() + "\n# runtime-only change\n")
