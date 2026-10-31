@@ -367,6 +367,25 @@ def test_bounded_crash_retries_and_explicit_recovery(service: Any) -> None:
     supervisor.tick()
     assert supervisor.process is None and supervisor.generation == generation
     assert supervisor.error_code == "process_exited"
+    status = json.loads((supervisor.shared / "applied.json").read_text())
+    assert status["retry_pending"] is False
+
+
+def test_child_retry_publishes_pending_then_same_command_recovers(service: Any) -> None:
+    supervisor, key = service
+    working_command = supervisor.command
+    supervisor.command = [sys.executable, "-c", "raise SystemExit(1)"]
+    supervisor.retry_delay = 3600
+    command(supervisor, key, "recovering")
+    settle(supervisor, "failed")
+    failed = json.loads((supervisor.shared / "applied.json").read_text())
+    assert failed["retry_pending"] is True and failed["error_code"] == "process_exited"
+    supervisor.command, supervisor.next_retry = working_command, 0
+    settle(supervisor, "running")
+    recovered = json.loads((supervisor.shared / "applied.json").read_text())
+    assert recovered["retry_pending"] is False and recovered["error_code"] is None
+    assert recovered["command_id"] == failed["command_id"] == "recovering"
+    assert recovered["generation"] != failed["generation"]
 
 
 def test_listen_timeout_reaps_process(service: Any) -> None:

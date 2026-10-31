@@ -269,6 +269,117 @@ async def test_local_verification_network_failure_waits_for_manual_retry_without
     logout.assert_awaited_once()
 
 
+async def test_startup_retry_in_progress_does_not_become_terminal_failure(managed, monkeypatch):
+    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
+         telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime, service = managed.app.state.runtime, managed.app.state.runtime.local_api
+    identity = AsyncMock(return_value={"id": 123, "username": "test"})
+    logout = AsyncMock(return_value=True)
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    assert await service.reconcile(runtime)
+    command = service.read()["command_id"]
+    heartbeat(service, command_id=command, state="failed", generation="first",
+              error_code="process_exited", retry_pending=True)
+    assert await service.reconcile(runtime)
+    assert service.read()["phase"] == "starting"
+    assert identity.await_count == 1
+    heartbeat(service, command_id=command, state="running", generation="recovered", retry_pending=False)
+    assert not await service.reconcile(runtime)
+    assert service.read()["phase"] == "idle"
+    assert service.read()["applied_generation"] == "recovered"
+    assert identity.await_count == 2
+    logout.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reason", ["process_exited", "invalid_credentials", "control_io_failed", "secret-detail"])
+async def test_terminal_startup_failure_preserves_only_safe_reason(managed, reason):
+    save(managed, bot_api_mode="local", telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime, service = managed.app.state.runtime, managed.app.state.runtime.local_api
+    service.update(logout_done=True)
+    assert await service.reconcile(runtime)
+    heartbeat(service, command_id=service.read()["command_id"], state="failed", error_code=reason)
+    assert await service.reconcile(runtime)
+    state = service.read()
+    assert state["phase"] == "failed" and state["error_code"] == "LOCAL_API_START_FAILED"
+    events = runtime.diagnostics.export()["events"]
+    event = next(event for event in events if event.get("outcome") == "failed")
+    assert event["error_code"] == "LOCAL_API_START_FAILED" and event["stage"] == "starting"
+    if reason == "secret-detail":
+        assert state["startup_error"] is None and "reason" not in event
+        assert reason not in json.dumps(events) + service.status()["message"]
+    else:
+        assert state["startup_error"] == event["reason"] == reason
+        assert service.status()["message"] != "本地 API 进程启动失败，请检查凭据和网络后重试"
+
+
+async def test_startup_retry_pending_cannot_extend_completion_deadline(managed):
+    save(managed, bot_api_mode="local", telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime, service = managed.app.state.runtime, managed.app.state.runtime.local_api
+    service.update(logout_done=True)
+    assert await service.reconcile(runtime)
+    service.update(command_issued_at=time.time() - 151)
+    heartbeat(service, command_id=service.read()["command_id"], state="failed",
+              error_code="listen_timeout", retry_pending=True)
+    assert await service.reconcile(runtime)
+    assert service.read()["phase"] == "failed"
+
+
+@pytest.mark.parametrize("mismatch", [None, "command", "revision", "proxy", "generation", "restart", "identity_failure"])
+async def test_manual_retry_reuses_only_proven_running_failed_startup(managed, monkeypatch, mismatch):
+    save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",
+         telegram_api_id="1234", telegram_api_hash=HASH)
+    runtime, service = managed.app.state.runtime, managed.app.state.runtime.local_api
+    identity = AsyncMock(return_value={"id": 123, "username": "test"})
+    logout = AsyncMock(return_value=True)
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    monkeypatch.setattr(TelegramClient, "logout", logout)
+    service.update(phase="failed", error_code="LOCAL_API_PREFLIGHT_FAILED")
+    service.action(True)
+    assert await service.reconcile(runtime)
+    before = service.read()
+    command = before["command_id"]
+    desired_path = service.config.local_api_control_dir / "desired.json"
+    desired = desired_path.read_bytes()
+    heartbeat(service, command_id=command, state="failed", generation="first",
+              error_code="process_exited", retry_pending=False)
+    assert await service.reconcile(runtime)
+    assert service.read()["error_code"] == "LOCAL_API_START_FAILED"
+    updates = {"command_id": command, "state": "running", "generation": "recovered"}
+    if mismatch in {"command", "revision", "proxy", "generation"}:
+        field = {"command": "command_id", "revision": "credential_revision",
+                 "proxy": "proxy_signature", "generation": "generation"}[mismatch]
+        updates[field] = {"command": "other", "revision": -1, "proxy": "different", "generation": None}[mismatch]
+    heartbeat(service, **updates)
+    # A recovered child alone must not silently verify or clear an explicit failure.
+    assert await service.reconcile(runtime)
+    assert service.read()["phase"] == "failed"
+    assert identity.await_count == 1
+    if mismatch in {None, "identity_failure"}:
+        assert "现已运行" in service.status()["message"]
+    service.action(mismatch == "restart")
+    if mismatch in {None, "identity_failure"}:
+        assert service.read()["command_id"] == command
+        if mismatch == "identity_failure":
+            identity.side_effect = TimeoutError("private-verification-detail")
+            assert await service.reconcile(runtime)
+            assert service.read()["phase"] == "failed"
+            assert service.read()["error_code"] == "LOCAL_API_CONNECTION_FAILED"
+            assert service.read()["applied_mode"] == "cloud"
+        else:
+            assert not await service.reconcile(runtime)
+            assert service.read()["phase"] == "idle"
+            assert service.read()["applied_generation"] == "recovered"
+        assert desired_path.read_bytes() == desired
+        assert identity.await_count == 2
+    else:
+        assert service.read()["command_id"] is None
+        assert await service.reconcile(runtime)
+        assert service.read()["command_id"] != command
+    assert service.read()["cloud_available_at"] == before["cloud_available_at"]
+    logout.assert_awaited_once()
+
+
 @pytest.mark.parametrize("kind", ["deferred", "rate_limit", "unauthorized", "unknown"])
 async def test_local_verification_keeps_safety_deferrals_and_unknown_errors_distinct(managed, monkeypatch, kind):
     save(managed, bot_token="123:abc", allowed_user_ids=[42], bot_api_mode="local",

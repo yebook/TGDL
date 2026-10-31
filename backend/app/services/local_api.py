@@ -19,6 +19,7 @@ from app.db.models import Job, LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.diagnostics import classify_error
+from app.services.local_api_errors import START_FAILURE_MESSAGES
 from app.services.network_errors import classify_network_failure
 from app.services.request_safety import SafetyDeferred
 
@@ -188,7 +189,10 @@ class LocalApiService:
         if self.diagnostics and "phase" in updates:
             code = classify_error(diagnostic_error)[0] if diagnostic_error is not None else None
             reason = None
-            if updates.get("error_code") == "LOCAL_API_CONNECTION_FAILED" or code == "NETWORK_ERROR":
+            if updates.get("error_code") == "LOCAL_API_START_FAILED":
+                code = "LOCAL_API_START_FAILED"
+                reason = values.get("startup_error")
+            elif updates.get("error_code") == "LOCAL_API_CONNECTION_FAILED" or code == "NETWORK_ERROR":
                 code = "NETWORK_ERROR"
                 reason = classify_network_failure(diagnostic_error)[0] if diagnostic_error is not None else "network_unknown"
             elif code in {"RATE_LIMITED", "UNAUTHORIZED", "BOT_REQUEST_PAUSED"}:
@@ -215,6 +219,12 @@ class LocalApiService:
         available = bool(applied)
         cloud_reconnect = state.get("action") == "cloud_reconnect"
         message = ERROR_MESSAGES.get(state.get("error_code", ""), MESSAGES.get(phase, MESSAGES["failed"]))
+        if state.get("error_code") == "LOCAL_API_START_FAILED":
+            reason = state.get("startup_error")
+            if isinstance(reason, str):
+                message = START_FAILURE_MESSAGES.get(reason, message)
+            if self.running_retry_command(state, applied):
+                message = "上次启动操作失败，但该操作的 API 进程现已运行；请点击重试操作继续验证 Bot 连接"
         drain_reason = "connection" if phase == "draining" else None
         if phase == "draining" and not state.get("error_code"):
             with self.db.sessions() as session:
@@ -261,7 +271,8 @@ class LocalApiService:
                 raise AppError("LOCAL_API_LOGOUT_UNCERTAIN", MESSAGES["logout_uncertain"], 409)
             if not restart and state.get("phase") == "idle":
                 return status
-            state.update(phase="draining", command_id=None, error_code="",
+            command = self.running_retry_command(state, self.applied()) if not restart else None
+            state.update(phase="draining", command_id=command, error_code="", startup_error=None,
                          drain_wait_started_at=None, verification_started_at=None)
             if restart:
                 state.update(action="recover_restart" if status["desired_mode"] == "cloud" else "restart",
@@ -274,6 +285,21 @@ class LocalApiService:
                                   mode=state.get("target_mode"), operation_id=state.get("operation_id"),
                                   action="restart" if restart else "acknowledge_retry" if acknowledge else "retry")
         return self.status()
+
+    def running_retry_command(self, state: dict[str, Any], applied: dict[str, Any]) -> str | None:
+        """Resume only the exact failed startup which later recovered in the supervisor."""
+        command = state.get("command_id")
+        if (state.get("phase") != "failed" or state.get("error_code") != "LOCAL_API_START_FAILED"
+                or state.get("target_mode") != "local" or not state.get("logout_done")
+                or state.get("logout_uncertain") or not command or not state.get("snapshot")
+                or applied.get("state") != "running" or not applied.get("generation")
+                or applied.get("command_id") != command
+                or applied.get("credential_revision") != state.get("credential_revision")):
+            return None
+        values = UserSettings.model_validate_json(self.settings.secrets.decrypt(state["snapshot"]))
+        if applied.get("proxy_signature") != self.settings.proxy_signature(values):
+            return None
+        return str(command)
 
     def validate_allowed(self, candidate: UserSettings) -> None:
         state = self.read()
@@ -511,7 +537,13 @@ class LocalApiService:
                         raise AppError("LOCAL_API_COMMAND_TIMEOUT", "服务未确认操作")
                     return True
                 if applied["state"] == "failed":
-                    raise AppError("LOCAL_API_START_FAILED", "本地 API 进程启动失败")
+                    # A recoverable child failure is not the final command outcome.
+                    # Keep the same command and bounded completion deadline.
+                    if applied.get("retry_pending") is True and time.time() - issued <= 150:
+                        return True
+                    reason = applied.get("error_code")
+                    raise AppError("LOCAL_API_START_FAILED", "本地 API 进程启动失败",
+                                   details=reason if isinstance(reason, str) and reason in START_FAILURE_MESSAGES else None)
                 if target == "local" and (applied.get("proxy_signature") != self.settings.proxy_signature(values) or not applied.get("generation")):
                     if time.time() - issued > 60:
                         raise AppError("LOCAL_API_COMMAND_TIMEOUT", "服务未确认网络配置与进程")
@@ -564,6 +596,7 @@ class LocalApiService:
             latest = await asyncio.to_thread(self.read)
             await asyncio.to_thread(self.update, phase="logout_uncertain" if latest.get("logout_uncertain") else "failed",
                                     error_code=exc.code if isinstance(exc, AppError) else "LOCAL_API_OPERATION_FAILED",
+                                    startup_error=exc.details if isinstance(exc, AppError) and exc.code == "LOCAL_API_START_FAILED" else None,
                                     diagnostic_error=exc)
             return True
 

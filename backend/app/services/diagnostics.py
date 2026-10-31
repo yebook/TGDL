@@ -27,6 +27,7 @@ from aiohttp import ClientError
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
 from app.core.errors import AppError
+from app.services.local_api_errors import START_FAILURE_MESSAGES
 from app.services.network_errors import classify_network_failure
 
 EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
@@ -42,9 +43,10 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "ACQUISITION_UNCERTAIN", "SIZE_MISMATCH", "CLOUD_FILE_TOO_LARGE", "CLOUD_DOWNLOAD_FAILED",
           "CLOUD_DOWNLOAD_REJECTED", "INVALID_API_PATH", "PUBLISH_COLLISION", "PUBLISH_UNCERTAIN",
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
-          "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY"}
+          "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY",
+          "LOCAL_API_START_FAILED"}
 REASONS = {"pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable",
-           "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown"}
+           "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown"} | START_FAILURE_MESSAGES.keys()
 STAGES = {"before_send", "dns", "proxy", "connect", "tls", "response", "unknown",
           "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ACTIONS = {"switch", "restart", "recover_restart", "cloud_reconnect", "retry", "acknowledge_retry", "bot_retry"}

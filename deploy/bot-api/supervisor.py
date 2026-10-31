@@ -191,6 +191,8 @@ class Supervisor:
             "proxy_signature": self.desired.proxy_signature if self.desired and self.state in ('starting', 'running') else None,
             "state": self.state, "generation": self.generation,
             "error_code": self.error_code,
+            "retry_pending": (self.state == "failed" and self.desired is not None
+                              and self.desired.action != "stop" and 0 < self.failures <= 3),
         }
         now = time.monotonic()
         if value == self.published_state and now - self.published_at < HEARTBEAT_INTERVAL:
