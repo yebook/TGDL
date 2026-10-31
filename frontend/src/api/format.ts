@@ -17,6 +17,14 @@ export function dateTime(value: string | null | undefined): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
 }
+export function taskIssueTone(code: string | null): 'info' | 'warning' | 'error' {
+  return code === 'BOT_REQUEST_WAITING' ? 'info' : code === 'BOT_REQUEST_PAUSED' ? 'warning' : 'error'
+}
+export function attemptResult(code: string | null, finishedAt: string | null): string {
+  if (code === 'BOT_REQUEST_WAITING') return '等待请求间隔，自动继续'
+  if (code === 'BOT_REQUEST_PAUSED') return '请求暂缓，等待恢复'
+  return code || (finishedAt ? '已结束' : '执行中')
+}
 export const states: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'info' | 'primary' }> = {
   collecting: { label: '正在接收', tone: 'info' },
   aggregating: { label: '正在接收', tone: 'info' },

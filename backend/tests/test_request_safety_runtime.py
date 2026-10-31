@@ -6,7 +6,7 @@ import pytest
 import test_local_api as local_api_tests
 from fastapi.testclient import TestClient
 from test_local_api import HASH, save
-from test_pipeline import confirm_all, message, setup_pipeline
+from test_pipeline import FakeClient, confirm_all, message, setup_pipeline
 
 from app.bot.client import TelegramClient
 from app.core.security import digest
@@ -48,7 +48,11 @@ async def test_managed_safety_wait_never_becomes_uncertain_logout(managed, monke
     remote_logout.assert_not_awaited()
 
 
-async def test_worker_deferral_keeps_job_retry_budget_and_frozen_path(client: TestClient):
+@pytest.mark.parametrize("reason,sent", [
+    ("pacing", False), ("pacing", True), ("cooldown", False), ("cooldown", True),
+    ("backoff", False), ("auth_paused", False), ("auth_paused", True), ("protection_unavailable", False),
+])
+async def test_worker_deferral_keeps_job_retry_budget_and_frozen_path(client: TestClient, config, reason, sent):
     state, ingest = setup_pipeline(client)
     ingest.message(7, message(), "safety-ingest")
     request_id = confirm_all(state)
@@ -59,7 +63,7 @@ async def test_worker_deferral_keeps_job_retry_budget_and_frozen_path(client: Te
 
     class DeferredClient:
         async def get_file(self, file_id):
-            raise SafetyDeferred("not sent", time.time() + 600)
+            raise SafetyDeferred("private upstream detail", time.time() + 600, reason=reason, sent=sent)
 
     await state.runtime.worker.run(DeferredClient(), job_id)
     with state.db.sessions() as session:
@@ -68,6 +72,24 @@ async def test_worker_deferral_keeps_job_retry_budget_and_frozen_path(client: Te
         assert (job.relative_path, job.auto_retries, job.request_id) == original
         assert job.request_id == request_id
         assert job.state != "recovery_blocked"
+        assert job.error_code == ("BOT_REQUEST_WAITING" if reason == "pacing" and not sent else "BOT_REQUEST_PAUSED")
+        assert "private upstream detail" not in job.error_message
+    events = state.runtime.diagnostics.export()["events"]
+    result = next(event for event in events if event["event"] == "task_result")
+    assert result["level"] == ("info" if reason == "pacing" and not sent else "warning")
+    assert (result["reason"], result["stage"]) == (reason, "response" if sent else "before_send")
+    assert "retry_at" in result
+    # A resumed job keeps its frozen path and completes normally, with no stale
+    # wait/error on the final result. No administrator retry is required.
+    with state.db.transaction() as session:
+        session.get(Job, job_id).next_run_at = 0
+    assert state.runtime.worker.claim(7) == job_id
+    source = config.bot_api_root / "resumed-file"
+    source.write_bytes(b"abcdef")
+    await state.runtime.worker.run(FakeClient(source), job_id)
+    item = state.tasks.detail(request_id)["items"][0]
+    assert item["status"] == "succeeded" and item["error_code"] is None and item["error_message"] is None
+    assert item["relative_path"] == original[0]
 
 
 def test_notification_race_deferral_restores_attempt_budget(client: TestClient):

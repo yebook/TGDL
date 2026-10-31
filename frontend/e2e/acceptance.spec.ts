@@ -2,6 +2,40 @@ import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import type { DownloadProgress, NetworkTestResult, SystemStatus } from '../src/api/types'
 
+for (const width of [1440, 390]) {
+  test(`request pacing is informational while real failures stay visible at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 })
+    let code = 'BOT_REQUEST_WAITING'
+    let message = '等待请求间隔，将自动继续'
+    await page.route('**/api/v1/tasks/e2e-queued', async route => {
+      const response = await route.fetch()
+      const detail = await response.json()
+      await route.fulfill({ json: { ...detail, status: 'retry_wait', items: detail.items.map((item: object) => ({
+        ...item, status: 'retry_wait', phase: 'retry_wait', error_code: code, error_message: message,
+        attempts: [{ sequence: 1, started_at: '2026-10-31T10:12:24Z', finished_at: '2026-10-31T10:12:25Z', error_code: code }],
+      })) } })
+    })
+    await login(page)
+    await page.getByLabel('搜索名称或任务编号').fill('E2E queued video')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.locator('.task-row .task-name').click()
+    const card = page.locator('.media-card')
+    await expect(card.locator('.el-alert--info')).toHaveText(message)
+    await card.locator('summary').click()
+    await expect(card.locator('.attempt')).toContainText('等待请求间隔，自动继续')
+    await expect(card).not.toContainText('BOT_REQUEST_')
+    await page.screenshot({ path: testInfo.outputPath('pacing.png'), fullPage: true })
+    code = 'BOT_REQUEST_PAUSED'
+    message = 'Telegram 要求等待，任务将在等待结束后继续'
+    await expect(card.locator('.el-alert--warning')).toHaveText(message)
+    await expect(card.locator('.attempt')).toContainText('请求暂缓，等待恢复')
+    code = 'NETWORK_ERROR'
+    message = 'Telegram 连接异常，请检查网络或代理'
+    await expect(card.locator('.el-alert--error')).toHaveText(message)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+}
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 }]) {
   test(`network diagnostics keep independent results and unsaved input at ${viewport.width}`, async ({ page }, testInfo) => {
     await page.setViewportSize(viewport)

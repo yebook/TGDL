@@ -97,8 +97,18 @@ def test_normal_pacing_is_unsent_and_does_not_manufacture_recovery(tmp_path: Pat
     events = log.export()["events"]
     assert [event["event"] for event in events] == ["request_deferred", "event_summary"]
     assert events[0]["reason"] == "pacing" and events[0]["stage"] == "before_send"
+    assert events[0]["level"] == events[1]["level"] == "info"
     assert "http_status" not in events[0]  # Local pacing is not a Telegram 429.
     assert events[1]["suppressed_count"] == 19
+
+
+@pytest.mark.parametrize("reason", ["cooldown", "backoff", "auth_paused", "protection_unavailable"])
+def test_actual_request_protection_keeps_warning(tmp_path: Path, reason) -> None:
+    log = DiagnosticLog(tmp_path)
+    log.request("local", "getFile", error=SafetyDeferred(SECRET, reason=reason))
+    event = log.export()["events"][0]
+    assert (event["reason"], event["stage"], event["level"]) == (reason, "before_send", "warning")
+    assert "http_status" not in event
 
 
 @pytest.mark.parametrize("reason,code,status", [("cooldown", "RATE_LIMITED", 429), ("auth_paused", "UNAUTHORIZED", 401)])

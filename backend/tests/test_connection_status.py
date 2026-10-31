@@ -40,7 +40,7 @@ async def test_unsent_poll_pacing_preserves_last_connection_evidence(managed, mo
     clock = [time.time()]
     runtime.safety.clock = lambda: clock[0]
     token = state.settings.read()[1].bot_token
-    protected = {"next_start": clock[0] + 2}
+    protected = {"next_start": clock[0] + 6}
     with state.db.transaction() as session:
         session.add(RequestSafety(credential=digest(token), values=protected))
 
@@ -59,7 +59,7 @@ async def test_unsent_poll_pacing_preserves_last_connection_evidence(managed, mo
         assert runtime.client is original and runtime.local_api.read() == operation
         with state.db.sessions() as session:
             assert session.get(RequestSafety, digest(token)).values == protected
-        clock[0] += 3
+        clock[0] += 7
 
     monkeypatch.setattr("app.workers.runtime.asyncio.sleep", sleep)
     try:

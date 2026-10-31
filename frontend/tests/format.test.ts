@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, duration, parseUserIds, percent } from '../src/api/format'
+import { attemptResult, bytes, duration, parseUserIds, percent, taskIssueTone } from '../src/api/format'
+
+describe('request waits and real task failures', () => {
+  it('distinguishes ordinary pacing, protection pauses and failures', () => {
+    expect(taskIssueTone('BOT_REQUEST_WAITING')).toBe('info')
+    expect(attemptResult('BOT_REQUEST_WAITING', '2026-10-31')).toBe('等待请求间隔，自动继续')
+    expect(taskIssueTone('BOT_REQUEST_PAUSED')).toBe('warning')
+    expect(attemptResult('BOT_REQUEST_PAUSED', '2026-10-31')).toBe('请求暂缓，等待恢复')
+    expect(taskIssueTone('NETWORK_ERROR')).toBe('error')
+    expect(attemptResult('NETWORK_ERROR', '2026-10-31')).toBe('NETWORK_ERROR')
+    expect(attemptResult(null, null)).toBe('执行中')
+    expect(attemptResult(null, '2026-10-31')).toBe('已结束')
+  })
+})
 
 describe('human-readable duration', () => {
   it.each([

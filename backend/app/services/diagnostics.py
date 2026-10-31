@@ -39,7 +39,7 @@ OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_
             "cancelling", "fetching", "saving", "partial_success", "expired", "awaiting_confirmation", "collecting",
             "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST", "NETWORK_ERROR",
-          "SERVER_ERROR", "UNKNOWN_ERROR", "BOT_REQUEST_PAUSED", "CANCELLED", "INTERRUPTED",
+          "SERVER_ERROR", "UNKNOWN_ERROR", "BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING", "CANCELLED", "INTERRUPTED",
           "ACQUISITION_UNCERTAIN", "SIZE_MISMATCH", "CLOUD_FILE_TOO_LARGE", "CLOUD_DOWNLOAD_FAILED",
           "CLOUD_DOWNLOAD_REJECTED", "INVALID_API_PATH", "PUBLISH_COLLISION", "PUBLISH_UNCERTAIN",
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
@@ -154,7 +154,9 @@ class DiagnosticLog:
                     self.failures[key] = self.clock()
                 self.emit("request_deferred" if code == "BOT_REQUEST_PAUSED" else "telegram_request",
                           dedupe=True, mode=mode, method=method, outcome="deferred" if code == "BOT_REQUEST_PAUSED" else "cancelled" if code == "CANCELLED" else "failed",
-                          error_code=code, http_status=status, level="warning", duration_ms=duration_ms,
+                          error_code=code, http_status=status,
+                          level="info" if code == "BOT_REQUEST_PAUSED" and reason == "pacing" and stage == "before_send" else "warning",
+                          duration_ms=duration_ms,
                           reason=reason, stage=stage, action=action, operation_id=operation_id)
             else:
                 recovered = key in self.failures

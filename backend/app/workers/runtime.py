@@ -363,7 +363,7 @@ class Runtime:
             except AppError as exc:
                 # Unsent pacing supplies no new evidence about the connection.
                 # Preserve both verified readiness and any earlier real error.
-                if not (isinstance(exc, SafetyDeferred) and exc.reason == "pacing" and not exc.sent):
+                if not (isinstance(exc, SafetyDeferred) and exc.is_pacing):
                     await asyncio.to_thread(self.poll_result, polling_client, error=exc.message)
                 await asyncio.sleep(5)
             except Exception:

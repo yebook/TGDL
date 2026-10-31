@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import aclosing
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,7 @@ from app.db.models import (
 from app.db.session import Database
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress, ProgressOwner
-from app.services.request_safety import RequestSafetyService, SafetyDeferred
+from app.services.request_safety import RequestSafetyService, SafetyDeferralReason, SafetyDeferred
 from app.services.tasks import project
 from app.storage.files import (
     StorageManager,
@@ -352,6 +353,7 @@ class DownloadWorker:
         publish_task: asyncio.Task[None] | None = None
         observer: asyncio.Task[None] | None = None
         owner: ProgressOwner | None = None
+        deferral: tuple[SafetyDeferralReason, bool] | None = None
         try:
             file_id, root_id, relative, expected = await asyncio.to_thread(self.prepare, job_id)
             if cloud:
@@ -429,7 +431,13 @@ class DownloadWorker:
         except Exception as exc:
             if isinstance(exc, (SafetyDeferred, TelegramRetryAfter, TelegramUnauthorizedError)):
                 delay = (exc.retry_at or time.time() + 5) - time.time() if isinstance(exc, SafetyDeferred) else float(exc.retry_after) if isinstance(exc, TelegramRetryAfter) else 5
-                await asyncio.to_thread(self.failed, job_id, "BOT_REQUEST_PAUSED", "Telegram 请求已暂停，任务将在恢复后继续", True, False, max(1, delay))
+                pacing = isinstance(exc, SafetyDeferred) and exc.is_pacing
+                reason: SafetyDeferralReason = exc.reason if isinstance(exc, SafetyDeferred) else "cooldown" if isinstance(exc, TelegramRetryAfter) else "auth_paused"
+                deferral = (reason, exc.sent if isinstance(exc, SafetyDeferred) else True)
+                message = {"pacing": "等待请求间隔，将自动继续", "cooldown": "Telegram 要求等待，任务将在等待结束后继续",
+                           "backoff": "连接异常，任务将在退避等待后重试", "auth_paused": "Bot 凭据被拒绝，请检查 Token 后重试 Bot 连接",
+                           "protection_unavailable": "请求保护状态不可用，任务已暂停，请检查系统诊断"}[reason]
+                await asyncio.to_thread(self.failed, job_id, "BOT_REQUEST_WAITING" if pacing else "BOT_REQUEST_PAUSED", message, True, False, max(1, delay))
                 return
             uncertain = not cloud and phase == "fetching" and not isinstance(exc, (AppError, TelegramRetryAfter, TelegramBadRequest, TelegramUnauthorizedError))
             code, message, retry, delay = self.classify(exc)
@@ -443,11 +451,11 @@ class DownloadWorker:
             self.progress_times.pop(job_id, None)
             if self.diagnostics:
                 try:
-                    await asyncio.to_thread(self.record_result, job_id)
+                    await asyncio.to_thread(self.record_result, job_id, deferral)
                 except Exception:
                     self.diagnostics.error = True
 
-    def record_result(self, job_id: str) -> None:
+    def record_result(self, job_id: str, deferral: tuple[SafetyDeferralReason, bool] | None = None) -> None:
         if not self.diagnostics:
             return
         with self.db.sessions() as session:
@@ -456,8 +464,14 @@ class DownloadWorker:
                 return
             fields: dict[str, Any] = {"task_id": job.request_id, "job_id": job.id, "mode": job.acquisition_mode,
                       "outcome": job.state, "error_code": job.error_code}
+            if deferral and job.state == "retry_wait":
+                fields.update(reason=deferral[0], stage="response" if deferral[1] else "before_send",
+                              retry_at=datetime.fromtimestamp(job.next_run_at, UTC).isoformat())
             pending_cleanup = session.get(CacheCleanup, job_id) is not None
-        self.diagnostics.emit("task_result", level="info" if fields["outcome"] == "succeeded" else "warning", **fields)
+        pacing = fields["error_code"] == "BOT_REQUEST_WAITING"
+        if pacing:
+            fields.update(reason="pacing", stage="before_send")
+        self.diagnostics.emit("task_result", level="info" if pacing or fields["outcome"] == "succeeded" else "warning", **fields)
         if pending_cleanup:
             self.diagnostics.emit("cache_cleanup", level="info", mode="local", job_id=job_id, outcome="queued")
 
@@ -553,7 +567,7 @@ class DownloadWorker:
                 job.error_message = "本地 Bot API 可能仍在获取文件；请重启该服务以安全恢复并发槽"
             elif job.cancel_requested or code == "CANCELLED":
                 job.state, job.phase, job.finished_at = "cancelled", "cancelled", time.time()
-            elif code in {"BOT_REQUEST_PAUSED", "CACHE_CLEANUP_BUSY"}:
+            elif code in {"BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING", "CACHE_CLEANUP_BUSY"}:
                 job.state, job.phase = "retry_wait", "retry_wait"
                 job.next_run_at = time.time() + max(2, delay)
             elif retry and job.auto_retries < job.max_auto_retries:

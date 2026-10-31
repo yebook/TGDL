@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, errorMessage } from '../api/client'
 import type { TaskDetail } from '../api/types'
-import { bytes, dateTime, duration } from '../api/format'
+import { attemptResult, bytes, dateTime, duration, taskIssueTone } from '../api/format'
 import { mediaState } from '../api/mediaProgress'
 import { usePolling } from '../composables/usePolling'
 import StatusBadge from './StatusBadge.vue'
@@ -49,8 +49,8 @@ async function action(kind: 'cancel' | 'retry') {
         <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
         <p v-if="item.linked_job_id" class="muted">关联已有文件任务：<span class="mono">{{ item.linked_job_id }}</span></p>
-        <el-alert v-if="item.error_message || item.error_code" :title="item.error_message || item.error_code || ''" type="error" :closable="false" show-icon />
-        <details v-if="item.attempts.length" class="attempts"><summary>执行记录（{{ item.attempts.length }}）</summary><div v-for="attempt in item.attempts" :key="attempt.sequence" class="attempt"><strong>第 {{ attempt.sequence }} 次</strong><span>{{ dateTime(attempt.started_at) }}</span><span>{{ attempt.error_code || (attempt.finished_at ? '已结束' : '执行中') }}</span></div></details>
+        <el-alert v-if="item.error_message || item.error_code" :title="item.error_message || attemptResult(item.error_code, null)" :type="taskIssueTone(item.error_code)" :closable="false" show-icon />
+        <details v-if="item.attempts.length" class="attempts"><summary>执行记录（{{ item.attempts.length }}）</summary><div v-for="attempt in item.attempts" :key="attempt.sequence" class="attempt"><strong>第 {{ attempt.sequence }} 次</strong><span>{{ dateTime(attempt.started_at) }}</span><span>{{ attemptResult(attempt.error_code, attempt.finished_at) }}</span></div></details>
       </article>
     </template>
   </div>

@@ -8,6 +8,7 @@ import math
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -29,7 +30,14 @@ from app.services.diagnostics import DiagnosticLog
 
 # Keep persisted deadlines representable on supported platforms and in the UI.
 MAX_DEADLINE = 253402214400.0
+PACING_WAIT_SECONDS = 5.0
 SafetyDeferralReason = Literal["pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable"]
+
+
+@dataclass
+class AdmissionQueue:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
 
 
 def checked_values(raw: Any) -> dict[str, Any]:
@@ -58,12 +66,17 @@ class SafetyDeferred(AppError):
         self.retry_at, self.sent = retry_at, sent
         self.reason = reason
 
+    @property
+    def is_pacing(self) -> bool:
+        return self.reason == "pacing" and not self.sent
+
 
 class RequestSafetyService:
     def __init__(self, db: Database, clock: Callable[[], float] = time.time,
                  jitter: Callable[[], float] = random.random) -> None:
         self.db, self.clock, self.jitter = db, clock, jitter
         self.diagnostics: DiagnosticLog | None = None
+        self.admissions: dict[tuple[asyncio.AbstractEventLoop, str], AdmissionQueue] = {}
 
     @staticmethod
     def blocked(values: dict[str, Any], now: float) -> bool:
@@ -125,22 +138,43 @@ class RequestSafetyService:
         return now, True
 
     async def before(self, token: str, chat_id: int | None = None, *, probe: bool = False) -> None:
-        # Small pacing waits may complete; server waits return immediately so lifecycle
-        # and settings locks never remain held for a long RetryAfter/auth pause.
+        # Queue only short admission waits, never network I/O. FIFO prevents a
+        # burst of downloads/polling/notifications repeatedly racing for one slot.
+        # Entries exist only while used; loops and candidate credentials cannot leak.
         started = self.clock()
+        key = (asyncio.get_running_loop(), digest(token))
+        queue = self.admissions.setdefault(key, AdmissionQueue())
+        queue.users += 1
+        reserving = False
         try:
-            while True:
-                at, accepted = await asyncio.to_thread(self._reserve, token, chat_id, probe=probe)
-                now = self.clock()
-                if accepted:
-                    return
-                if at - started > 1.2:
-                    raise SafetyDeferred("正在按聊天频率发送，请稍后重试", at, reason="pacing")
-                await asyncio.sleep(max(0.001, at - now))
+            timeout = asyncio.timeout(PACING_WAIT_SECONDS)
+            try:
+                async with timeout, queue.lock:
+                    while True:
+                        # The durable gate must be rechecked after every wait:
+                        # another response may have imposed a cooldown/auth pause.
+                        reserving = True
+                        at, accepted = await asyncio.to_thread(self._reserve, token, chat_id, probe=probe)
+                        reserving = False
+                        if accepted:
+                            return
+                        if at - started >= PACING_WAIT_SECONDS:
+                            raise SafetyDeferred("等待请求间隔，将自动继续", at, reason="pacing")
+                        await asyncio.sleep(max(0.001, at - self.clock()))
+            except TimeoutError:
+                if not timeout.expired():
+                    raise
+                if reserving:
+                    raise SafetyDeferred("请求保护状态不可用，已暂停 Telegram 请求", reason="protection_unavailable") from None
+                raise SafetyDeferred("等待请求间隔，将自动继续", self.clock() + 1, reason="pacing") from None
         except AppError:
             raise
         except Exception as exc:
             raise SafetyDeferred("请求保护状态不可用，已暂停 Telegram 请求", reason="protection_unavailable") from exc
+        finally:
+            queue.users -= 1
+            if not queue.users:
+                self.admissions.pop(key, None)
 
     def observe(self, token: str, error: Exception | None, *, probe: bool = False,
                 retry_after: float | None = None, unauthorized: bool = False, transient: bool = False) -> None:

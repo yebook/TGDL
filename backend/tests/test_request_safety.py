@@ -212,7 +212,7 @@ async def test_guard_storage_failure_blocks_transport(client: TestClient, monkey
 
 
 @pytest.mark.parametrize("values,reason", [
-    ({"next_start": 1005}, "pacing"),
+    ({"next_start": 1010}, "pacing"),
     ({"cooldown": 1100}, "cooldown"),
     ({"backoff": 1100}, "backoff"),
     ({"cooldown": 1050, "backoff": 1100}, "cooldown"),
