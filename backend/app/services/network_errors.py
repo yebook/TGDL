@@ -7,8 +7,11 @@ from aiohttp import (
     ClientConnectorError,
     ClientConnectorSSLError,
     ClientHttpProxyError,
+    ClientOSError,
+    ClientPayloadError,
     ClientProxyConnectionError,
     ConnectionTimeoutError,
+    ServerDisconnectedError,
     SocketTimeoutError,
 )
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
@@ -68,4 +71,14 @@ def classify_network_failure(exc: BaseException) -> tuple[str, str]:
                     errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH,
                 }):
             return "tcp", "connect"
+    for error in chain:
+        # These aiohttp errors arise after establishing the connection. Keep
+        # them separate from connector failures and never inspect their text.
+        if isinstance(error, ServerDisconnectedError) or (
+                isinstance(error, ClientOSError) and error.errno in {errno.ECONNRESET, errno.EPIPE}):
+            return "tcp", "response"
+        if isinstance(error, ClientPayloadError):
+            return "network_unknown", "response"
+        if isinstance(error, OSError) and error.errno in {errno.ECONNRESET, errno.EPIPE}:
+            return "tcp", "unknown"
     return "network_unknown", "unknown"

@@ -131,9 +131,30 @@ class RootStatus(BaseModel):
     message: str
 
 
+class CacheCleanupResult(BaseModel):
+    before_bytes: int | None
+    after_bytes: int | None
+    released_bytes: int | None
+
+
+class CacheMaintenanceStatus(BaseModel):
+    state: Literal["idle", "running", "uncertain", "succeeded", "failed"]
+    operation_id: str | None
+    can_clean: bool
+    blocked_reason: str | None
+    message: str
+    last_result: CacheCleanupResult | None
+
+
 class CacheStatus(BaseModel):
     free_bytes: int | None
     total_bytes: int | None
+    used_bytes: int | None
+    file_count: int | None
+    usage_state: Literal["ready", "refreshing", "stale", "unavailable", "unsupported"]
+    measured_at: str | None
+    scope: Literal["current_bot_media"]
+    maintenance: CacheMaintenanceStatus
 
 
 class StorageStatus(BaseModel):

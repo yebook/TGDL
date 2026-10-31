@@ -7,6 +7,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from aiogram.exceptions import TelegramRetryAfter, TelegramUnauthorizedError
 from cryptography.fernet import Fernet
@@ -14,10 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
-from app.core.security import Secrets, private_file
+from app.core.security import Secrets, digest, private_file
 from app.db.models import Job, LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
+from app.services.cache_maintenance import maintenance_values, require_no_maintenance
 from app.services.diagnostics import classify_error
 from app.services.local_api_errors import START_FAILURE_MESSAGES
 from app.services.network_errors import classify_network_failure
@@ -63,6 +65,8 @@ def schedule_settings(session: Session, settings: Settings, candidate: UserSetti
     connection_changed = (candidate.bot_token != os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", ""))) or
                           proxy_changed)
     token_changed = candidate.bot_token != os.getenv("TGD_BOT_TOKEN", crypto.decrypt(old.get("bot_token", "")))
+    if changed or connection_changed:
+        require_no_maintenance(session)
     cloud_reconnect = (candidate.bot_api_mode == old.get("bot_api_mode", "cloud") == "cloud"
                        and (proxy_changed or state.get("action") == "cloud_reconnect" and connection_changed))
     if not managed and not cloud_reconnect and state.get("action") != "cloud_reconnect":
@@ -260,6 +264,18 @@ class LocalApiService:
             row = session.get(LocalApiRuntime, 1)
             assert row
             state = dict(row.values)
+            maintenance = maintenance_values(session)
+            if not (restart and maintenance.get("state") == "uncertain"):
+                require_no_maintenance(session)
+            elif maintenance.get("invalid"):
+                # Corrupt intent is never treated as completed. An explicit restart records
+                # the old acknowledged child so only its verified replacement can unlock.
+                current = self.settings.read()[1]
+                old_generation = self.applied().get("generation")
+                if not old_generation:
+                    raise AppError("CACHE_MAINTENANCE_BUSY", "请恢复本地 API 管理连接后重启服务", 409)
+                state["cache_maintenance"] = {"state": "uncertain", "operation_id": uuid4().hex,
+                    "generation": old_generation, "credential": digest(current.bot_token), "last_result": None}
             if state.get("phase") in BUSY_PHASES:
                 raise AppError("LOCAL_API_BUSY", "已有操作正在进行", 409)
             if state.get("logout_uncertain") and not acknowledge:

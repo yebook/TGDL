@@ -21,6 +21,7 @@ from app.db.session import Database
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.cache_cleanup import CacheCleanupService
+from app.services.cache_maintenance import CacheMaintenanceService, maintenance_blocked
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.local_api import LocalApiService
@@ -68,6 +69,7 @@ class Runtime:
         self.tasks.download_progress = self.download_progress
         self.connection_lock = asyncio.Lock()
         self.cache_cleanup = CacheCleanupService(db, storage, self.diagnostics, settings.secrets)
+        self.cache_maintenance = CacheMaintenanceService(self)
 
     def progress_generation(self) -> str:
         applied = self.local_api.applied() if self.config.managed_local_api else {}
@@ -144,6 +146,7 @@ class Runtime:
 
     async def close(self) -> None:
         self.stopping = True
+        await self.cache_maintenance.close()
         for task in self.loops:
             task.cancel()
         await asyncio.gather(*self.loops, return_exceptions=True)
@@ -343,10 +346,15 @@ class Runtime:
                         if update.get("message"):
                             await asyncio.to_thread(self.ingest.message, self.bot_id, update["message"], inbox_id)
                         elif update.get("callback_query"):
+                            if (self.worker.cache_scan_paused or
+                                    (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}):
+                                break  # Keep durable callback pending until maintenance releases it.
                             callback = update["callback_query"]
                             try:
                                 state = await asyncio.to_thread(self.ingest.callback, callback)
                             except AppError as exc:
+                                if exc.code == "CACHE_MAINTENANCE_BUSY":
+                                    break  # Admission may have committed after the snapshot above.
                                 state = exc.message
                             # Business operation is durable even if answering the callback times out.
                             try:
@@ -382,6 +390,8 @@ class Runtime:
 
     async def cleanup_cache(self) -> bool:
         """Return true while draining/cleaning; every failure releases dispatch for backoff."""
+        if self.worker.cache_scan_paused or (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
+            return True
         client, bot_id = self.client, self.bot_id
         if client is None or bot_id is None or client.mode != "local":
             return False
@@ -405,6 +415,8 @@ class Runtime:
                 await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
                 return True
             async with self.connection_lock:
+                if self.worker.cache_scan_paused or (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
+                    return True
                 # Hashing can take time. Do not use an obsolete generation/client or
                 # run housekeeping while an API/proxy operation is underway.
                 if (not generation or self.progress_generation() != generation or self.client is not client or self.bot_id != bot_id
@@ -419,6 +431,7 @@ class Runtime:
                     return True
                 try:
                     source = self.cache_cleanup.source_path(row)
+                    self.cache_maintenance.invalidate()
                     await client.delete_file_cache(row.file_id, source, row.size_bytes, generation)
                 except Exception:
                     await owned_thread(self.cache_cleanup.retry, row.job_id)
@@ -432,6 +445,7 @@ class Runtime:
     async def tick_loop(self) -> None:
         while not self.stopping:
             try:
+                await self.cache_maintenance.resume()
                 async with self.connection_lock:
                     paused = await self.local_api.reconcile(self)
                 if paused:
@@ -448,6 +462,8 @@ class Runtime:
                     continue
                 revision, settings, _ = await asyncio.to_thread(self.settings.read)
                 active, blocked, pending = await asyncio.to_thread(self.counts)
+                if active or blocked:
+                    self.cache_maintenance.invalidate()
                 can_dispatch = (pending > 0 and active < settings.download_concurrency and bool(settings.bot_token)
                                 and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
                                 and not blocked)
@@ -466,6 +482,8 @@ class Runtime:
                         job_id = await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)
                         if not job_id:
                             break
+                        if settings.bot_api_mode == "local":
+                            self.cache_maintenance.invalidate()
                         assert client
                         self.running[job_id] = asyncio.create_task(self.worker.run(client, job_id))
             except asyncio.CancelledError:
@@ -485,6 +503,8 @@ class Runtime:
     def next_notification(self, bot_id: int | None = None) -> tuple[str, int, dict[str, Any], str | None] | None:
         bot_id = self.bot_id if bot_id is None else bot_id
         with self.db.transaction() as session:
+            if self.worker.cache_scan_paused or maintenance_blocked(session):
+                return None
             row = session.scalar(select(Notification).where(Notification.state == "pending", Notification.next_run_at <= time.time())
                                  .order_by(Notification.next_run_at).limit(1))
             if not row:
@@ -587,6 +607,9 @@ class Runtime:
                         await asyncio.to_thread(self.notification_result, row_id, None, False, 5, True)
                     except (TelegramForbiddenError, TelegramBadRequest):
                         await asyncio.to_thread(self.notification_result, row_id, None, True)
+                    except AppError as exc:
+                        await asyncio.to_thread(self.notification_result, row_id, None, False, 5,
+                                                exc.code == "CACHE_CLEANUP_BUSY")
                     except Exception:
                         await asyncio.to_thread(self.notification_result, row_id, None, False)
             except asyncio.CancelledError:

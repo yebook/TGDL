@@ -1,0 +1,19 @@
+--- a/telegram-bot-api/HttpConnection.cpp
++++ b/telegram-bot-api/HttpConnection.cpp
+@@ -53,6 +53,16 @@
+                                       std::move(http_query->args_), std::move(http_query->headers_),
+                                       std::move(http_query->files_), shared_data_, http_query->peer_address_, false);
+ 
++  // getFile can wait for a large local download without producing HTTP bytes.
++  // Cancel only the pending handler timer; idle/read/write timeouts stay normal.
++  // Query normalizes both URL and form methods. write_ok() restores the normal
++  // connection timeout before flushing the response and reading the next query.
++  // An elapsed duration or missing progress cannot prove acquisition failed.
++  // Actual handler errors, connection closure and cancellation remain effective.
++  if (query->method() == "getfile") {
++    send_closure(connection_, &td::HttpInboundConnection::cancel_timeout);
++  }
++
+   auto promise = td::PromiseCreator::lambda([actor_id = actor_id(this)](td::Result<td::unique_ptr<Query>> r_query) {
+     send_closure(actor_id, &HttpConnection::on_query_finished, std::move(r_query));
+   });

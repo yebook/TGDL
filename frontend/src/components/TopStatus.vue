@@ -30,6 +30,7 @@ const telegram = computed(() => data.value ? telegramSummary(data.value, !!error
       <div class="top-status-metrics">
       <template v-if="data"><span>{{ error ? '上次队列：' : '' }}下载 {{ data.queue.active }} · 等待 {{ data.queue.pending }}</span><span v-if="root">可用 {{ error ? '待更新' : bytes(root.free_bytes) }}</span><span v-else>保存目录状态待确认</span></template>
       <span v-if="data" data-testid="top-proxy-status">{{ proxySummary(data.proxy.state, !!error) }}</span>
+      <span v-if="data?.storage.cache.maintenance.state === 'running'">{{ error ? '上次状态：' : '' }}缓存清理中</span>
       </div>
     </div>
     <div class="top-status-tools">

@@ -38,6 +38,7 @@ from app.schemas.contracts import (
     UserSettings,
 )
 from app.schemas.responses import (
+    CacheStatus,
     CurrentUser,
     DiagnosticLogStatus,
     ErrorResponse,
@@ -117,6 +118,8 @@ def create_app(config: Config | None = None) -> FastAPI:
             yield
         finally:
             application.state.ready = False
+            if "runtime" in application.state._state:
+                await runtime.cache_maintenance.close()
             if "runtime" in application.state._state and cfg.run_background:
                 await runtime.close()
             if "runtime" in application.state._state:
@@ -401,6 +404,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             cache = {"free_bytes": usage.free, "total_bytes": usage.total}
         except OSError:
             pass
+        cache.update(runtime.cache_maintenance.status())
         active, blocked, pending = runtime.counts()
         return {"version": VERSION,
                 "diagnostic_log": runtime.diagnostics.status(), "bot": bot,
@@ -409,6 +413,30 @@ def create_app(config: Config | None = None) -> FastAPI:
                 "proxy": proxy,
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}
+
+    async def cache_action(request: Request, *, clean: bool) -> dict[str, Any]:
+        if request.query_params:
+            raise AppError("VALIDATION_ERROR", "缓存维护不接受参数", 422)
+        async for chunk in request.stream():
+            if chunk:
+                raise AppError("VALIDATION_ERROR", "缓存维护不接受参数", 422)
+        await runtime.cache_maintenance.start(clean=clean)
+        result: dict[str, Any] = {"free_bytes": None, "total_bytes": None}
+        try:
+            usage = await asyncio.to_thread(shutil.disk_usage, cfg.bot_api_root)
+            result.update(free_bytes=usage.free, total_bytes=usage.total)
+        except OSError:
+            pass
+        result.update(await asyncio.to_thread(runtime.cache_maintenance.status))
+        return result
+
+    @application.post("/api/v1/system/cache/refresh", dependencies=[Depends(auth)], response_model=CacheStatus, status_code=202)
+    async def refresh_cache(request: Request) -> dict[str, Any]:
+        return await cache_action(request, clean=False)
+
+    @application.post("/api/v1/system/cache/clean", dependencies=[Depends(auth)], response_model=CacheStatus, status_code=202)
+    async def clean_cache(request: Request) -> dict[str, Any]:
+        return await cache_action(request, clean=True)
 
     @application.post("/api/v1/system/bot/retry", dependencies=[Depends(auth)], response_model=RequestSafetyStatus)
     async def retry_bot() -> dict[str, Any]:

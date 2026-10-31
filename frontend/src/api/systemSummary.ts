@@ -75,6 +75,7 @@ export function systemIssues(data: SystemStatus): string[] {
     if (!root.available) issues.push(`${root.label}：${root.message || '存储不可用，请检查挂载与权限。'}`)
   }
   if (used && data.storage.cache.free_bytes === null) issues.push('无法获取 Telegram 缓存空间，请检查存储。')
+  if (data.storage.cache.maintenance.state === 'uncertain') issues.push(data.storage.cache.maintenance.message || '缓存清理结果待确认，请到下载与保存设置查看。')
   if (data.recovery.blocked_jobs) issues.push(`${data.recovery.blocked_jobs} 个任务等待恢复处理。${data.recovery.message}`)
   if (data.diagnostic_log?.state === 'error') issues.push(data.diagnostic_log.message || '诊断日志记录异常。')
   return [...new Set(issues)]

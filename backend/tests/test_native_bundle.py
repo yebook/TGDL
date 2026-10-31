@@ -165,7 +165,8 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
 
 @pytest.mark.parametrize("changed", [
     "native-proxy.patch", "native-progress.patch", "ProgressCache.h", "native-cache-cleanup.patch",
-    "CacheCleanup.h", "upstream-revision", "tdlib-revision", "compiler-toolchain", ".dockerignore",
+    "CacheCleanup.h", "native-http-timeout.patch", "native-cache-storage.patch", "CacheStorage.h",
+    "upstream-revision", "tdlib-revision", "compiler-toolchain", ".dockerignore",
 ])
 def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) -> None:
     api = tmp_path / "deploy/bot-api"

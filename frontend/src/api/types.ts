@@ -62,11 +62,23 @@ export interface BotRequestSafety {
   state: 'ready' | 'throttled' | 'backoff' | 'auth_paused'
   retry_at: string | null; message: string; can_retry: boolean
 }
+export interface CacheStatus {
+  free_bytes: number | null; total_bytes: number | null
+  used_bytes: number | null; file_count: number | null
+  usage_state: 'ready' | 'refreshing' | 'stale' | 'unavailable' | 'unsupported'
+  measured_at: string | null
+  scope: 'current_bot_media'
+  maintenance: {
+    state: 'idle' | 'running' | 'uncertain' | 'succeeded' | 'failed'
+    operation_id: string | null; can_clean: boolean; blocked_reason: string | null; message: string
+    last_result: { before_bytes: number | null; after_bytes: number | null; released_bytes: number | null } | null
+  }
+}
 export interface SystemStatus {
   diagnostic_log?: DiagnosticLogStatus
   local_api: LocalApiStatus
   bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety }
-  storage: { selected_root_id: string; roots: StorageRoot[]; cache: { free_bytes: number | null; total_bytes: number | null } }
+  storage: { selected_root_id: string; roots: StorageRoot[]; cache: CacheStatus }
   proxy: Settings['proxy_status']; queue: { active: number; pending: number; concurrency: number }
   version: string; recovery: { blocked_jobs: number; message: string }
 }

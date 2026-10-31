@@ -130,6 +130,21 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 
 该检查不证明真实代理认证、Telegram 大文件下载或 Docker 宿主机已通过验收。
 
+## 原生 getFile 等待期限隔离验证
+
+修改 HTTP 等待补丁后，在项目根目录构建实际生产编译环境、原生镜像及专用检查镜像：
+
+```sh
+docker build --target build -f deploy/bot-api/Dockerfile -t tgd-native-http-download-wait-build .
+docker build --target native -f deploy/bot-api/Dockerfile -t tgd-native:http-download-wait .
+docker build -f deploy/bot-api/Dockerfile.verify-http-timeout -t tgd-native-http-download-wait-acceptance .
+docker run --rm --network none tgd-native-http-download-wait-acceptance
+```
+
+检查使用真实 HTTP 解析、方法归一化及连接 actor，仅将处理器替换为本地延迟回复，并将普通 500 秒期限缩短为 1 秒。检查覆盖原始提前断开、URL/表单中的 getFile 跨过旧获取期限后仍成功、普通请求、慢请求、空闲连接、响应写入及后续请求恢复普通期限。检查脚本自身设有外部测试期限，避免无截止等待的用例挂住。测试二进制只存在于专用检查镜像，不进入预编译发布包；容器不挂载应用数据、不连接 Telegram。
+
+应用层通过真实 SDK 和本地 HTTP 服务验证：响应头或响应体等待超过旧应用期限仍能完成；进度可独立更新，进度缺失或停滞不触发获取超时。连接建立及其他 API 操作仍有各自的期限，真实错误和关闭仍保留不确定槽保护。该隔离检查不替代真实 4 GB 视频下载验收。
+
 ## 本地下载进度隔离验证
 
 进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
@@ -152,6 +167,19 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 ```
 
 验证复用生产代码中的可删除条件、并发保护与文件消失检查，并确认缺少已有客户端时，实际服务不创建客户端、不对外连接。后端 `tests/test_cache_cleanup.py` 覆盖发布与恢复、取消、存储不足、校验失败、并发等待和独立重试。隔离检查不包含真实授权客户端的 TDLib 删除，实际文件删除和空间释放仍需真实环境验收；不得把成功回调直接视为磁盘空间已释放。
+
+设置页缓存维护的浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cache.config.ts`。专用配置使用回环端口 `18765`；`backend/tools/e2e_app.py` 的 `TGDL_E2E_PORT` 可指定隔离服务端口，默认仍为 `8765`。若平台不能可靠回收测试服务进程，可独立启动该临时测试服务，并设置 `TGDL_E2E_EXTERNAL_SERVER=1` 运行缓存浏览器配置，检查结束后停止该服务。所有缓存响应均为合成边界，不读取或清理真实用户缓存。
+
+完整的缓存占用与手动清理原生验证，需编译固定源码并构建独立夹具：
+
+```sh
+docker build --target build -f deploy/bot-api/Dockerfile -t tgd-native-cache-storage-build .
+docker build --target native -f deploy/bot-api/Dockerfile -t tgd-native:cache-storage .
+docker build -f deploy/bot-api/Dockerfile.verify-cache-storage -t tgd-native-cache-storage-acceptance .
+docker run --rm --network none --user 1000:1000 --cap-drop ALL --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m --security-opt no-new-privileges tgd-native-cache-storage-acceptance
+```
+
+夹具仅在测试镜像中离线构造已有客户端，运行实际 TDLib 扫描和 GC；不改变生产认证逻辑。检查按分配块统计、空/稀疏/取消残留文件、重复请求、扫描和删除权限失败，并保留其他 Bot、数据库及最终文件的标记。生产二进制另验证缺少客户端时不创建客户端、不出网。真实 NAS 或 Telegram 仍需单独验收。修改原生输入后按上方预编译产物流程重新打包并验证来源，不能只更新应用。
 
 ## 文档开发
 

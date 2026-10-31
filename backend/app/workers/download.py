@@ -34,6 +34,7 @@ from app.db.models import (
     StoredFile,
 )
 from app.db.session import Database
+from app.services.cache_maintenance import maintenance_blocked
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress, ProgressOwner
 from app.services.request_safety import RequestSafetyService, SafetyDeferralReason, SafetyDeferred
@@ -71,6 +72,7 @@ class DownloadWorker:
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
         self.cleanup_paused = False
+        self.cache_scan_paused = False
         self.secrets = secrets or Secrets(config.data_dir)
 
     def progress_job(self, job_id: str) -> tuple[Job, MediaItem] | None:
@@ -87,6 +89,23 @@ class DownloadWorker:
                         and job.attempt_sequence == owner.attempt
                         and (job.item_id, item.bot_id, item.file_id) == (owner.item_id, owner.bot_id, owner.file_id))
 
+    async def begin_progress(self, job_id: str) -> ProgressOwner | None:
+        registry = self.download_progress
+        rows = await asyncio.to_thread(self.progress_job, job_id)
+        if not rows or not registry:
+            return None
+        task = asyncio.create_task(asyncio.to_thread(
+            registry.begin, rows[0], self.boot_id, bot_id=rows[1].bot_id, file_id=rows[1].file_id))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Registration consults supervisor/DB state in a thread. Join it before clearing
+            # on shutdown so a late result cannot leave a new observation behind.
+            result = await asyncio.gather(task, return_exceptions=True)
+            if isinstance(result[0], ProgressOwner):
+                registry.clear(result[0])
+            raise
+
     async def observe_download(self, client: TelegramClient, file_id: str, owner: ProgressOwner) -> None:
         registry = self.download_progress
         assert registry
@@ -97,7 +116,7 @@ class DownloadWorker:
                 if not await asyncio.to_thread(self.progress_owned, owner):
                     return
                 if result and file_id in result[1]:
-                    registry.update(owner, result[0], result[1][file_id])
+                    await asyncio.to_thread(registry.update, owner, result[0], result[1][file_id])
                 else:
                     registry.unavailable(owner)
                 await asyncio.sleep(1)
@@ -122,7 +141,7 @@ class DownloadWorker:
 
     def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str]) -> str | None:
         with self.db.transaction() as session:
-            if self.cleanup_paused:
+            if self.cleanup_paused or self.cache_scan_paused or maintenance_blocked(session):
                 return None
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
             if safety and RequestSafetyService.blocked(safety.values, time.time()):
@@ -360,10 +379,7 @@ class DownloadWorker:
                 cloud_size_check(expected)
             elif hasattr(client, "file_progress"):
                 try:
-                    rows = await asyncio.to_thread(self.progress_job, job_id)
-                    # Register after the cancellable read: late thread results cannot orphan entries.
-                    owner = self.download_progress.begin(rows[0], self.boot_id, bot_id=rows[1].bot_id,
-                                                         file_id=rows[1].file_id) if rows and self.download_progress else None
+                    owner = await self.begin_progress(job_id)
                 except Exception:
                     owner = None
                 if owner:

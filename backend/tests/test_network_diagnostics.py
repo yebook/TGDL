@@ -11,7 +11,15 @@ from typing import Any
 import pytest
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.methods import GetMe
-from aiohttp import ClientConnectorError, ClientHttpProxyError, ConnectionTimeoutError, SocketTimeoutError
+from aiohttp import (
+    ClientConnectorError,
+    ClientHttpProxyError,
+    ClientOSError,
+    ClientPayloadError,
+    ConnectionTimeoutError,
+    ServerDisconnectedError,
+    SocketTimeoutError,
+)
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError, ProxyType
 from fastapi.testclient import TestClient
 
@@ -29,6 +37,11 @@ from app.services.network_errors import classify_network_failure
     (ssl.SSLCertVerificationError("secret"), ("tls", "tls")),
     (ConnectionTimeoutError("secret"), ("timeout", "connect")),
     (SocketTimeoutError("secret"), ("timeout", "response")),
+    (ServerDisconnectedError("secret"), ("tcp", "response")),
+    (ClientOSError(errno.ECONNRESET, "secret"), ("tcp", "response")),
+    (ClientOSError(errno.EPIPE, "secret"), ("tcp", "response")),
+    (ConnectionResetError(errno.ECONNRESET, "secret"), ("tcp", "unknown")),
+    (ClientPayloadError("secret"), ("network_unknown", "response")),
     (TimeoutError("secret"), ("timeout", "unknown")),
     (ProxyConnectionError("secret"), ("proxy_connection", "proxy")),
     (ProxyTimeoutError("secret"), ("timeout", "proxy")),
@@ -53,6 +66,13 @@ def test_sdk_wrapper_and_cycles_never_parse_exception_text() -> None:
     with_suppressed.__context__ = socket.gaierror()
     with_suppressed.__suppress_context__ = True
     assert classify_network_failure(with_suppressed) == ("network_unknown", "unknown")
+
+
+def test_connector_reset_does_not_claim_an_established_response() -> None:
+    wrapped = TelegramNetworkError(method=GetMe(), message="secret")
+    wrapped.__cause__ = ClientConnectorError(
+        SimpleNamespace(), ConnectionResetError(errno.ECONNRESET, "secret"))
+    assert classify_network_failure(wrapped) == ("tcp", "connect")
 
 
 def service(client: TestClient) -> NetworkDiagnosticsService:

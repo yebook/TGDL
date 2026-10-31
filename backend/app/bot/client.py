@@ -7,13 +7,18 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from datetime import UTC
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramConflictError,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
 from aiogram.methods import GetFile, GetUpdates
 from aiogram.types import File, InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -27,6 +32,7 @@ from app.services.download_progress import decode_progress
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
 
 CLOUD_FILE_LIMIT = 20 * 1024 * 1024
+LOCAL_GET_FILE_TIMEOUT = ClientTimeout(total=None, connect=20, sock_connect=20, sock_read=None)
 
 
 def cloud_size_check(size: int | None) -> None:
@@ -54,6 +60,48 @@ class TelegramClient:
         self._progress_retry_at = 0.0
         self._progress_failures = 0
         self._cleanup_session: ClientSession | None = None
+        self._cache_storage_session: ClientSession | None = None
+
+    async def _cache_storage(self, generation: str, *, refresh: bool = False,
+                             operation_id: str | None = None) -> dict[str, Any]:
+        from app.services.cache_storage_protocol import decode_cache_storage
+
+        if (self.mode != "local" or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", generation)
+                or operation_id is not None and not re.fullmatch(r"[0-9a-f]{32}", operation_id)):
+            raise AppError("CACHE_UNAVAILABLE", "缓存维护暂不可用")
+        try:
+            if self._cache_storage_session is None:
+                self._cache_storage_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
+            method = "tgdClearCacheStorage" if operation_id else "tgdGetCacheStorage"
+            data = {"generation": generation}
+            data.update({"operation_id": operation_id} if operation_id else {"refresh": "1" if refresh else "0"})
+            url = self.bot.session.api.api_url(self.bot.token, method)
+            async with self._cache_storage_session.post(url, data=data, allow_redirects=False) as response:
+                if response.status in {404, 405, 501}:
+                    raise AppError("CACHE_UNSUPPORTED", "当前本地 API 不支持缓存维护", 409)
+                body = bytearray()
+                async for block in response.content.iter_chunked(4096):
+                    body.extend(block)
+                    if len(body) > 16384:
+                        raise ValueError("Cache storage response too large")
+                payload = json.loads(body)
+                if (response.status == 409 and isinstance(payload, dict) and payload.get("ok") is False
+                        and payload.get("description") == "Conflict: TGD_CACHE_STORAGE_BUSY"):
+                    raise AppError("CACHE_NATIVE_BUSY", "本地 API 正在处理文件，请稍后重试", 409)
+                if (response.status == 400 and isinstance(payload, dict) and payload.get("ok") is False
+                        and payload.get("description") == "Bad Request: method not found"):
+                    raise AppError("CACHE_UNSUPPORTED", "当前本地 API 不支持缓存维护", 409)
+                if response.status != 200:
+                    raise ValueError("Cache storage unavailable")
+                return decode_cache_storage(payload, generation)
+        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError) as exc:
+            raise AppError("CACHE_UNAVAILABLE", "缓存维护暂不可用，请检查本地 API") from exc
+
+    async def cache_storage(self, generation: str, *, refresh: bool = False) -> dict[str, Any]:
+        return await self._cache_storage(generation, refresh=refresh)
+
+    async def clear_cache_storage(self, generation: str, operation_id: str) -> dict[str, Any]:
+        return await self._cache_storage(generation, operation_id=operation_id)
 
     async def delete_file_cache(self, file_id: str, expected_path: str, expected_size: int, generation: str) -> str:
         """Offline local TDLib housekeeping. Never call Telegram or alter request protection."""
@@ -145,6 +193,11 @@ class TelegramClient:
             await self.record(method, exc, started)
             raise
         except Exception as exc:
+            if (self.mode == "local" and isinstance(exc, TelegramConflictError)
+                    and exc.message in {"TGD_CACHE_STORAGE_BUSY", "Conflict: TGD_CACHE_STORAGE_BUSY"}):
+                deferred = AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在维护，稍后自动继续")
+                await self.record(method, deferred, started)
+                raise deferred from exc  # Native guarantees this request was not accepted.
             await self.record(method, exc, started)
             if self.safety and not (isinstance(exc, AppError) and exc.code == "CACHE_CLEANUP_BUSY"):
                 await asyncio.to_thread(self.safety.observe, self.bot.token, exc)
@@ -169,7 +222,11 @@ class TelegramClient:
     async def get_file(self, file_id: str) -> str:
         async def acquire() -> File:
             try:
-                return await self.bot(GetFile(file_id=file_id), request_timeout=self.timeout)
+                # Local getFile includes the download itself. aiogram forwards a non-None
+                # timeout to aiohttp unchanged, although its annotation only allows int.
+                # Keep connection setup bounded without imposing a download/read deadline.
+                timeout = cast(Any, LOCAL_GET_FILE_TIMEOUT) if self.mode == "local" else self.timeout
+                return await self.bot(GetFile(file_id=file_id), request_timeout=timeout)
             except TelegramBadRequest as exc:
                 if self.mode == "local" and exc.message in {"TGD_CACHE_CLEANUP_BUSY", "Bad Request: TGD_CACHE_CLEANUP_BUSY"}:
                     raise AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在清理，稍后自动继续下载") from exc
@@ -273,6 +330,8 @@ class TelegramClient:
         await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15), method="answerCallbackQuery")
 
     async def close(self) -> None:
+        if self._cache_storage_session:
+            await self._cache_storage_session.close()
         if self._cleanup_session:
             await self._cleanup_session.close()
         if self._progress_session:

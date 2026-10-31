@@ -1,0 +1,412 @@
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -9,6 +9,7 @@
+ #include "telegram-bot-api/Query.h"
+ #include "telegram-bot-api/ProgressCache.h"
+ #include "telegram-bot-api/CacheCleanup.h"
++#include "telegram-bot-api/CacheStorage.h"
+ #include "telegram-bot-api/Stats.h"
+ #include "telegram-bot-api/WebhookActor.h"
+ 
+@@ -1042,6 +1043,13 @@
+   void tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result);
+   void tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result);
+   CacheCleanupGate tgd_cache_gate_;
++  CacheStorage tgd_cache_storage_;
++  std::size_t tgd_pending_requests_ = 0;
++  class TdOnCacheStorageCallback;
++  bool tgd_cache_native_busy() const;
++  void tgd_cache_storage(PromisedQueryPtr query);
++  void tgd_cache_storage_reply(PromisedQueryPtr query);
++  void tgd_cache_storage_result(int stage, object_ptr<td_api::Object> result);
+   void tgd_read_progress(PromisedQueryPtr query);
+   ProgressCache tgd_progress_;
+ 
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -8400,6 +8400,17 @@
+   int32 file_id_;
+ };
+ 
++class Client::TdOnCacheStorageCallback final : public TdQueryCallback {
++ public:
++  TdOnCacheStorageCallback(Client *client, int stage) : client_(client), stage_(stage) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_cache_storage_result(stage_, std::move(result));
++  }
++ private:
++  Client *client_;
++  int stage_;
++};
++
+ class Client::TdOnReturnFileCallback final : public TdQueryCallback {
+  public:
+   TdOnReturnFileCallback(const Client *client, PromisedQueryPtr query) : client_(client), query_(std::move(query)) {
+@@ -8661,6 +8672,19 @@
+ }
+ 
+ void Client::send(PromisedQueryPtr query) {
++  if (query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage") {
++    return tgd_cache_storage(std::move(query));
++  }
++  // No new media readers, uploads or generators during maintenance. Only these
++  // existing memory-only projections and update reads may enter the command queue.
++  if (tgd_cache_storage_.busy() && query->method() != "tgdgetfileprogress" &&
++      query->method() != "getme" && query->method() != "getupdates" &&
++      query->method() != "getwebhookinfo") {
++    if (query->method() == "getfile") {
++      return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
++    }
++    return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
++  }
+   if (query->method() == "tgddeletefilecache") {
+     return tgd_delete_file_cache(std::move(query));
+   }
+@@ -9392,11 +9416,16 @@
+     return handler->on_result(make_object<td_api::error>(error.code, error.message.str()));
+   }
+ 
++  if (tgd_cache_storage_.busy() && f->get_id() != td_api::getStorageStatistics::ID &&
++      f->get_id() != td_api::optimizeStorage::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
++    return handler->on_result(make_object<td_api::error>(400, "TGD_CACHE_CLEANUP_BUSY"));
++  }
+   do_send_request(std::move(f), std::move(handler));
+ }
+ 
+ void Client::do_send_request(object_ptr<td_api::Function> &&f, td::unique_ptr<TdQueryCallback> handler) {
+   CHECK(!td_client_.empty());
++  ++tgd_pending_requests_;
+   auto id = handlers_.create(std::move(handler));
+   send_closure(td_client_, &td::ClientActor::request, id, std::move(f));
+ }
+@@ -9406,6 +9435,8 @@
+ }
+ 
+ void Client::on_update_file(object_ptr<td_api::file> file) {
++  tgd_cache_storage_.observe_file(file->id_, file->local_->is_downloading_active_,
++                                  file->remote_->is_uploading_active_);
+   tgd_progress_.update(file->id_, {file->local_->downloaded_size_, file->size_, file->expected_size_,
+                                  file->local_->is_downloading_active_, file->local_->is_downloading_completed_});
+   auto file_id = file->id_;
+@@ -9441,7 +9472,8 @@
+       for (td::string option : {"disable_network_statistics", "disable_time_adjustment_protection", "ignore_file_names",
+                                 "ignore_inline_thumbnails", "reuse_uploaded_photos_by_hash",
+                                 "store_all_files_in_files_directory", "use_storage_optimizer"}) {
+-        send_request(make_object<td_api::setOption>(option, make_object<td_api::optionValueBoolean>(true)),
++        send_request(make_object<td_api::setOption>(option, make_object<td_api::optionValueBoolean>(
++                         option != "use_storage_optimizer" || !parameters_->local_mode_)),
+                      td::make_unique<TdOnOkCallback>());
+       }
+ 
+@@ -10006,6 +10038,8 @@
+   auto *handler_ptr = handlers_.get(id);
+   CHECK(handler_ptr != nullptr);
+   auto handler = std::move(*handler_ptr);
++  CHECK(tgd_pending_requests_ > 0);
++  --tgd_pending_requests_;
+   handler->on_result(std::move(result));
+   handlers_.erase(id);
+ }
+@@ -17194,7 +17228,7 @@
+       td::ends_with(path, "/..") || td::ends_with(path, "/.")) {
+     return fail_query(400, "Bad Request: invalid cache path", std::move(query));
+   }
+-  if (!tgd_cache_gate_.begin_resolution()) {
++  if (tgd_cache_storage_.busy() || !tgd_cache_gate_.begin_resolution()) {
+     return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
+   }
+   // Block new getFile callbacks even while the offline alias resolution is pending.
+@@ -17245,7 +17279,157 @@
+   answer_query(reply, std::move(query));
+ }
+ 
++namespace {
++struct TgdCacheUsage final : td::Jsonable {
++  const CacheStorage &state;
++  explicit TgdCacheUsage(const CacheStorage &snapshot) : state(snapshot) {}
++  void store(td::JsonValueScope *scope) const {
++    auto usage = scope->enter_object();
++    usage("used_bytes", state.used_bytes);
++    usage("file_count", state.file_count);
++  }
++};
++struct TgdCacheOperation final : td::Jsonable {
++  const CacheStorage &state;
++  explicit TgdCacheOperation(const CacheStorage &snapshot) : state(snapshot) {}
++  void store(td::JsonValueScope *scope) const {
++    auto operation = scope->enter_object();
++    operation("operation_id", state.operation_id);
++    operation("state", state.operation == CacheStorage::Operation::Running ? "running" :
++                       state.operation == CacheStorage::Operation::Succeeded ? "succeeded" : "failed");
++    if (state.has_before) operation("before_bytes", state.before_bytes);
++    else operation("before_bytes", td::JsonNull());
++    if (state.has_after) {
++      operation("after_bytes", state.after_bytes);
++      operation("released_bytes", state.released_bytes);
++    } else {
++      operation("after_bytes", td::JsonNull());
++      operation("released_bytes", td::JsonNull());
++    }
++    if (state.error_code) operation("error_code", state.error_code);
++    else operation("error_code", td::JsonNull());
++  }
++};
++struct TgdCacheStorageReply final : td::Jsonable {
++  td::string generation;
++  const CacheStorage &state;
++  TgdCacheStorageReply(td::string value, const CacheStorage &snapshot)
++      : generation(std::move(value)), state(snapshot) {}
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("generation", generation);
++    o("scope", "current_bot");
++    const char *scan = "idle";
++    switch (state.scan) {
++      case CacheStorage::Scan::Idle: break;
++      case CacheStorage::Scan::Running: scan = "running"; break;
++      case CacheStorage::Scan::Ready: scan = "ready"; break;
++      case CacheStorage::Scan::Failed: scan = "failed"; break;
++    }
++    o("scan_state", scan);
++    if (state.has_usage) {
++      o("usage", TgdCacheUsage(state));
++    } else {
++      o("usage", td::JsonNull());
++    }
++    if (state.operation == CacheStorage::Operation::None) {
++      o("operation", td::JsonNull());
++    } else {
++      o("operation", TgdCacheOperation(state));
++    }
++  }
++};
++}
++
++bool Client::tgd_cache_native_busy() const {
++  return tgd_cache_gate_.busy() || tgd_cache_storage_.has_active_files() ||
++         tgd_pending_requests_ != 0 || !cmd_queue_.empty() ||
++         !file_download_listeners_.empty() || !download_started_file_ids_.empty() ||
++         !pending_send_message_queries_.empty() || !yet_unsent_messages_.empty() || !yet_unsent_stories_.empty();
++}
++
++void Client::tgd_cache_storage_reply(PromisedQueryPtr query) {
++  TgdCacheStorageReply reply(query->arg("generation").str(), tgd_cache_storage_);
++  answer_query(reply, std::move(query));
++}
++
++void Client::tgd_cache_storage(PromisedQueryPtr query) {
++  const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++  if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
++      !generation || !*generation || td::Slice(generation).size() > 128) {
++    return fail_query(404, "Not Found: cache storage unavailable", std::move(query));
++  }
++  auto expected_generation = query->arg("generation");
++  if (expected_generation.empty() || expected_generation.size() > 128 || !query->files().empty()) {
++    return fail_query(400, "Bad Request: invalid cache storage request", std::move(query));
++  }
++  if (expected_generation != td::Slice(generation)) {
++    return fail_query(409, "Conflict: cache generation changed", std::move(query));
++  }
++  if (query->method() == "tgdgetcachestorage") {
++    auto refresh = query->arg("refresh");
++    if (refresh != "0" && refresh != "1") {
++      return fail_query(400, "Bad Request: invalid cache storage request", std::move(query));
++    }
++    if (refresh == "1" && !tgd_cache_storage_.busy()) {
++      if (tgd_cache_native_busy()) {
++        return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
++      }
++      CHECK(tgd_cache_storage_.begin_scan());
++      send_request(make_object<td_api::getStorageStatistics>(0),
++                   td::make_unique<TdOnCacheStorageCallback>(this, 0));
++    }
++    return tgd_cache_storage_reply(std::move(query));
++  }
++  auto operation_id = query->arg("operation_id").str();
++  if (!CacheStorage::valid_operation_id(operation_id)) {
++    return fail_query(400, "Bad Request: invalid cache storage request", std::move(query));
++  }
++  auto admission = tgd_cache_storage_.begin_operation(operation_id, tgd_cache_native_busy());
++  if (admission == CacheStorage::Admission::Busy) {
++    // This exact response guarantees this ID has never been accepted.
++    return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
++  }
++  if (admission == CacheStorage::Admission::Accepted) {
++    send_request(make_object<td_api::getStorageStatistics>(0),
++                 td::make_unique<TdOnCacheStorageCallback>(this, 1));
++  }
++  tgd_cache_storage_reply(std::move(query));
++}
++
++void Client::tgd_cache_storage_result(int stage, object_ptr<td_api::Object> result) {
++  if (stage == 2) {
++    if (result->get_id() != td_api::storageStatistics::ID || closing_ || logging_out_) {
++      // A cancellation response may precede worker termination. Retain exclusion
++      // and expose uncertainty until this child generation is replaced.
++      return tgd_cache_storage_.failed(true);
++    }
++    // Never report TDLib's removed_stats: unlink failure is only logged there.
++    tgd_cache_storage_.scan = CacheStorage::Scan::Running;
++    send_request(make_object<td_api::getStorageStatistics>(0),
++                 td::make_unique<TdOnCacheStorageCallback>(this, 3));
++    return;
++  }
++  if (result->get_id() != td_api::storageStatistics::ID || closing_ || logging_out_) {
++    return tgd_cache_storage_.failed(false);
++  }
++  auto stats = move_object_as<td_api::storageStatistics>(result);
++  if (stats->size_ < 0 || stats->count_ < 0) return tgd_cache_storage_.failed(false);
++  if (stage == 0) return tgd_cache_storage_.scanned(stats->size_, stats->count_);
++  if (stage == 3) return tgd_cache_storage_.succeeded(stats->size_, stats->count_);
++  CHECK(stage == 1);
++  tgd_cache_storage_.before_scanned(stats->size_, stats->count_);
++  if (tgd_cache_native_busy()) return tgd_cache_storage_.failed(false);
++  send_request(make_object<td_api::optimizeStorage>(0, 0, 0, 0,
++                   td::vector<object_ptr<td_api::FileType>>(), td::vector<int64>(), td::vector<int64>(), false, 0),
++               td::make_unique<TdOnCacheStorageCallback>(this, 2));
++}
++
+ td::Status Client::process_get_file_query(PromisedQueryPtr &query) {
++  if (tgd_cache_storage_.busy()) {
++    fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
++    return td::Status::OK();
++  }
+   td::string file_id = query->arg("file_id").str();
+   check_remote_file_id(file_id, std::move(query), [this](object_ptr<td_api::file> file, PromisedQueryPtr query) {
+     do_get_file(std::move(file), std::move(query));
+@@ -17260,7 +17444,7 @@
+   }
+ 
+   auto file_id = file->id_;
+-  if (tgd_cache_gate_.blocks(file_id)) {
++  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file_id)) {
+     return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+   }
+   if (parameters_->local_mode_) {
+--- a/telegram-bot-api/ClientManager.cpp
++++ b/telegram-bot-api/ClientManager.cpp
+@@ -89,7 +89,8 @@
+   }
+ 
+   auto id_it = token_to_id_.find(token);
+-  if ((query->method() == "tgdgetfileprogress" || query->method() == "tgddeletefilecache")) {
++  if ((query->method() == "tgdgetfileprogress" || query->method() == "tgddeletefilecache" ||
++       query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage")) {
+     if (!parameters_->local_mode_ || id_it == token_to_id_.end()) {
+       return fail_query(404, "Not Found: progress unavailable", std::move(query));
+     }
+--- a/td/td/telegram/files/FileStatsWorker.cpp
++++ b/td/td/telegram/files/FileStatsWorker.cpp
+@@ -31,6 +31,9 @@
+ #include "td/utils/Time.h"
+ #include "td/utils/tl_parsers.h"
+ 
++#include <cerrno>
++#include <sys/stat.h>
++
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+@@ -101,14 +104,28 @@
+ };
+ 
+ template <class CallbackT>
+-void scan_fs(CancellationToken &token, CallbackT &&callback) {
++Status scan_fs(CancellationToken &token, CallbackT &&callback) {
++  Status scan_error = Status::OK();
+   std::unordered_set<string, Hash<string>> scanned_file_dirs;
+   auto scan_dir = [&](FileType file_type, const string &file_dir) {
+     if (!scanned_file_dirs.insert(file_dir).second) {
+       return;
+     }
++    // Lazy media directories may not exist. Other I/O/permission failures are
++    // incomplete scans, never an empty successful cache snapshot.
++    auto checked_dir = file_dir;
++    while (checked_dir.size() > 1 && checked_dir.back() == '/') checked_dir.pop_back();
++    struct ::stat directory_info;
++    if (::lstat(checked_dir.c_str(), &directory_info) != 0) {
++      if (errno != ENOENT) scan_error = Status::Error(500, "Cache scan failed");
++      return;
++    }
++    if (!S_ISDIR(directory_info.st_mode)) {
++      scan_error = Status::Error(500, "Cache scan failed");
++      return;
++    }
+     LOG(INFO) << "Scanning directory " << file_dir;
+-    walk_path(file_dir, [&](CSlice path, WalkPath::Type type) {
++    auto walk_status = walk_path(file_dir, [&](CSlice path, WalkPath::Type type) {
+       if (token) {
+         return WalkPath::Action::Abort;
+       }
+@@ -117,7 +134,7 @@
+       }
+       auto r_stat = stat(path);
+       if (r_stat.is_error()) {
+-        LOG(WARNING) << "Stat in files gc failed: " << r_stat.error();
++        scan_error = Status::Error(500, "Cache scan failed");
+         return WalkPath::Action::Continue;
+       }
+       auto stat = r_stat.move_as_ok();
+@@ -134,7 +151,8 @@
+       info.mtime_nsec = stat.mtime_nsec_;
+       callback(info);
+       return WalkPath::Action::Continue;
+-    }).ignore();
++    });
++    if (walk_status.is_error()) scan_error = Status::Error(500, "Cache scan failed");
+   };
+   for (int32 i = 0; i < MAX_FILE_TYPE; i++) {
+     auto file_type = static_cast<FileType>(i);
+@@ -142,6 +160,7 @@
+   }
+   scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::SecureDecrypted));
+   scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::Video));
++  return scan_error;
+ }
+ }  // namespace
+ 
+@@ -149,7 +168,7 @@
+   if (!G()->use_file_database()) {
+     FileStats file_stats(need_all_files, false);
+     auto start = Time::now();
+-    scan_fs(token_, [&](FsFileInfo &fs_info) {
++    auto scan_status = scan_fs(token_, [&](FsFileInfo &fs_info) {
+       FullFileInfo info;
+       info.file_type = fs_info.file_type;
+       info.path = std::move(fs_info.path);
+@@ -160,6 +179,7 @@
+     });
+     auto passed = Time::now() - start;
+     LOG_IF(INFO, passed > 0.5) << "Get file stats took: " << format::as_time(passed);
++    if (scan_status.is_error()) return promise.set_error(std::move(scan_status));
+     if (token_) {
+       return promise.set_error(Global::request_aborted_error());
+     }
+@@ -168,7 +188,7 @@
+     auto start = Time::now();
+ 
+     vector<FullFileInfo> full_infos;
+-    scan_fs(token_, [&](FsFileInfo &fs_info) {
++    auto scan_status = scan_fs(token_, [&](FsFileInfo &fs_info) {
+       FullFileInfo info;
+       info.file_type = fs_info.file_type;
+       info.path = std::move(fs_info.path);
+@@ -181,6 +201,7 @@
+       full_infos.push_back(std::move(info));
+     });
+ 
++    if (scan_status.is_error()) return promise.set_error(std::move(scan_status));
+     if (token_) {
+       return promise.set_error(Global::request_aborted_error());
+     }
+--- a/td/td/telegram/files/FileStats.cpp
++++ b/td/td/telegram/files/FileStats.cpp
+@@ -147,7 +147,7 @@
+     auto size = aggregated_stats[i].size;
+     auto cnt = aggregated_stats[i].cnt;
+ 
+-    if (size == 0) {
++    if (size == 0 && cnt == 0) {
+       continue;
+     }
+ 

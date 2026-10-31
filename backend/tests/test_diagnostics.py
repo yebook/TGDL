@@ -19,7 +19,7 @@ from aiogram.exceptions import (
     TelegramUnauthorizedError,
 )
 from aiogram.methods import GetMe
-from aiohttp import web
+from aiohttp import ClientOSError, ClientPayloadError, ServerDisconnectedError, web
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 from fastapi.testclient import TestClient
 from test_cloud_api import TOKEN, fake_api
@@ -75,6 +75,9 @@ def test_evidence_fields_use_identical_write_export_and_dedup_projection(tmp_pat
     (ConnectionRefusedError(errno.ECONNREFUSED, SECRET), "tcp", "connect"),
     (ssl.SSLError(SECRET), "tls", "tls"),
     (TimeoutError(SECRET), "timeout", "unknown"),
+    (ServerDisconnectedError(SECRET), "tcp", "response"),
+    (ClientOSError(errno.ECONNRESET, SECRET), "tcp", "response"),
+    (ClientPayloadError(SECRET), "network_unknown", "response"),
     (None, "network_unknown", "unknown"),
 ])
 def test_sdk_wrapped_network_evidence_never_parses_error_text(tmp_path: Path, cause, reason, stage) -> None:
@@ -87,6 +90,47 @@ def test_sdk_wrapped_network_evidence_never_parses_error_text(tmp_path: Path, ca
     assert (event["reason"], event["stage"]) == (reason, stage)
     assert event["action"] == "restart" and event["operation_id"] == "c" * 20
     assert SECRET not in log._path().read_text()
+
+
+async def test_local_getfile_disconnect_retains_slot_without_replay(client: TestClient, config: Config) -> None:
+    state, ingest = setup_pipeline(client)
+    ingest.message(7, message(), "disconnect")
+    request_id = confirm_all(state)
+    worker = state.runtime.worker
+    job_id = worker.claim(7, "local")
+    worker.download_progress = None  # Exercise the acquisition transport alone.
+    telegram = TelegramClient(TOKEN, config, UserSettings(bot_api_mode="local"))
+    telegram.safety = state.runtime.safety
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        assert request.path.endswith("/getFile")
+        # An established HTTP connection closes before producing any response,
+        # reproducing the native actor's old pending-request idle timeout.
+        request.transport.close()
+        return web.Response()
+
+    async with fake_api(handler) as base:
+        telegram.bot.session.api = TelegramAPIServer.from_base(base, is_local=True)
+        try:
+            await worker.run(telegram, job_id)
+        finally:
+            await telegram.close()
+
+    item = state.tasks.detail(request_id)["items"][0]
+    assert item["status"] == "recovery_blocked" and item["error_code"] == "NETWORK_ERROR"
+    assert item["attempts"][0]["finished_at"] is not None
+    assert state.runtime.counts() == (1, 1, 0)
+    assert calls == 1  # A dropped response cannot authorize another acquisition.
+    worker.recover(False)
+    assert state.tasks.detail(request_id)["status"] == "recovery_blocked"
+    events = state.runtime.diagnostics.export()["events"]
+    failure = next(row for row in events if row.get("method") == "getFile")
+    assert (failure["reason"], failure["stage"]) == ("tcp", "response")
+    assert "http_status" not in failure
+    assert TOKEN not in json.dumps(events)
 
 
 def test_normal_pacing_is_unsent_and_does_not_manufacture_recovery(tmp_path: Path) -> None:

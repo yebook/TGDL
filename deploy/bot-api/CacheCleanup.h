@@ -18,6 +18,7 @@ class CacheCleanupGate {
   void resolved() { resolving_ = false; }
   void begin_delete(std::int32_t id) { deleting_.insert(id); }
   void completed(std::int32_t id) { deleting_.erase(id); }
+  bool busy() const { return resolving_ || !deleting_.empty(); }
   bool blocks(std::int32_t id) const { return resolving_ || deleting_.count(id) != 0; }
  private:
   bool resolving_ = false;

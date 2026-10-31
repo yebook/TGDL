@@ -34,3 +34,28 @@ and project patches together when redistributing.
 The same pinned build additionally applies [native-progress.patch](bot-api/native-progress.patch) and includes [ProgressCache.h](bot-api/ProgressCache.h). This extension exposes bounded in-memory download observations from existing TDLib updates to the application through a private local-only method. It does not start downloads or create Bot clients when queried; ordinary upstream builds do not provide this extension.
 
 The source patch is checked by `git apply --check` before compilation. Keep its LF line endings (`.gitattributes` enforces this on Windows checkouts); changing the upstream pins requires rechecking and compiling the patch.
+
+The pinned build also applies [native-http-timeout.patch](bot-api/native-http-timeout.patch).
+It cancels only a normalized `getFile` request's pending HTTP response timer.
+The original 500-second connection timeout is restored when the response is
+completed; ordinary methods, response writes and idle connections retain it.
+The application also waits without a fixed total or response-read deadline for
+local acquisition, while displaying validated TDLib download observations.
+Missing, stale or unchanged progress cannot cause an elapsed-time failure.
+Connection establishment and other API operations retain their timeout protection.
+This patch is included in native input identity and requires a rebuilt bundle;
+it does not change Telegram acquisition ownership or authorize retrying a request
+whose response connection was lost.
+
+The pinned build additionally applies [native-cache-storage.patch](bot-api/native-cache-storage.patch)
+with [CacheStorage.h](bot-api/CacheStorage.h). Private local-only snapshot and
+cleanup operations use full TDLib storage statistics and offline optimization
+for the existing current-Bot Client. Media/temp directories are the only scan
+scope; authentication/runtime databases and other Bots are excluded. The patch
+propagates incomplete scan failures and preserves counts for zero-allocated files.
+Local mode disables TDLib's independent automatic storage optimizer so cleanup
+passes through explicit download/reader protection. Cloud defaults are preserved.
+Statistics and cleanup are serialized because TDLib statistics cancel an ongoing
+GC; released space is measured from actual allocated before/after snapshots.
+This extension changes native build identity and must accompany the application
+and regenerated prebuilt bundle.

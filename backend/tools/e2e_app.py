@@ -218,7 +218,7 @@ def main() -> None:
                         await asyncio.gather(heartbeat, return_exceptions=True)
 
         app.router.lifespan_context = fixture_lifespan
-        uvicorn.run(app, host="127.0.0.1", port=8765, access_log=False)
+        uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("TGDL_E2E_PORT", "8765")), access_log=False)
 
 
 if __name__ == "__main__":

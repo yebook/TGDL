@@ -21,7 +21,8 @@ INPUTS = (
     ".dockerignore", "deploy/bot-api/native_identity.py",
     "deploy/bot-api/native-proxy.patch", "deploy/bot-api/native-progress.patch",
     "deploy/bot-api/ProgressCache.h", "deploy/bot-api/native-cache-cleanup.patch",
-    "deploy/bot-api/CacheCleanup.h",
+    "deploy/bot-api/CacheCleanup.h", "deploy/bot-api/native-http-timeout.patch",
+    "deploy/bot-api/native-cache-storage.patch", "deploy/bot-api/CacheStorage.h",
 )
 
 

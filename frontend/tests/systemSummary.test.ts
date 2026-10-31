@@ -7,11 +7,19 @@ function status(): SystemStatus {
   return {
     bot: { state: 'online', username: 'fixture_bot', message: '', request_safety: { state: 'ready', retry_at: null, message: '', can_retry: false } },
     local_api: { managed: true, state: 'unavailable', desired_mode: 'cloud', applied_mode: 'cloud', operation_id: null, phase: 'idle', drain_reason: null, message: '', generation: null, last_heartbeat_at: null, cloud_available_at: null, can_restart: false, can_retry: false },
-    storage: { selected_root_id: 'second', roots: [{ id: 'first', label: '媒体', available: true, free_bytes: 12, total_bytes: 40, message: '' }, { id: 'second', label: '备份盘', available: true, free_bytes: 20, total_bytes: 30, message: '' }], cache: { free_bytes: null, total_bytes: null } },
+    storage: { selected_root_id: 'second', roots: [{ id: 'first', label: '媒体', available: true, free_bytes: 12, total_bytes: 40, message: '' }, { id: 'second', label: '备份盘', available: true, free_bytes: 20, total_bytes: 30, message: '' }], cache: { free_bytes: null, total_bytes: null, used_bytes: null, file_count: null, measured_at: null, usage_state: 'unavailable', scope: 'current_bot_media', maintenance: { state: 'idle', operation_id: null, can_clean: false, blocked_reason: 'unavailable', message: '', last_result: null } } },
     proxy: { state: 'disabled', desired_revision: 1, applied_revision: 1, message: '' }, queue: { active: 0, pending: 0, concurrency: 3 }, version: '0.1.0', recovery: { blocked_jobs: 0, message: '' },
   }
 }
 describe('persistent user status', () => {
+  it('keeps uncertain cache maintenance actionable without alarming for ordinary cleanup', () => {
+    const data = status()
+    data.storage.cache.maintenance.state = 'running'
+    expect(systemIssues(data)).toEqual([])
+    data.storage.cache.maintenance.state = 'uncertain'
+    data.storage.cache.maintenance.message = '缓存清理结果尚未确认，请查看设置。'
+    expect(systemIssues(data)).toEqual(['缓存清理结果尚未确认，请查看设置。'])
+  })
   it('uses the same saved-connection presentation for panel and topbar through recovery', () => {
     const data = status()
     for (const phase of ['draining', 'starting', 'verifying', 'failed', 'logout_uncertain', 'idle'] as const) {

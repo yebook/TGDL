@@ -2,7 +2,7 @@
 ARG TGD_NATIVE_IMAGE=bundled-native
 FROM scratch AS native-inputs
 COPY .dockerignore /.dockerignore
-COPY deploy/bot-api/Dockerfile deploy/bot-api/native_identity.py deploy/bot-api/native-proxy.patch deploy/bot-api/native-progress.patch deploy/bot-api/ProgressCache.h deploy/bot-api/native-cache-cleanup.patch deploy/bot-api/CacheCleanup.h /deploy/bot-api/
+COPY deploy/bot-api/Dockerfile deploy/bot-api/native_identity.py deploy/bot-api/native-proxy.patch deploy/bot-api/native-progress.patch deploy/bot-api/ProgressCache.h deploy/bot-api/native-cache-cleanup.patch deploy/bot-api/CacheCleanup.h deploy/bot-api/native-http-timeout.patch deploy/bot-api/native-cache-storage.patch deploy/bot-api/CacheStorage.h /deploy/bot-api/
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS build
 ARG TARGETARCH
@@ -29,6 +29,13 @@ COPY deploy/bot-api/native-cache-cleanup.patch /native-cache-cleanup.patch
 COPY deploy/bot-api/CacheCleanup.h /src/telegram-bot-api/CacheCleanup.h
 RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
     cd /src && git apply --check /native-cache-cleanup.patch && git apply /native-cache-cleanup.patch && cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
+COPY deploy/bot-api/native-http-timeout.patch /native-http-timeout.patch
+RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
+    cd /src && git apply --check /native-http-timeout.patch && git apply /native-http-timeout.patch && cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
+COPY deploy/bot-api/native-cache-storage.patch /native-cache-storage.patch
+COPY deploy/bot-api/CacheStorage.h /src/telegram-bot-api/CacheStorage.h
+RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
+    cd /src && git apply --check /native-cache-storage.patch && git apply /native-cache-storage.patch && cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
 RUN cmp /src/build/telegram-bot-api /out/bin/telegram-bot-api && mkdir -p /out/licenses/tdlib /out/share && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/ && \
     printf '{"bot_api_revision":"%s","tdlib_revision":"%s"}\n' "$(git -C /src rev-parse HEAD)" "$(git -C /src/td rev-parse HEAD)" > /out/share/tgdl-source.json
 

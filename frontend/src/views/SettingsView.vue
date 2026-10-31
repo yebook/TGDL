@@ -9,10 +9,11 @@ import { validationBlockReason } from '../api/localApi'
 import { connectionEditBlockReason, connectionFields } from '../api/settingsConnection'
 import { proxyLabels } from '../api/proxy'
 import { confirmationVariables, defaultConfirmationTemplate, defaultFilenameTemplate, filenameVariables, templateExamples } from '../api/templates'
-import type { BotRequestSafety, DiagnosticLogStatus, LocalApiStatus, Settings, SettingsValues } from '../api/types'
+import type { BotRequestSafety, CacheStatus, DiagnosticLogStatus, LocalApiStatus, Settings, SettingsValues } from '../api/types'
 import { useSystemStatus } from '../composables/useSystemStatus'
 import BotSafetyPanel from '../components/BotSafetyPanel.vue'
 import DiagnosticLogPanel from '../components/DiagnosticLogPanel.vue'
+import CacheStoragePanel from '../components/CacheStoragePanel.vue'
 import SettingsSource from '../components/SettingsSource.vue'
 import LocalApiPanel from '../components/LocalApiPanel.vue'
 import SettingsBackup from '../components/SettingsBackup.vue'
@@ -51,6 +52,7 @@ const snapshot = ref('')
 const awaitingConnectionRevision = ref<number>()
 const { data: liveSystem, error: statusError, refresh: refreshStatus, debug } = useSystemStatus()
 const roots = computed(() => liveSystem.value?.storage.roots ?? [])
+function cacheChanged(status: CacheStatus) { if (liveSystem.value) liveSystem.value.storage.cache = status; void refreshStatus() }
 function botSafetyChanged(status: BotRequestSafety) { if (liveSystem.value) liveSystem.value.bot.request_safety = status; void refreshStatus() }
 function diagnosticLogChanged(status: DiagnosticLogStatus) { if (liveSystem.value) liveSystem.value.diagnostic_log = status; void refreshStatus() }
 function localApiChanged(status: LocalApiStatus) {
@@ -294,7 +296,8 @@ onMounted(load)
               <el-input-number id="max-retries" aria-label="失败自动重试次数" v-model="form.max_auto_retries" :min="0" :max="10" :disabled="!editable('max_auto_retries')" /><p class="field-hint">默认 3 次，不含首次执行。空间与权限问题需手动处理。</p>
             </el-form-item>
           </div>
-          <div class="storage-overview"><h3>存储空间</h3><div v-for="root in roots" :key="root.id" class="storage-row"><div><strong>{{ root.label }}</strong><p :class="root.available ? 'muted' : 'warning-text'">{{ root.message || (root.available ? '可用' : '不可用，请检查挂载和权限') }}</p></div><p>剩余 {{ bytes(root.free_bytes) }} / {{ bytes(root.total_bytes) }}</p></div><p class="field-hint">Telegram 缓存剩余 {{ bytes(liveSystem?.storage.cache.free_bytes ?? null) }} / {{ bytes(liveSystem?.storage.cache.total_bytes ?? null) }}。使用本地 API 下载时，缓存与保存目录均需足够空间。</p></div>
+          <div class="storage-overview"><h3>存储空间</h3><div v-for="root in roots" :key="root.id" class="storage-row"><div><strong>{{ root.label }}</strong><p :class="root.available ? 'muted' : 'warning-text'">{{ root.message || (root.available ? '可用' : '不可用，请检查挂载和权限') }}</p></div><p>剩余 {{ bytes(root.free_bytes) }} / {{ bytes(root.total_bytes) }}</p></div></div>
+          <CacheStoragePanel :status="liveSystem?.storage.cache" :active="section === 'download'" :available="liveSystem?.local_api.applied_mode === 'local' && liveSystem?.local_api.state === 'running' && liveSystem?.local_api.phase === 'idle'" :stale="!!statusError" :draft="dirty" :disabled="busy || syncing || backupBusy || writeOutcomeUnknown" @changed="cacheChanged" @sync="refreshStatus" />
           <details class="settings-details"><summary>文件归档规则</summary><div class="details-content"><p>单文件直接保存在日期目录（年-月-日）；同一媒体组另建文字摘要或媒体名称目录，图片和视频放在一起。同名目录用数字区分，不附加任务编号。同名文件不会覆盖。</p></div></details>
         </section>
         <section v-show="section === 'templates'" class="panel settings-section">

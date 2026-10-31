@@ -15,6 +15,7 @@ from app.core.errors import AppError
 from app.core.templates import render_confirmation
 from app.db.models import Attempt, IngestUpdate, Job, MediaItem, MediaRequest, Notification, uid
 from app.db.session import Database
+from app.services.cache_maintenance import require_no_maintenance
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.settings import SettingsService
@@ -244,6 +245,7 @@ class TaskService:
                 return "cancelled"
             if action != "confirm":
                 raise AppError("INVALID_ACTION", "无效操作")
+            require_no_maintenance(session)
             # Only settings that affect consent invalidate this card. Other edits preserve its deadline.
             if request.root_id != settings.download_root_id:
                 request.nonce, request.status = uid()[:10], "collecting"
@@ -365,6 +367,7 @@ class TaskService:
     def retry(self, request_id: str, item_ids: list[str] | None) -> dict[str, Any]:
         _, settings, _ = self.settings.read()
         with self.db.transaction() as session:
+            require_no_maintenance(session)
             request = session.get(MediaRequest, request_id)
             if not request or request.deleted_at is not None:
                 raise AppError("NOT_FOUND", "任务不存在", 404)
