@@ -361,7 +361,10 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except AppError as exc:
-                await asyncio.to_thread(self.poll_result, polling_client, error=exc.message)
+                # Unsent pacing supplies no new evidence about the connection.
+                # Preserve both verified readiness and any earlier real error.
+                if not (isinstance(exc, SafetyDeferred) and exc.reason == "pacing" and not exc.sent):
+                    await asyncio.to_thread(self.poll_result, polling_client, error=exc.message)
                 await asyncio.sleep(5)
             except Exception:
                 await asyncio.to_thread(self.poll_result, polling_client, error="Telegram 连接失败，请检查所选 API、凭据、网络或代理")

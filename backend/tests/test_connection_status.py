@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -7,9 +8,73 @@ from test_local_api import HASH, heartbeat, save
 
 from app.bot.client import TelegramClient
 from app.core.errors import AppError
+from app.core.security import digest
+from app.db.models import RequestSafety
 from app.schemas.contracts import SettingsPatch
 
 managed = local_api_tests.managed
+
+
+@pytest.mark.parametrize("mode", ["cloud", "local"])
+@pytest.mark.parametrize("previous_error", ["", "上次真实请求失败"])
+async def test_unsent_poll_pacing_preserves_last_connection_evidence(managed, monkeypatch, mode, previous_error):
+    state, runtime = managed.app.state, managed.app.state.runtime
+    if mode == "local":
+        save(managed, bot_token="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", bot_api_mode="local",
+             telegram_api_id="1234", telegram_api_hash=HASH, allowed_user_ids=[42])
+        runtime.local_api.update(phase="idle", applied_mode="local", command_id=None,
+                                 applied_command_id="current", applied_credential_revision=2)
+        values = state.settings.read()[1]
+        heartbeat(runtime.local_api, state="running", generation="same-generation", command_id="current",
+                  credential_revision=2, proxy_signature=state.settings.proxy_signature(values))
+    else:
+        configure(state)
+    identity = AsyncMock(return_value={"id": 7, "username": "paced_bot"})
+    monkeypatch.setattr(TelegramClient, "identity", identity)
+    assert await runtime.ensure_client()
+    original = runtime.client
+    if previous_error:
+        runtime.poll_result(original, error=previous_error)
+    before = runtime.connection_snapshot()[1]
+    operation = runtime.local_api.read()
+    clock = [time.time()]
+    runtime.safety.clock = lambda: clock[0]
+    token = state.settings.read()[1].bot_token
+    protected = {"next_start": clock[0] + 2}
+    with state.db.transaction() as session:
+        session.add(RequestSafety(credential=digest(token), values=protected))
+
+    async def response(*args, **kwargs):
+        runtime.stopping = True
+        return []
+
+    transport = AsyncMock(side_effect=response)
+    monkeypatch.setattr(original.bot.session, "make_request", transport)
+    waits = []
+
+    async def sleep(delay):
+        waits.append(delay)
+        transport.assert_not_awaited()  # Pacing rejected the request before the transport.
+        assert runtime.connection_snapshot()[1] == before
+        assert runtime.client is original and runtime.local_api.read() == operation
+        with state.db.sessions() as session:
+            assert session.get(RequestSafety, digest(token)).values == protected
+        clock[0] += 3
+
+    monkeypatch.setattr("app.workers.runtime.asyncio.sleep", sleep)
+    try:
+        await runtime.poll_loop()
+        assert len(waits) == 1
+        transport.assert_awaited_once()
+        assert runtime.client is original and identity.await_count == 1
+        assert runtime.connection_snapshot()[1]["state"] == "online"
+        events = runtime.diagnostics.export()["events"]
+        deferred = next(event for event in events if event.get("event") == "request_deferred")
+        assert deferred["reason"] == "pacing" and deferred["stage"] == "before_send"
+        assert not any(event.get("event") == "telegram_recovered" for event in events)
+    finally:
+        runtime.stopping = True
+        await original.close()
 
 
 def configure(state, token="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"):
