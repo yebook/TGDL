@@ -438,6 +438,9 @@ class Runtime:
             return False
         self.worker.cleanup_paused = True
         try:
+            with self.db.transaction() as session:
+                if maintenance_blocked(session):
+                    return True
             # Set the claim barrier before inspecting durable ownership. A claim already
             # inside its transaction is then visible to the following owner query.
             if (any(not task.done() for task in self.running.values())
@@ -453,6 +456,9 @@ class Runtime:
                 await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
                 return True
             async with self.connection_lock:
+                with self.db.sessions() as session:
+                    if maintenance_blocked(session):
+                        return True
                 if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
                     return True
                 # Hashing can take time. Do not use an obsolete generation/client or
@@ -469,6 +475,7 @@ class Runtime:
                     return True
                 try:
                     source = self.cache_cleanup.source_path(row)
+                    await owned_thread(self.cache_cleanup.mutation_started, row.job_id)
                     self.cache_maintenance.invalidate()
                     await client.delete_file_cache(row.file_id, source, row.size_bytes, generation)
                 except Exception:

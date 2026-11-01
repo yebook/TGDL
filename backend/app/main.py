@@ -56,6 +56,7 @@ from app.schemas.responses import (
 from app.services import connection_waits as waits
 from app.services.config_backup import MAX_BACKUP_REQUEST_BYTES, ConfigBackupService
 from app.services.network_diagnostics import NetworkDiagnosticsService
+from app.services.saved_media import SavedMediaService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
@@ -100,6 +101,9 @@ def create_app(config: Config | None = None) -> FastAPI:
             tasks = TaskService(db, settings)
             storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes)
             runtime = Runtime(db, cfg, settings, tasks, storage)
+            tasks.saved_media = SavedMediaService(db, storage)
+            tasks.saved_media.runtime = runtime
+            tasks.saved_media.recover()
             network_diagnostics = NetworkDiagnosticsService(settings, runtime.local_api)
             with db.sessions() as session:
                 initialized = session.get(Admin, 1) is not None
@@ -273,13 +277,16 @@ def create_app(config: Config | None = None) -> FastAPI:
                   page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
         return tasks.list_tasks(status, q, page, page_size)
 
-    @application.post("/api/v1/tasks/delete", dependencies=[Depends(auth)], response_model=TaskDeleteResponse)
-    def delete_tasks(payload: TaskDelete) -> dict[str, list[str]]:
-        return tasks.delete(payload.ids)
+    @application.post("/api/v1/tasks/delete", dependencies=[Depends(auth)], response_model=TaskDeleteResponse,
+                      response_model_exclude_unset=True)
+    def delete_tasks(payload: TaskDelete) -> dict[str, Any]:
+        return tasks.delete(payload.ids, delete_files=payload.delete_files, operation_id=payload.operation_id)
 
-    @application.delete("/api/v1/tasks/{request_id}", dependencies=[Depends(auth)], response_model=TaskDeleteResponse)
-    def delete_task(request_id: str) -> dict[str, list[str]]:
-        return tasks.delete([request_id])
+    @application.delete("/api/v1/tasks/{request_id}", dependencies=[Depends(auth)], response_model=TaskDeleteResponse,
+                        response_model_exclude_unset=True)
+    def delete_task(request_id: str, delete_files: bool = False,
+                    operation_id: str | None = Query(default=None, pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
+        return tasks.delete([request_id], delete_files=delete_files, operation_id=operation_id)
 
     @application.get("/api/v1/tasks/{request_id}", dependencies=[Depends(auth)], response_model=TaskDetail)
     def task_detail(request_id: str) -> dict[str, Any]:

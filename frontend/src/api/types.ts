@@ -31,6 +31,14 @@ export interface Task {
   id: string; title: string; kind: 'single' | 'group'; status: string; created_at: string; updated_at: string
   item_count: number; completed_count: number; total_bytes: number | null; completed_bytes: number
   effective_destination: string | null; notification_status: string; can_cancel: boolean; can_retry: boolean; can_delete: boolean
+  local_files: LocalFileCounts
+}
+export type LocalFileState = 'present' | 'missing' | 'changed' | 'unavailable' | 'not_saved'
+export type LocalFileCounts = Record<LocalFileState, number>
+export interface TaskDeleteRequest { ids: string[]; delete_files: boolean; operation_id?: string }
+export interface TaskDeleteResponse {
+  deleted_ids: string[]; operation_id: string | null
+  files: { deleted: number; missing: number; retained_shared: number; retained_unverified: number; failed: number; uncertain: number }
 }
 export interface Attempt { sequence: number; started_at: string; finished_at: string | null; error_code: string | null }
 export interface DownloadProgress {
@@ -44,6 +52,7 @@ export interface MediaItem {
   download_progress: DownloadProgress | null
   speed_bps: number | null; elapsed_seconds: number | null; relative_path: string | null
   error_code: string | null; error_message: string | null; linked_job_id: string | null; attempts: Attempt[]
+  local_file_state: LocalFileState
 }
 export interface TaskDetail extends Task { items: MediaItem[]; expires_at: string | null }
 export interface TaskPage { items: Task[]; total: number; page: number; page_size: number }

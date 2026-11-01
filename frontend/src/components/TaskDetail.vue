@@ -5,6 +5,7 @@ import { request, errorMessage } from '../api/client'
 import type { TaskDetail } from '../api/types'
 import { attemptResult, bytes, dateTime, duration, taskIssueTone } from '../api/format'
 import { mediaState } from '../api/mediaProgress'
+import { localFileLabel } from '../api/localFiles'
 import { usePolling } from '../composables/usePolling'
 import StatusBadge from './StatusBadge.vue'
 import MediaProgress from './MediaProgress.vue'
@@ -48,6 +49,7 @@ async function action(kind: 'cancel' | 'retry') {
         <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 视频时长 {{ duration(item.duration_seconds) }}</template></p>
         <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
+        <p v-if="localFileLabel(item.local_file_state)" class="local-file-status" :class="item.local_file_state === 'present' ? 'muted' : 'warning-text'">{{ localFileLabel(item.local_file_state) }}</p>
         <p v-if="item.linked_job_id" class="muted">关联已有文件任务：<span class="mono">{{ item.linked_job_id }}</span></p>
         <el-alert v-if="item.error_message || item.error_code" :title="item.error_message || attemptResult(item.error_code, null)" :type="taskIssueTone(item.error_code)" :closable="false" show-icon />
         <details v-if="item.attempts.length" class="attempts"><summary>执行记录（{{ item.attempts.length }}）</summary><div v-for="attempt in item.attempts" :key="attempt.sequence" class="attempt"><strong>第 {{ attempt.sequence }} 次</strong><span>{{ dateTime(attempt.started_at) }}</span><span>{{ attemptResult(attempt.error_code, attempt.finished_at) }}</span></div></details>

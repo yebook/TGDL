@@ -79,6 +79,14 @@ p { font-size: 14px; line-height: 1.7; }
 .task-row:last-child { border-bottom: 0; }
 .task-row:hover { background: #f8faff; }
 .task-row-selected { background: #f0f5ff; }
+.task-status { min-width: 0; }
+.local-file-status { display: block; margin: 6px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-delete-dialog .el-checkbox { min-height: 44px; white-space: normal; }
+.task-delete-dialog .el-checkbox__label { white-space: normal; }
+.task-delete-dialog .delete-files-help { margin: 6px 0 16px; }
+.task-delete-dialog .el-dialog__footer .el-button { min-height: 44px; }
+.task-deletion-pending { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.task-deletion-pending .el-button { min-height: 44px; }
 .task-row > .el-checkbox { margin: 0; min-height: 44px; }
 .task-name { display: flex; align-items: center; gap: 13px; min-width: 0; width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 0; min-height: 44px; }
 .task-name:disabled { cursor: default; }

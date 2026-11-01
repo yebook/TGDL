@@ -61,7 +61,10 @@ class CacheCleanupService:
             if not row:
                 return
             row.attempts += 1
-            row.error_code = code
+            # A later failed final-file check cannot prove an earlier issued
+            # native deletion settled. Keep that ownership evidence durable.
+            row.error_code = ("CACHE_CLEANUP_UNAVAILABLE" if code == "CACHE_FINAL_UNAVAILABLE"
+                              and row.error_code in {"CACHE_CLEANUP_IN_FLIGHT", "CACHE_CLEANUP_UNAVAILABLE"} else code)
             row.next_run_at = time.time() + min(300, 5 * 2**min(row.attempts - 1, 6))
         self.diagnostics.emit("cache_cleanup", level="warning", mode="local", job_id=job_id,
                               outcome="retry_wait", error_code=code)
@@ -72,3 +75,11 @@ class CacheCleanupService:
             if row:
                 session.delete(row)
         self.diagnostics.emit("cache_cleanup", level="info", mode="local", job_id=job_id, outcome="success")
+
+    def mutation_started(self, job_id: str) -> None:
+        # Survives a process exit or lost native reply. It does not change ordinary
+        # retry/dispatch policy, but final-media deletion must not bypass it.
+        with self.db.transaction() as session:
+            row = session.get(CacheCleanup, job_id)
+            if row:
+                row.error_code = "CACHE_CLEANUP_IN_FLIGHT"

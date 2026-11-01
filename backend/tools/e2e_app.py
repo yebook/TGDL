@@ -330,6 +330,10 @@ def main() -> None:
         async def fixture_lifespan(application: FastAPI) -> AsyncIterator[None]:
             async with original_lifespan(application):
                 seed(application)
+                if os.getenv("E2E_TASK_FILES") == "1":
+                    from tools.task_files_fixture import seed_task_files
+
+                    seed_task_files(application)
                 seed_network_diagnostics(application)
                 seed_request_safety(application, os.getenv("E2E_REQUEST_SAFETY", ""))
                 if not scenario:
@@ -394,7 +398,10 @@ def main() -> None:
                         await asyncio.gather(heartbeat, return_exceptions=True)
 
         app.router.lifespan_context = fixture_lifespan
-        uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("TGDL_E2E_PORT", "8765")), access_log=False)
+        # Containers publish this fixture port to host loopback only. Native runs
+        # remain loopback-bound; the override is test-only, never app configuration.
+        uvicorn.run(app, host=os.environ.get("TGDL_E2E_HOST", "127.0.0.1"),
+                    port=int(os.environ.get("TGDL_E2E_PORT", "8765")), access_log=False)
 
 
 if __name__ == "__main__":

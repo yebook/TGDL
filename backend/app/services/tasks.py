@@ -13,15 +13,26 @@ from app.bot.grouping import GROUP_MAX_SECONDS
 from app.bot.messages import failure_hint, status_label
 from app.core.errors import AppError
 from app.core.templates import render_confirmation
-from app.db.models import Attempt, IngestUpdate, Job, MediaItem, MediaRequest, Notification, uid
+from app.db.models import (
+    Attempt,
+    FileDeletionOperation,
+    IngestUpdate,
+    Job,
+    MediaItem,
+    MediaRequest,
+    Notification,
+    uid,
+)
 from app.db.session import Database
 from app.services.cache_maintenance import require_no_maintenance
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.file_acquisition import uncertain_message
+from app.services.saved_media import SavedMediaService
 from app.services.settings import SettingsService
 from app.storage.files import contained
 from app.storage.naming import fit_name, planned_name, request_caption, request_summary, unique_name
+from app.storage.saved_media import observe
 
 ACTIVE = {"queued", "fetching", "saving", "cancelling", "retry_wait", "waiting_existing", "recovery_blocked"}
 TERMINAL = {"succeeded", "already_exists", "failed", "cancelled"}
@@ -119,6 +130,7 @@ class TaskService:
         self.db, self.settings = database, settings
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
+        self.saved_media: SavedMediaService | None = None
 
     def destination(self, session: Session, request: MediaRequest, summary: str, timezone: str) -> str:
         date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
@@ -335,15 +347,43 @@ class TaskService:
                 for notification in session.scalars(select(Notification).where(Notification.request_id.in_(ids))):
                     assert notification.request_id is not None
                     related[notification.request_id][2].append(notification)
-            return {"items": [self._dto(session, row, related=related[row.id]) for row in rows],
-                    "total": total, "page": page, "page_size": page_size}
+            result: dict[str, Any] = {"items": [self._dto(session, row, related=related[row.id]) for row in rows],
+                      "total": total, "page": page, "page_size": page_size}
+        observations: dict[tuple[str, str, int], str] = {}
+        for dto, row in zip(result["items"], rows, strict=True):
+            self._local_files(dto, related[row.id][1], observations)
+        return result
 
     def detail(self, request_id: str) -> dict[str, Any]:
         with self.db.sessions() as session:
             request = session.get(MediaRequest, request_id)
             if not request or request.deleted_at is not None:
                 raise AppError("NOT_FOUND", "任务不存在", 404)
-            return self._dto(session, request, True)
+            result = self._dto(session, request, True)
+            jobs = list(session.scalars(select(Job).where(Job.request_id == request.id)))
+        self._local_files(result, jobs, {})
+        return result
+
+    def _local_files(self, dto: dict[str, Any], jobs: list[Job], observations: dict[tuple[str, str, int], str]) -> None:
+        counts = dict.fromkeys(("present", "missing", "changed", "unavailable", "not_saved"), 0)
+        states = {}
+        for job in jobs:
+            state = "not_saved"
+            if job.state in {"succeeded", "already_exists"}:
+                key = job.root_id, job.relative_path, job.completed_bytes
+                if key not in observations:
+                    try:
+                        observations[key] = observe(self.saved_media.storage.get(job.root_id), job.relative_path,
+                                                    job.completed_bytes) if self.saved_media else "unavailable"
+                    except AppError:
+                        observations[key] = "unavailable"
+                state = observations[key]
+            states[job.item_id] = state
+            counts[state] += 1
+        counts["not_saved"] += max(0, dto["item_count"] - len(jobs))
+        dto["local_files"] = counts
+        for item in dto.get("items", []):
+            item["local_file_state"] = states.get(item["id"], "not_saved")
 
     def cancel(self, request_id: str) -> dict[str, Any]:
         with self.db.transaction() as session:
@@ -389,10 +429,17 @@ class TaskService:
             project(session, request)
         return self.detail(request_id)
 
-    def delete(self, request_ids: list[str]) -> dict[str, list[str]]:
+    def delete(self, request_ids: list[str], *, delete_files: bool = False,
+               operation_id: str | None = None) -> dict[str, Any]:
         # BEGIN IMMEDIATE serializes this eligibility check with retry, claim,
         # cancellation and worker completion. Never remove referenced history.
         with self.db.transaction() as session:
+            if operation_id and self.saved_media:
+                existing = self.saved_media.existing(session, operation_id, request_ids, delete_files)
+                if existing:
+                    return existing
+            if delete_files and (not operation_id or not self.saved_media):
+                raise AppError("FILE_DELETE_OPERATION_REQUIRED", "删除文件需要有效的操作编号", 422)
             requests = list(session.scalars(select(MediaRequest).where(
                 MediaRequest.id.in_(request_ids), MediaRequest.deleted_at.is_(None))))
             if len(requests) != len(request_ids):
@@ -401,10 +448,24 @@ class TaskService:
                 Job.request_id.in_(request_ids), Job.state.not_in(TERMINAL)).limit(1))
             if busy or any(request.status not in DELETABLE for request in requests):
                 raise AppError("TASK_DELETE_BUSY", "任务尚未结束，请先取消并等待处理完成", 409)
+            if delete_files:
+                assert self.saved_media and operation_id
+                self.saved_media.prepare(session, operation_id, request_ids)
+            elif operation_id:
+                session.add(FileDeletionOperation(id=operation_id, request_ids=request_ids, delete_files=False,
+                                                  entries=[], state="complete"))
             now = time.time()
             for request in requests:
                 request.deleted_at = now
             for row in session.scalars(select(Notification).where(
                     Notification.request_id.in_(request_ids), Notification.state == "pending")):
                 row.state = "obsolete"
+        if delete_files:
+            assert self.saved_media and operation_id
+            return self.saved_media.execute(operation_id)
+        if operation_id and self.saved_media:
+            with self.db.sessions() as session:
+                operation = session.get(FileDeletionOperation, operation_id)
+                assert operation
+                return self.saved_media.result(operation)
         return {"deleted_ids": request_ids}

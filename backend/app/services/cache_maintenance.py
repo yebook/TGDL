@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.security import digest
-from app.db.models import CacheCleanup, Job, LocalApiRuntime
+from app.db.models import CacheCleanup, FileDeletionOperation, Job, LocalApiRuntime
 
 BUSY = {"running", "uncertain"}
 MESSAGES = {
@@ -44,7 +44,8 @@ def maintenance_values(session: Session) -> dict[str, Any]:
 
 
 def maintenance_blocked(session: Session) -> bool:
-    return maintenance_values(session).get("state") in BUSY
+    return (maintenance_values(session).get("state") in BUSY
+            or session.scalar(select(FileDeletionOperation.id).where(FileDeletionOperation.state == "running").limit(1)) is not None)
 
 
 def require_no_maintenance(session: Session) -> None:
@@ -116,6 +117,8 @@ class CacheMaintenanceService:
         with self.runtime.db.sessions() as session:
             maintenance = dict(maintenance_values(session))
             reason = owners_reason(session)
+            if reason is None and maintenance_blocked(session):
+                reason = "maintenance_running"
         if reason is None:
             if self.runtime.worker.cleanup_paused:
                 reason = "maintenance_running"

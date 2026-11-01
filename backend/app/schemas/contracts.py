@@ -147,6 +147,8 @@ class LocalApiRetry(BaseModel):
 class TaskDelete(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ids: list[str] = Field(min_length=1, max_length=100)
+    delete_files: bool = Field(default=False, strict=True)
+    operation_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
     @field_validator("ids")
     @classmethod

@@ -35,6 +35,16 @@ class RequestSafety(Base):
     values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class FileDeletionOperation(Base):
+    """Stable user intent; an interrupted unlink is never automatically replayed."""
+    __tablename__ = "file_deletion_operations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    state: Mapped[str] = mapped_column(default="running", index=True)
+    request_ids: Mapped[list[str]] = mapped_column(JSON)
+    delete_files: Mapped[bool] = mapped_column(Boolean, default=True)
+    entries: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+
 class Admin(Base):
     __tablename__ = "admins"
     id: Mapped[int] = mapped_column(primary_key=True, default=1)

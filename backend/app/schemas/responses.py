@@ -36,6 +36,14 @@ class SettingsResponse(BaseModel):
     proxy_status: ProxyStatus
 
 
+class LocalFiles(BaseModel):
+    present: int = 0
+    missing: int = 0
+    changed: int = 0
+    unavailable: int = 0
+    not_saved: int = 0
+
+
 class TaskSummary(BaseModel):
     id: str
     title: str
@@ -52,10 +60,22 @@ class TaskSummary(BaseModel):
     can_cancel: bool
     can_retry: bool
     can_delete: bool
+    local_files: LocalFiles = Field(default_factory=LocalFiles)
+
+
+class FileDeleteResults(BaseModel):
+    deleted: int = 0
+    missing: int = 0
+    retained_shared: int = 0
+    retained_unverified: int = 0
+    failed: int = 0
+    uncertain: int = 0
 
 
 class TaskDeleteResponse(BaseModel):
     deleted_ids: list[str]
+    operation_id: str | None = None
+    files: FileDeleteResults = Field(default_factory=FileDeleteResults)
 
 
 class TaskPage(BaseModel):
@@ -100,6 +120,7 @@ class MediaResponse(BaseModel):
     error_code: str | None
     error_message: str | None
     linked_job_id: str | None
+    local_file_state: Literal["present", "missing", "changed", "unavailable", "not_saved"] = "not_saved"
     attempts: list[AttemptResponse]
 
 
