@@ -43,7 +43,7 @@ def main() -> None:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             token = "123456:" + "A" * 35
             valid = {"file_id": "synthetic-alias", "expected_path": str(directory / "media"),
-                     "expected_size": "5", "generation": "synthetic-generation"}
+                     "expected_size": "5", "expected_sha256": "a" * 64, "generation": "synthetic-generation"}
             # Every request, including malformed fields, must stop before Client creation.
             cases = [valid, {}, valid | {"file_id": "x" * 4097},
                      valid | {"expected_path": "relative"}, valid | {"expected_size": "-1"},

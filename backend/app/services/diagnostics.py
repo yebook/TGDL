@@ -48,7 +48,12 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY",
           "LOCAL_API_START_FAILED"}
 REASONS = {"pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable",
-           "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown"} | START_FAILURE_MESSAGES.keys()
+           "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown",
+           "cache_invalid_request", "cache_unavailable", "cache_unsupported", "cache_path_invalid",
+           "cache_generation_changed", "cache_busy", "cache_identity_unavailable", "cache_identity_changed",
+           "cache_removal_unconfirmed", "cache_http_error", "cache_timeout", "cache_network_error",
+           "cache_response_invalid", "cache_response_too_large", "cache_recovery_identity_changed",
+           "cache_recovery_content_mismatch", "cache_recovery_unavailable"} | START_FAILURE_MESSAGES.keys()
 STAGES = {"before_send", "dns", "proxy", "connect", "tls", "response", "unknown",
           "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ACTIONS = {"switch", "restart", "recover_restart", "cloud_reconnect", "retry", "acknowledge_retry", "bot_retry"}

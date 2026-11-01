@@ -1,0 +1,19 @@
+# Disposable real TDLib actor fixture. Never deploy this image.
+ARG TGDL_BUILD_IMAGE=tgd-native-cache-recovery-build
+ARG TGDL_NATIVE_IMAGE=tgd-native:cache-recovery
+ARG TGDL_TOOLS_IMAGE=verification-tools
+FROM ${TGDL_BUILD_IMAGE} AS fixture
+COPY deploy/bot-api/prepare-cache-recovery-fixture.py /verification/
+RUN python3 /verification/prepare-cache-recovery-fixture.py && cmake --build /src/build --parallel 2 && cp /src/build/telegram-bot-api /verification/cache-recovery-fixture
+FROM ${TGDL_NATIVE_IMAGE} AS production
+FROM production AS verification-tools
+USER root
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends strace && rm -rf /var/lib/apt/lists/*
+FROM ${TGDL_TOOLS_IMAGE}
+USER root
+COPY --from=production /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
+COPY --from=fixture /verification/cache-recovery-fixture /verification/
+COPY deploy/bot-api/verify-native-cache-recovery.py /verification/
+COPY deploy/bot-api/verify-native-transport.py deploy/bot-api/verify-native-cache-storage.py /verification/
+USER 1000:1000
+ENTRYPOINT ["python3", "/verification/verify-native-cache-recovery.py"]

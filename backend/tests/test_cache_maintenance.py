@@ -381,23 +381,30 @@ def test_refreshed_usage_stays_ready_during_existing_download_and_invalidation_o
     assert service.status()["usage_state"] == "ready"
 
 
-@pytest.mark.parametrize("description,expected", [
-    ("Conflict: TGD_CACHE_STORAGE_BUSY", "CACHE_CLEANUP_BUSY"), ("Conflict: arbitrary", None),
+@pytest.mark.parametrize("mode,status,description,expected", [
+    ("local", 409, "Conflict: TGD_CACHE_STORAGE_BUSY", "CACHE_CLEANUP_BUSY"),
+    ("local", 400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", "CACHE_CLEANUP_BUSY"),
+    ("local", 400, "TGD_CACHE_CLEANUP_BUSY", "CACHE_CLEANUP_BUSY"),
+    ("local", 409, "Conflict: arbitrary", None),
+    ("local", 400, "Bad Request: arbitrary", None),
+    ("cloud", 400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", None),
 ])
-async def test_native_notification_busy_does_not_consume_telegram_backoff(config, description, expected):
-    from aiogram.exceptions import TelegramConflictError
+async def test_native_notification_busy_does_not_consume_telegram_backoff(config, mode, status, description, expected):
+    from aiogram.exceptions import TelegramBadRequest, TelegramConflictError
     from aiogram.methods import SendMessage
 
-    telegram = TelegramClient(TOKEN, config, UserSettings(bot_api_mode="local"))
+    telegram = TelegramClient(TOKEN, config, UserSettings(bot_api_mode=mode))
     telegram.safety = AsyncMock()
     telegram.safety.diagnostics = None
     telegram.safety.observe = Mock()
 
+    exception = TelegramConflictError if status == 409 else TelegramBadRequest
+
     async def send():
-        raise TelegramConflictError(method=SendMessage(chat_id=42, text="synthetic"), message=description)
+        raise exception(method=SendMessage(chat_id=42, text="synthetic"), message=description)
 
     try:
-        with pytest.raises(AppError if expected else TelegramConflictError) as error:
+        with pytest.raises(AppError if expected else exception) as error:
             await telegram.request(send, method="sendMessage")
         if expected:
             assert error.value.code == expected

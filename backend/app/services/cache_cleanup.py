@@ -55,7 +55,8 @@ class CacheCleanupService:
         storage.check(check_space=False)
         return self.fingerprint(contained(storage.root, row.relative_path)) == fingerprint
 
-    def retry(self, job_id: str, code: str = "CACHE_CLEANUP_UNAVAILABLE") -> None:
+    def retry(self, job_id: str, code: str = "CACHE_CLEANUP_UNAVAILABLE", *,
+              reason: str | None = None, http_status: int | None = None, duration_ms: int | None = None) -> None:
         with self.db.transaction() as session:
             row = session.get(CacheCleanup, job_id)
             if not row:
@@ -67,7 +68,8 @@ class CacheCleanupService:
                               and row.error_code in {"CACHE_CLEANUP_IN_FLIGHT", "CACHE_CLEANUP_UNAVAILABLE"} else code)
             row.next_run_at = time.time() + min(300, 5 * 2**min(row.attempts - 1, 6))
         self.diagnostics.emit("cache_cleanup", level="warning", mode="local", job_id=job_id,
-                              outcome="retry_wait", error_code=code)
+                              outcome="retry_wait", error_code=code, reason=reason,
+                              http_status=http_status, duration_ms=duration_ms)
 
     def complete(self, job_id: str) -> None:
         with self.db.transaction() as session:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from functools import partial
 from typing import Any
 
 from aiogram.exceptions import (
@@ -11,7 +12,7 @@ from aiogram.exceptions import (
 )
 from sqlalchemy import func, select
 
-from app.bot.client import TelegramClient
+from app.bot.client import CacheCleanupError, TelegramClient
 from app.bot.ingest import IngestService
 from app.core.config import Config
 from app.core.errors import AppError
@@ -477,7 +478,11 @@ class Runtime:
                     source = self.cache_cleanup.source_path(row)
                     await owned_thread(self.cache_cleanup.mutation_started, row.job_id)
                     self.cache_maintenance.invalidate()
-                    await client.delete_file_cache(row.file_id, source, row.size_bytes, generation)
+                    await client.delete_file_cache(row.file_id, source, row.size_bytes, generation,
+                                                   expected_sha256=row.sha256)
+                except CacheCleanupError as exc:
+                    await owned_thread(partial(self.cache_cleanup.retry, row.job_id, reason=exc.reason,
+                                               http_status=exc.http_status, duration_ms=exc.duration_ms))
                 except Exception:
                     await owned_thread(self.cache_cleanup.retry, row.job_id)
                 else:

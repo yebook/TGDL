@@ -180,7 +180,8 @@ def main() -> None:
                 assert service.snapshot('1')['scan_state'] == 'running'
                 assert service.call('tgdClearCacheStorage', generation=GENERATION, operation_id='c' * 32)[0] == 409
                 assert service.call('tgdDeleteFileCache', generation=GENERATION, file_id=alias,
-                                    expected_path=path_marker.read_text(), expected_size=str(8 * 1024 * 1024))[0] == 409
+                                    expected_path=path_marker.read_text(), expected_size=str(8 * 1024 * 1024),
+                                    expected_sha256='a' * 64)[0] == 409
                 shared = executor.submit(start, service, second, alias_b)
                 wait_for(lambda: state(service, second)['state'] == 'downloading', 'Shared owner never joined')
                 cancelled = cancel(service, first)

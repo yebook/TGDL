@@ -35,6 +35,37 @@ CLOUD_FILE_LIMIT = 20 * 1024 * 1024
 LOCAL_GET_FILE_TIMEOUT = ClientTimeout(total=None, connect=20, sock_connect=20, sock_read=None)
 
 
+class CacheCleanupError(AppError):
+    """Fixed housekeeping evidence; never carry upstream descriptions or identities."""
+
+    def __init__(self, reason: str, started: float, http_status: int | None = None) -> None:
+        super().__init__("CACHE_CLEANUP_UNAVAILABLE", "媒体缓存待清理，将自动重试")
+        self.reason = reason
+        self.http_status = http_status
+        self.duration_ms = int(max(0, time.monotonic() - started) * 1000)
+
+
+# Match exact status/description pairs from the private native protocol only.
+# Unknown upstream text is deliberately discarded, including path-bearing errors.
+_CACHE_CLEANUP_REJECTIONS = {
+    (404, "Not Found: cache cleanup unavailable"): "cache_unavailable",
+    (404, "Not Found: progress unavailable"): "cache_unavailable",
+    (400, "Bad Request: method not found"): "cache_unsupported",
+    (400, "Bad Request: invalid cache cleanup request"): "cache_invalid_request",
+    (400, "Bad Request: invalid cache path"): "cache_path_invalid",
+    (409, "Conflict: cache generation changed"): "cache_generation_changed",
+    (409, "Conflict: cache cleanup busy"): "cache_busy",
+    (409, "Conflict: cache file busy"): "cache_busy",
+    (409, "Conflict: cache identity unavailable"): "cache_identity_unavailable",
+    (409, "Conflict: cache identity changed"): "cache_identity_changed",
+    (500, "Internal Server Error: cache removal unconfirmed"): "cache_removal_unconfirmed",
+    (409, "Conflict: cache recovery busy"): "cache_busy",
+    (409, "Conflict: cache recovery identity changed"): "cache_recovery_identity_changed",
+    (409, "Conflict: cache recovery content mismatch"): "cache_recovery_content_mismatch",
+    (500, "Internal Server Error: cache recovery unavailable"): "cache_recovery_unavailable",
+}
+
+
 def cloud_size_check(size: int | None) -> None:
     if size is not None and size > CLOUD_FILE_LIMIT:
         raise AppError("CLOUD_FILE_TOO_LARGE", "云端 Bot API 仅支持下载不超过 20 MB 的文件，请在设置切换本地 API 后重试")
@@ -152,27 +183,40 @@ class TelegramClient:
     async def clear_cache_storage(self, generation: str, operation_id: str) -> dict[str, Any]:
         return await self._cache_storage(generation, operation_id=operation_id)
 
-    async def delete_file_cache(self, file_id: str, expected_path: str, expected_size: int, generation: str) -> str:
+    async def delete_file_cache(self, file_id: str, expected_path: str, expected_size: int, generation: str,
+                                *, expected_sha256: str) -> str:
         """Offline local TDLib housekeeping. Never call Telegram or alter request protection."""
+        started = time.monotonic()
+        http_status = None
         if (self.mode != "local" or not 1 <= len(file_id.encode("utf-8")) <= 4096
                 or not 1 <= len(expected_path.encode("utf-8")) <= 4096
                 or not 1 <= len(generation.encode("utf-8")) <= 128
+                or not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
                 or type(expected_size) is not int or not 0 <= expected_size <= 2**63 - 1):
-            raise AppError("CACHE_CLEANUP_UNAVAILABLE", "媒体缓存清理暂不可用")
+            raise CacheCleanupError("cache_invalid_request", started)
         try:
             if self._cleanup_session is None:
                 self._cleanup_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
             url = self.bot.session.api.api_url(self.bot.token, "tgdDeleteFileCache")
             async with self._cleanup_session.post(url, data={"file_id": file_id, "expected_path": expected_path,
-                    "expected_size": str(expected_size), "generation": generation}, allow_redirects=False) as response:
-                if response.status != 200:
-                    raise ValueError("Cleanup unavailable")
+                    "expected_size": str(expected_size), "expected_sha256": expected_sha256,
+                    "generation": generation}, allow_redirects=False) as response:
+                http_status = response.status
                 body = bytearray()
                 async for block in response.content.iter_chunked(4096):
                     body.extend(block)
                     if len(body) > 8192:
-                        raise ValueError("Cleanup response too large")
-                payload = json.loads(body)
+                        raise CacheCleanupError("cache_response_too_large", started, http_status)
+                try:
+                    payload = json.loads(body)
+                except (ValueError, TypeError, OverflowError, RecursionError):
+                    payload = None
+                if http_status != 200:
+                    reason = "cache_unsupported" if http_status in {404, 405, 501} else "cache_http_error"
+                    if (isinstance(payload, dict) and payload.get("ok") is False
+                            and isinstance(payload.get("description"), str)):
+                        reason = _CACHE_CLEANUP_REJECTIONS.get((http_status, payload["description"]), reason)
+                    raise CacheCleanupError(reason, started, http_status)
                 if not isinstance(payload, dict) or set(payload) != {"ok", "result"} or payload["ok"] is not True:
                     raise ValueError("Invalid cleanup response")
                 result = payload["result"]
@@ -180,8 +224,12 @@ class TelegramClient:
                         or result["generation"] != generation or result["status"] not in ("deleted", "absent")):
                     raise ValueError("Invalid cleanup identity")
                 return str(result["status"])
-        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError) as exc:
-            raise AppError("CACHE_CLEANUP_UNAVAILABLE", "媒体缓存待清理，将自动重试") from exc
+        except TimeoutError:
+            raise CacheCleanupError("cache_timeout", started, http_status) from None
+        except ClientError:
+            raise CacheCleanupError("cache_network_error", started, http_status) from None
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            raise CacheCleanupError("cache_response_invalid", started, http_status) from None
 
     async def file_progress(self, file_ids: list[str]) -> tuple[str, dict[str, dict[str, Any]]] | None:
         """Read our private local snapshot method. Never enter Telegram request/protection paths."""
@@ -247,8 +295,11 @@ class TelegramClient:
                 await self.record(method, AppError("CANCELLED", "下载已取消")
                                   if exc.code == "ACQUISITION_CANCELLED" else exc, started)
                 raise
-            if (self.mode == "local" and isinstance(exc, TelegramConflictError)
-                    and exc.message in {"TGD_CACHE_STORAGE_BUSY", "Conflict: TGD_CACHE_STORAGE_BUSY"}):
+            if self.mode == "local" and (
+                    isinstance(exc, TelegramConflictError)
+                    and exc.message in {"TGD_CACHE_STORAGE_BUSY", "Conflict: TGD_CACHE_STORAGE_BUSY"}
+                    or isinstance(exc, TelegramBadRequest)
+                    and exc.message in {"TGD_CACHE_CLEANUP_BUSY", "Bad Request: TGD_CACHE_CLEANUP_BUSY"}):
                 deferred = AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在维护，稍后自动继续")
                 await self.record(method, deferred, started)
                 raise deferred from exc  # Native guarantees this request was not accepted.

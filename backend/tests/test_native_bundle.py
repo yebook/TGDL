@@ -167,6 +167,7 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
     "native-proxy.patch", "native-progress.patch", "ProgressCache.h", "native-cache-cleanup.patch",
     "CacheCleanup.h", "native-http-timeout.patch", "native-cache-storage.patch", "CacheStorage.h",
     "native-acquisition.patch", "AcquisitionControl.h", "native-download-stop.patch", "native-cache-live.patch",
+    "native-cache-recovery.patch", "CacheRecovery.h",
     "upstream-revision", "tdlib-revision", "compiler-toolchain", ".dockerignore",
 ])
 def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import stat
 import time
@@ -86,7 +87,7 @@ async def test_success_queue_survives_task_deletion_and_new_worker(authenticated
     restarted.recover(False)
     client = ready(state.runtime, monkeypatch)
     assert await state.runtime.cleanup_cache()
-    client.delete_file_cache.assert_awaited_once_with("file-1", str(source), 6, "generation-one")
+    client.delete_file_cache.assert_awaited_once_with("file-1", str(source), 6, "generation-one", expected_sha256=hashlib.sha256(b"abcdef").hexdigest())
     with state.db.sessions() as session:
         assert session.get(CacheCleanup, job_id) is None
         assert session.get(Job, job_id).state == "succeeded"
@@ -160,7 +161,7 @@ async def test_token_bearing_source_is_encrypted_through_crash_recovery(client, 
             assert api_path.encode() not in path.read_bytes()
     telegram = ready(state.runtime, monkeypatch)
     assert await state.runtime.cleanup_cache()
-    telegram.delete_file_cache.assert_awaited_once_with("file-1", api_path, 6, "generation-one")
+    telegram.delete_file_cache.assert_awaited_once_with("file-1", api_path, 6, "generation-one", expected_sha256=hashlib.sha256(b"abcdef").hexdigest())
 
 
 async def test_corrupt_encrypted_source_retries_without_deletion(client, monkeypatch):
@@ -383,13 +384,13 @@ async def test_private_cleanup_protocol_rejects_bad_or_unsupported_responses(con
         client.bot.session.api = TelegramAPIServer.from_base(base, is_local=True)
         try:
             with pytest.raises(AppError, match="自动重试"):
-                await client.delete_file_cache("file-1", "/api-cache/videos/x", 6, "generation-one")
+                await client.delete_file_cache("file-1", "/api-cache/videos/x", 6, "generation-one", expected_sha256=hashlib.sha256(b"abcdef").hexdigest())
             assert client._cleanup_session.trust_env is False
             assert client._cleanup_session.timeout.total == 2
         finally:
             await client.close()
     assert len(calls) == 1
-    assert calls[0] == {"file_id": "file-1", "expected_path": "/api-cache/videos/x", "expected_size": "6", "generation": "generation-one"}
+    assert calls[0] == {"file_id": "file-1", "expected_path": "/api-cache/videos/x", "expected_size": "6", "expected_sha256": hashlib.sha256(b"abcdef").hexdigest(), "generation": "generation-one"}
 
 
 @pytest.mark.parametrize("status", ["deleted", "absent"])
@@ -402,10 +403,10 @@ async def test_private_cleanup_success_and_cloud_never_contacts_endpoint(config:
     async with fake_api(handler) as base:
         client.bot.session.api = TelegramAPIServer.from_base(base, is_local=True)
         try:
-            assert await client.delete_file_cache("alias", "/cache/a", 6, "generation-one") == status
+            assert await client.delete_file_cache("alias", "/cache/a", 6, "generation-one", expected_sha256=hashlib.sha256(b"abcdef").hexdigest()) == status
             client.mode = "cloud"
             with pytest.raises(AppError):
-                await client.delete_file_cache("alias", "/cache/a", 6, "generation-one")
+                await client.delete_file_cache("alias", "/cache/a", 6, "generation-one", expected_sha256=hashlib.sha256(b"abcdef").hexdigest())
         finally:
             await client.close()
 

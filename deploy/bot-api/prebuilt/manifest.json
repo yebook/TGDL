@@ -1,15 +1,15 @@
 {
-  "archive_sha256": "3323001be3fda511d8d9560d3ef0b6a675bf1403c8453379dccb6bcff67a5f44",
+  "archive_sha256": "c0c35bc2743bcfe63d5e4cca6ea1866e090d9fe7bbd2e34b7b0a7e42def60121",
   "bot_api_revision": "e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1",
   "files": {
-    "bin/telegram-bot-api": "4f0cba70dde0113f2dbb423f4954c8392407087e6cb3d486fcad0baabc75258b",
+    "bin/telegram-bot-api": "469ecff1ffa1985930fa7500700c97037d3b3e39f2a1a83e4c27de74768754a1",
     "licenses/LICENSE_1_0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
     "licenses/tdlib/LICENSE_1_0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
-    "share/tgdl-native.json": "af86d077614f43df2c6c6f76f6380fc7ad3a741a7111a0786b53633a7b1b04cd",
+    "share/tgdl-native.json": "10135a8997ead87489293ff60c6b949fb99b8dcaaf67c7867208cabf86315ed8",
     "share/tgdl-source.json": "b2a1eb9807e1f450ad8b0dba3ec556dbc25883651a97f770d79cb2b1eaec20f2"
   },
   "format": 1,
-  "native_input_sha256": "48e9103785b93db02f4f6098bf4437453a911897655a164cfb09e68d739a7bb4",
+  "native_input_sha256": "2a4475c6e1e9150b6c19c89e460f9542c6a7c32586e2dbd11af5a9ef13025464",
   "platform": "linux/amd64",
   "tdlib_revision": "bc9c263e2bfee06aaab41e82db51a103376030bc"
 }

@@ -1,0 +1,383 @@
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -8697,7 +8697,8 @@
+   }
+   // No new media readers, uploads or generators during destructive GC. Only these
+   // existing memory-only projections and update reads may enter the command queue.
+-  if (tgd_cache_storage_.mutation_busy() && query->method() != "tgdgetfileprogress" &&
++  if ((tgd_cache_storage_.mutation_busy() || tgd_cache_gate_.busy()) && query->method() != "tgdgetfileprogress" &&
++      query->method() != "tgddeletefilecache" &&
+       query->method() != "getme" && query->method() != "getupdates" &&
+       query->method() != "getwebhookinfo") {
+     if (query->method() == "getfile") {
+@@ -9438,6 +9439,11 @@
+ 
+   if (tgd_cache_storage_.mutation_busy() && f->get_id() != td_api::getStorageStatistics::ID &&
+       f->get_id() != td_api::optimizeStorage::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
++    return handler->on_result(make_object<td_api::error>(400, "TGD_CACHE_CLEANUP_BUSY"));
++  }
++  if (tgd_cache_gate_.busy() && f->get_id() != td_api::getRemoteFile::ID &&
++      f->get_id() != td_api::deleteFile::ID && f->get_id() != td_api::tgdRecoverFileCache::ID &&
++      f->get_id() != td_api::tgdCancelDownloadFile::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
+     return handler->on_result(make_object<td_api::error>(400, "TGD_CACHE_CLEANUP_BUSY"));
+   }
+   do_send_request(std::move(f), std::move(handler));
+@@ -17233,11 +17239,14 @@
+   auto alias = query->arg("file_id");
+   auto path = query->arg("expected_path");
+   auto size = query->arg("expected_size");
++  auto sha256 = query->arg("expected_sha256");
++  bool valid_sha256 = sha256.size() == 64;
++  for (auto c : sha256) valid_sha256 = valid_sha256 && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+   auto expected_generation = query->arg("generation");
+   auto parsed_size = td::to_integer_safe<int64>(size);
+   if (alias.empty() || alias.size() > 4096 || path.empty() || path.size() > 4096 || path[0] != '/' ||
+       path.find('\0') != td::Slice::npos || size.empty() || size.size() > 20 ||
+-      parsed_size.is_error() || parsed_size.ok() < 0 || !query->files().empty() ||
++      parsed_size.is_error() || parsed_size.ok() < 0 || !valid_sha256 || !query->files().empty() ||
+       expected_generation.empty() || expected_generation.size() > 128) {
+     return fail_query(400, "Bad Request: invalid cache cleanup request", std::move(query));
+   }
+@@ -17249,7 +17258,7 @@
+       td::ends_with(path, "/..") || td::ends_with(path, "/.")) {
+     return fail_query(400, "Bad Request: invalid cache path", std::move(query));
+   }
+-  if (tgd_cache_storage_.busy() || tgd_acquisitions_.busy() || !tgd_cache_gate_.begin_resolution()) {
++  if (tgd_cache_storage_.busy() || tgd_cache_native_busy() || !tgd_cache_gate_.begin_resolution()) {
+     return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
+   }
+   // Block new getFile callbacks even while the offline alias resolution is pending.
+@@ -17270,7 +17279,16 @@
+   }
+   if (file->local_->path_.empty()) {
+     if (!cache_path_absent(path.str())) {
+-      return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
++      // Keep a GLOBAL resolution fence while the slow hash worker and TDLib
++      // registration/deletion run. HTTP disconnection never releases this fence.
++      CHECK(tgd_cache_gate_.begin_resolution());
++      auto id = file->id_;
++      auto recovery = make_object<td_api::tgdRecoverFileCache>(id, path.str(),
++                       td::to_integer_safe<int64>(query->arg("expected_size")).ok(),
++                       query->arg("expected_sha256").str());
++      send_request(std::move(recovery),
++                   td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), 0));
++      return;
+     }
+     TgdCacheReply reply;
+     reply.generation = query->arg("generation").str();
+@@ -17290,7 +17308,21 @@
+ 
+ void Client::tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result) {
+   // The gate belongs to the TD request, not the HTTP connection lifetime.
+-  tgd_cache_gate_.completed(file_id);
++  if (file_id == 0) {
++    tgd_cache_gate_.resolved();
++    if (result->get_id() == td_api::error::ID) {
++      auto error = move_object_as<td_api::error>(result);
++      if (error->message_ == "TGD_CACHE_RECOVERY_BUSY")
++        return fail_query(409, "Conflict: cache recovery busy", std::move(query));
++      if (error->message_ == "TGD_CACHE_RECOVERY_IDENTITY")
++        return fail_query(409, "Conflict: cache recovery identity changed", std::move(query));
++      if (error->message_ == "TGD_CACHE_RECOVERY_CONTENT")
++        return fail_query(409, "Conflict: cache recovery content mismatch", std::move(query));
++      return fail_query(500, "Internal Server Error: cache recovery unavailable", std::move(query));
++    }
++  } else {
++    tgd_cache_gate_.completed(file_id);
++  }
+   if (result->get_id() != td_api::ok::ID || !cache_path_absent(query->arg("expected_path").str())) {
+     return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
+   }
+--- a/td/td/generate/scheme/td_api.tl
++++ b/td/td/generate/scheme/td_api.tl
+@@ -13994,6 +13994,9 @@
+ //-file_id Identifier of the file
+ tgdCancelDownloadFile file_id:int32 = File;
+ 
++//-TGDL private offline recovery of an exact verified successful-publication cache file
++tgdRecoverFileCache file_id:int32 expected_path:string expected_size:int53 expected_sha256:string = Ok;
++
+ //@description Returns suggested name for saving a file in a given directory @file_id Identifier of the file @directory Directory in which the file is expected to be saved
+ getSuggestedFileName file_id:int32 directory:string = Text;
+ 
+--- a/td/td/telegram/Requests.cpp
++++ b/td/td/telegram/Requests.cpp
+@@ -6466,6 +6466,12 @@
+                td_api::make_object<td_api::fileDownloadedPrefixSize>(file_view.downloaded_prefix(request.offset_)));
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::tgdRecoverFileCache &request) {
++  CREATE_OK_REQUEST_PROMISE();
++  td_->file_manager_->tgd_recover_file_cache(FileId(request.file_id_, 0), request.expected_path_,
++                                           request.expected_size_, request.expected_sha256_, std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::tgdCancelDownloadFile &request) {
+   CREATE_REQUEST_PROMISE();
+   td_->file_manager_->cancel_download_and_wait(FileId(request.file_id_, 0), std::move(promise));
+--- a/td/td/telegram/Requests.h
++++ b/td/td/telegram/Requests.h
+@@ -1266,6 +1266,8 @@
+ 
+   void on_request(uint64 id, const td_api::tgdCancelDownloadFile &request);
+ 
++  void on_request(uint64 id, const td_api::tgdRecoverFileCache &request);
++
+   void on_request(uint64 id, const td_api::getSuggestedFileName &request);
+ 
+   void on_request(uint64 id, const td_api::preliminaryUploadFile &request);
+--- a/td/td/telegram/files/FileManager.h
++++ b/td/td/telegram/files/FileManager.h
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #pragma once
++#include "td/telegram/files/CacheRecovery.h"
+ 
+ #include "td/telegram/DialogId.h"
+ #include "td/telegram/files/FileDbId.h"
+@@ -560,7 +561,13 @@
+ 
+   void read_file_part(FileId file_id, int64 offset, int64 count, int left_tries, Promise<string> promise);
+ 
++  void delete_file_with_proof(FileId file_id, Promise<Unit> promise, const char *source,
++                   std::shared_ptr<TgdCacheProof> proof);
+   void delete_file(FileId file_id, Promise<Unit> promise, const char *source);
++  void tgd_recover_file_cache(FileId file_id, string path, int64 size, string sha256, Promise<Unit> promise);
++  void tgd_cache_verified(FileId alias, string path, int64 size, FileType type,
++                          Result<std::shared_ptr<TgdCacheProof>> result, Promise<Unit> promise);
++  bool tgd_cache_node_idle(FileNodePtr node) const;
+ 
+   void external_file_generate_write_part(int64 generation_id, int64 offset, string data, Promise<> promise);
+   void external_file_generate_progress(int64 generation_id, int64 expected_size, int64 local_prefix_size,
+--- a/td/td/telegram/files/FileManager.cpp
++++ b/td/td/telegram/files/FileManager.cpp
+@@ -2916,7 +2916,112 @@
+                std::move(read_file_part_promise));
+ }
+ 
++bool FileManager::tgd_cache_node_idle(FileNodePtr node) const {
++  if (!node || node->generate_ || node->generate_id_ || node->upload_id_ || node->download_id_ ||
++      node->download_priority_ || node->upload_priority_ || node->generate_priority_ ||
++      node->is_download_started_ || tgd_has_download_worker(node, true)) return false;
++  for (auto id : node->file_ids_) {
++    if (file_download_requests_.count(id) || file_upload_requests_.count(id) ||
++        pending_user_file_downloads_.count(id)) return false;
++  }
++  return true;
++}
++
++void FileManager::tgd_recover_file_cache(FileId alias, string path, int64 size, string sha256, Promise<Unit> promise) {
++  TRY_STATUS_PROMISE(promise, G()->close_status());
++  auto node = get_sync_file_node(alias);
++  if (!node || !tgd_cache_node_idle(node)) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  FileView view(node);
++  // Derive the media directory from the offline remote ID, never from the path.
++  if (node->local_.type() != LocalFileLocation::Type::Empty || !view.has_full_remote_location() ||
++      size <= 0 || sha256.size() != 64) return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  for (auto c : sha256) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto type = view.get_type();
++  if (type == FileType::None || type == FileType::Size)
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto kind = get_file_type_class(type);
++  if (kind == FileTypeClass::Temp || kind == FileTypeClass::Encrypted || kind == FileTypeClass::Secure ||
++      type == FileType::None || type == FileType::Size)
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto done = PromiseCreator::lambda([self = actor_id(this), alias, path, size, type,
++                                      promise = std::move(promise)](Result<std::shared_ptr<TgdCacheProof>> result) mutable {
++    send_closure(self, &FileManager::tgd_cache_verified, alias, std::move(path), size, type,
++                 std::move(result), std::move(promise));
++  });
++  send_closure(file_load_manager_, &FileLoadManager::tgd_verify_cache, get_files_dir(type), path, size,
++               std::move(sha256), std::move(done));
++}
++
++void FileManager::tgd_cache_verified(FileId alias, string path, int64 size, FileType type,
++                                     Result<std::shared_ptr<TgdCacheProof>> result, Promise<Unit> promise) {
++  TRY_STATUS_PROMISE(promise, G()->close_status());
++  TRY_RESULT_PROMISE(promise, proof, std::move(result));
++  auto alias_node = get_sync_file_node(alias);
++  if (!tgd_cache_node_idle(alias_node)) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  if (alias_node->local_.type() != LocalFileLocation::Type::Empty || alias_node->get_type() != type || !proof->matches())
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto info = check_full_local_location({FullLocalFileLocation(type, path, 0), size}, true);
++  if (info.is_error() || info.ok().location_.path_ != path || info.ok().location_.file_type_ != type || !proof->matches())
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto location = info.ok().location_;
++  // All historical entries for this pathname must be idle; stale index entries
++  // survive delete_file's drop_local_location even if its async unlink failed.
++  for (const auto &entry : local_location_to_file_id_) {
++    if (entry.first.path_ == path && entry.second.is_valid()) {
++      auto owner = get_sync_file_node(entry.second);
++      if (!tgd_cache_node_idle(owner)) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++      if (owner->local_.type() != LocalFileLocation::Type::Empty &&
++          (owner->local_.type() != LocalFileLocation::Type::Full || owner->local_.full() != location))
++        return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++    }
++  }
++  FileId recovery_id;
++  // This continuation is synchronous on FileManager. Undo only the exact full
++  // location introduced here if any later proof/registration check rejects it.
++  // Otherwise a restored remote alias could bypass content proof on its retry.
++  auto reject_registration = [&](const char *reason) {
++    if (recovery_id.is_valid()) {
++      auto transient = get_file_node(recovery_id);
++      if (transient && transient->local_.type() == LocalFileLocation::Type::Full &&
++          transient->local_.full() == location) {
++        transient->drop_local_location();
++        try_flush_node(transient, "tgd_cache_recovery_rollback");
++      }
++    }
++    promise.set_error(409, string(reason));
++  };
++  auto found = local_location_to_file_id_.find(location);
++  const bool had_registration = found != local_location_to_file_id_.end() && found->second.is_valid();
++  if (found != local_location_to_file_id_.end() && found->second.is_valid()) {
++    auto stale = get_sync_file_node(found->second);
++    if (stale->local_.type() == LocalFileLocation::Type::Empty) {
++      // Restore only this exact idle mapping. Do not allocate a new FileId on
++      // every failed unlink and never merge a local-only registration into alias.
++      if (stale->size_ != size) return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++      recovery_id = found->second;
++      stale->set_local_location(LocalFileLocation(location), -1, -1);
++      try_flush_node(stale, "tgd_cache_recovery");
++    }
++  }
++  auto registered = register_local(location, DialogId(), size, false, true);
++  if (registered.is_error()) return reject_registration("TGD_CACHE_RECOVERY_IDENTITY");
++  auto id = registered.move_as_ok();
++  if (!had_registration) recovery_id = id;
++  if (!proof->matches()) return reject_registration("TGD_CACHE_RECOVERY_IDENTITY");
++  auto local = get_file_view(id);
++  if (!tgd_cache_node_idle(get_sync_file_node(id)) || !local.has_full_local_location() ||
++      *local.get_full_local_location() != location || local.size() != size || !local.can_delete())
++    return reject_registration("TGD_CACHE_RECOVERY_IDENTITY");
++  delete_file_with_proof(id, std::move(promise), "tgd_cache_recovery", std::move(proof));
++}
++
+ void FileManager::delete_file(FileId file_id, Promise<Unit> promise, const char *source) {
++  delete_file_with_proof(file_id, std::move(promise), source, {});
++}
++
++void FileManager::delete_file_with_proof(FileId file_id, Promise<Unit> promise, const char *source,
++                              std::shared_ptr<TgdCacheProof> proof) {
+   LOG(INFO) << "Trying to delete file " << file_id << " from " << source;
+   auto node = get_sync_file_node(file_id);
+   if (!node) {
+@@ -2951,7 +3056,7 @@
+   LOG(INFO) << "Unlink file " << file_id << " at " << path;
+   node->drop_local_location();
+   try_flush_node(node, "delete_file");
+-  send_closure(file_load_manager_, &FileLoadManager::unlink_file, path, std::move(promise));
++  send_closure(file_load_manager_, &FileLoadManager::tgd_unlink_file, path, std::move(promise), std::move(proof));
+ }
+ 
+ int64 FileManager::get_internal_download_id() {
+--- a/td/td/telegram/files/FileLoadManager.h
++++ b/td/td/telegram/files/FileLoadManager.h
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #pragma once
++#include "td/telegram/files/CacheRecovery.h"
+ 
+ #include "td/telegram/files/FileLoaderUtils.h"
+ #include "td/telegram/files/FileLocation.h"
+@@ -24,6 +25,9 @@
+   void read_file_part(string file_path, int64 offset, int64 count, Promise<string> promise);
+ 
+   void unlink_file(string file_path, Promise<Unit> promise);
++  void tgd_unlink_file(string file_path, Promise<Unit> promise, std::shared_ptr<TgdCacheProof> proof);
++  void tgd_verify_cache(string root, string path, int64 size, string sha256,
++                         Promise<std::shared_ptr<TgdCacheProof>> promise);
+ 
+   void check_full_local_location(FullLocalLocationInfo local_info, bool skip_file_size_checks,
+                                  Promise<FullLocalLocationInfo> promise);
+--- a/td/td/telegram/files/FileLoadManager.cpp
++++ b/td/td/telegram/files/FileLoadManager.cpp
+@@ -5,6 +5,9 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/telegram/files/FileLoadManager.h"
++#include <openssl/evp.h>
++#include <array>
++#include <cerrno>
+ 
+ #include "td/utils/filesystem.h"
+ #include "td/utils/port/path.h"
+@@ -19,7 +22,74 @@
+   promise.set_result(read_file_str(file_path, count, offset));
+ }
+ 
++namespace {
++class TgdCacheHash final : public Actor {
++ public:
++  TgdCacheHash(string root, string path, int64 size, string sha256, Promise<std::shared_ptr<TgdCacheProof>> promise)
++      : root_(std::move(root)), path_(std::move(path)), expected_(std::move(sha256)), size_(size), promise_(std::move(promise)) {}
++ private:
++  string root_, path_, expected_;
++  int64 size_, read_ = 0;
++  std::shared_ptr<TgdCacheProof> proof_;
++  Promise<std::shared_ptr<TgdCacheProof>> promise_;
++  EVP_MD_CTX *hash_ = nullptr;
++  std::array<char, 1024 * 1024> buffer_;
++  void fail(const char *message) { promise_.set_error(409, string(message)); stop(); }
++  void start_up() final {
++    proof_ = TgdCacheProof::open(root_, path_, size_);
++    if (!proof_) return fail("TGD_CACHE_RECOVERY_IDENTITY");
++    hash_ = EVP_MD_CTX_new();
++    if (!hash_ || EVP_DigestInit_ex(hash_, EVP_sha256(), nullptr) != 1) return fail("TGD_CACHE_RECOVERY_UNAVAILABLE");
++    yield();
++  }
++  void loop() final {
++    auto count = ::read(proof_->fd, buffer_.data(), buffer_.size());
++    if (count < 0 && errno == EINTR) { yield(); return; }
++    if (count < 0 || read_ + count > size_) return fail("TGD_CACHE_RECOVERY_IDENTITY");
++    if (count) {
++      read_ += count;
++      if (EVP_DigestUpdate(hash_, buffer_.data(), static_cast<std::size_t>(count)) != 1)
++        return fail("TGD_CACHE_RECOVERY_UNAVAILABLE");
++      yield(); // Bounded memory/work per actor turn; never block the Client actor.
++      return;
++    }
++    unsigned char digest[EVP_MAX_MD_SIZE];
++    unsigned int length = 0;
++    if (read_ != size_ || !proof_->matches()) return fail("TGD_CACHE_RECOVERY_IDENTITY");
++    if (EVP_DigestFinal_ex(hash_, digest, &length) != 1 || length != 32)
++      return fail("TGD_CACHE_RECOVERY_UNAVAILABLE");
++    string actual;
++    const char *hex = "0123456789abcdef";
++    for (unsigned int i = 0; i < length; ++i) { actual += hex[digest[i] >> 4]; actual += hex[digest[i] & 15]; }
++    if (actual != expected_) return fail("TGD_CACHE_RECOVERY_CONTENT");
++    promise_.set_value(std::move(proof_));
++    stop();
++  }
++  void tear_down() final { if (hash_) EVP_MD_CTX_free(hash_); }
++};
++}
++
++void FileLoadManager::tgd_verify_cache(string root, string path, int64 size, string sha256,
++                                        Promise<std::shared_ptr<TgdCacheProof>> promise) {
++  create_actor<TgdCacheHash>("TgdCacheHash", std::move(root), std::move(path), size,
++                              std::move(sha256), std::move(promise)).release();
++}
++
+ void FileLoadManager::unlink_file(string file_path, Promise<Unit> promise) {
++  tgd_unlink_file(std::move(file_path), std::move(promise), {});
++}
++
++void FileLoadManager::tgd_unlink_file(string file_path, Promise<Unit> promise, std::shared_ptr<TgdCacheProof> proof) {
++  if (proof && (proof->path != file_path || !proof->matches()))
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  if (proof) {
++    // TDLib still owns this deletion. Use the retained verified media-directory
++    // descriptor so an ancestor rename cannot redirect the final mutation.
++    if (::unlinkat(proof->parent, proof->name.c_str(), 0) != 0)
++      return promise.set_error(500, "TGD_CACHE_RECOVERY_UNAVAILABLE");
++    promise.set_value(Unit());
++    return;
++  }
+   unlink(file_path).ignore();
+   promise.set_value(Unit());
+ }
