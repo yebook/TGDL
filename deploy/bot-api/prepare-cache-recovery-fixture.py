@@ -16,6 +16,8 @@ def replace(name: str, old: str, new: str) -> None:
 
 replace('telegram-bot-api/Client.cpp',
         'make_object<td_api::networkTypeOther>()', 'make_object<td_api::networkTypeNone>()')
+replace('telegram-bot-api/Client.cpp', '#include "telegram-bot-api/Client.h"',
+        '#include "telegram-bot-api/Client.h"\n#include "td/telegram/files/FileType.h"')
 replace('telegram-bot-api/Client.cpp', '''    case td_api::authorizationStateWaitPhoneNumber::ID:
       send_request(make_object<td_api::setOption>("online", make_object<td_api::optionValueBoolean>(true)),
                    td::make_unique<TdOnOkCallback>());
@@ -24,13 +26,23 @@ replace('telegram-bot-api/Client.cpp', '''    case td_api::authorizationStateWai
       was_authorized_ = true;
       return loop();''')
 replace('telegram-bot-api/Client.cpp', 'void Client::send(PromisedQueryPtr query) {', '''void Client::send(PromisedQueryPtr query) {
+  if (query->method() == "tgdfixturetypedirectories") {
+    std::unordered_set<td::string> actual;
+    for (int32 i = 0; i < td::MAX_FILE_TYPE; ++i) {
+      actual.insert(td::get_file_type_name(static_cast<td::FileType>(i)).str());
+    }
+    CHECK(actual.size() == cache_media_directories().size());
+    for (const auto &name : cache_media_directories()) CHECK(actual.count(name) == 1);
+    return answer_query(td::JsonTrue(), std::move(query));
+  }
   if (query->method() == "tgdfixturedelayedsend") {
     // Exercise the secondary barrier as if command parsing had already queued
     // a native send before maintenance began. Null defaults never reach TDLib.
     return send_request(make_object<td_api::sendMessage>(),
                         td::make_unique<TdOnOkQueryCallback>(std::move(query)));
   }
-  if (query->method() == "tgdfixtureseed" || query->method() == "tgdfixturelookup") {
+  if (query->method() == "tgdfixtureseed" || query->method() == "tgdfixturelookup" ||
+      query->method() == "tgdfixturewrite") {
     class FixtureCallback final : public TdQueryCallback {
      public:
       FixtureCallback(PromisedQueryPtr query, bool lookup) : query_(std::move(query)), lookup_(lookup) {}
@@ -54,15 +66,24 @@ replace('telegram-bot-api/Client.cpp', 'void Client::send(PromisedQueryPtr query
       return send_request(make_object<td_api::getRemoteFile>(alias, nullptr),
                           td::make_unique<FixtureCallback>(std::move(query), true));
     }
-    auto setup = "recovery-seed|" + query->arg("serial").str() + "|" + query->arg("path").str();
+    auto setup = query->method() == "tgdfixturewrite" ? "directory-write" :
+                 "recovery-seed|" + query->arg("serial").str() + "|" + query->arg("path").str();
     return send_request(make_object<td_api::testCallString>(setup),
                         td::make_unique<FixtureCallback>(std::move(query), false));
   }''')
 
 replace('td/td/telegram/Requests.cpp', '#include "td/telegram/Requests.h"',
-        '#include "td/telegram/Requests.h"\n#include "td/telegram/files/FileLocation.hpp"')
+        '#include "td/telegram/Requests.h"\n#include "td/telegram/files/FileLocation.hpp"\n'
+        '#include "td/telegram/files/FileLoaderUtils.h"')
 replace('td/td/telegram/Requests.cpp',
         'void Requests::on_request(uint64 id, td_api::testCallString &request) {', '''void Requests::on_request(uint64 id, td_api::testCallString &request) {
+  if (request.x_ == "directory-write") {
+    auto saved = save_file_bytes(FileType::Video, BufferSlice("native write after empty directory pruning"),
+                                "after-pruning.mp4");
+    CHECK(saved.is_ok());
+    send_closure(td_actor_, &Td::send_result, id, td_api::make_object<td_api::testString>(saved.ok().path_));
+    return;
+  }
   if (begins_with(request.x_, "recovery-seed|")) {
     auto rest = request.x_.substr(14);
     auto split = rest.find('|');
@@ -84,7 +105,8 @@ anchor = '    case td_api::getStorageStatistics::ID:'
 start = source.index('bool Td::is_preauthentication_request(')
 end = source.index('\n}', start)
 fragment = source[start:end]
-for method in ('getRemoteFile', 'getFile', 'deleteFile', 'tgdRecoverFileCache', 'tgdCancelDownloadFile'):
+for method in ('getRemoteFile', 'getFile', 'deleteFile', 'tgdRecoverFileCache', 'tgdCancelDownloadFile',
+               'optimizeStorage'):
     case = f'    case td_api::{method}::ID:'
     if case not in fragment:
         fragment = fragment.replace(anchor, case + '\n' + anchor)
@@ -109,6 +131,14 @@ replace('td/td/telegram/files/FileLoadManager.cpp',
     promise.set_value(Unit());
     return;
   }''')
+replace('td/td/telegram/files/FileLoadManager.cpp',
+        '  unlink(file_path).ignore();\n  promise.set_value(Unit());', '''  unlink(file_path).ignore();
+  if (std::ifstream("/tmp/tgd-directory-result.hold").good()) {
+    std::ofstream("/tmp/tgd-directory-result.entered") << "unlinked";
+    for (int i = 0; i < 1000 && std::ifstream("/tmp/tgd-directory-result.hold").good(); ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  promise.set_value(Unit());''')
 replace('td/td/telegram/files/FileLoadManager.cpp',
         '  if (proof && (proof->path != file_path || !proof->matches()))', '''  if (proof && std::ifstream("/tmp/tgd-recovery-unlink.hold").good()) {
     std::ofstream("/tmp/tgd-recovery-unlink.entered") << "registered-and-dropped";

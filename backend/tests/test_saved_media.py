@@ -20,7 +20,7 @@ def saved(client: TestClient, path: str = "day/video.mp4", *, alias: bool = Fals
     storage = state.storage.get("default")
     storage.initialize()
     final = storage.root / path
-    final.parent.mkdir(exist_ok=True)
+    final.parent.mkdir(parents=True, exist_ok=True)
     final.write_bytes(b"abcdef")
     with state.db.transaction() as session:
         request = MediaRequest(bot_id=7, chat_id=42, user_id=42, status="succeeded", collect_until=0)

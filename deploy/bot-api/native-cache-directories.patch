@@ -1,0 +1,130 @@
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -6,6 +6,7 @@
+ //
+ #include "telegram-bot-api/Client.h"
+ #include "telegram-bot-api/CacheCleanup.h"
++#include "telegram-bot-api/CacheDirectories.h"
+ 
+ #include "telegram-bot-api/ClientParameters.h"
+ 
+@@ -8396,25 +8397,29 @@
+ 
+ class Client::TdOnCacheLookupCallback final : public TdQueryCallback {
+  public:
+-  TdOnCacheLookupCallback(Client *client, PromisedQueryPtr query) : client_(client), query_(std::move(query)) {}
++  TdOnCacheLookupCallback(Client *client, PromisedQueryPtr query, std::shared_ptr<CacheDirectoryChain> directories)
++      : client_(client), query_(std::move(query)), directories_(std::move(directories)) {}
+   void on_result(object_ptr<td_api::Object> result) final {
+-    client_->tgd_cache_resolved(std::move(query_), std::move(result));
++    client_->tgd_cache_resolved(std::move(query_), std::move(result), std::move(directories_));
+   }
+  private:
+   Client *client_;
+   PromisedQueryPtr query_;
++  std::shared_ptr<CacheDirectoryChain> directories_;
+ };
+ 
+ class Client::TdOnCacheDeleteCallback final : public TdQueryCallback {
+  public:
+-  TdOnCacheDeleteCallback(Client *client, PromisedQueryPtr query, int32 file_id)
+-      : client_(client), query_(std::move(query)), file_id_(file_id) {}
++  TdOnCacheDeleteCallback(Client *client, PromisedQueryPtr query, int32 file_id,
++                          std::shared_ptr<CacheDirectoryChain> directories)
++      : client_(client), query_(std::move(query)), directories_(std::move(directories)), file_id_(file_id) {}
+   void on_result(object_ptr<td_api::Object> result) final {
+-    client_->tgd_cache_deleted(std::move(query_), file_id_, std::move(result));
++    client_->tgd_cache_deleted(std::move(query_), file_id_, std::move(result), std::move(directories_));
+   }
+  private:
+   Client *client_;
+   PromisedQueryPtr query_;
++  std::shared_ptr<CacheDirectoryChain> directories_;
+   int32 file_id_;
+ };
+ 
+@@ -17261,12 +17266,14 @@
+   if (tgd_cache_storage_.busy() || tgd_cache_native_busy() || !tgd_cache_gate_.begin_resolution()) {
+     return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
+   }
++  auto directories = prepare_cache_file_directories(files_dir_, path.str());
+   // Block new getFile callbacks even while the offline alias resolution is pending.
+   send_request(make_object<td_api::getRemoteFile>(alias.str(), nullptr),
+-               td::make_unique<TdOnCacheLookupCallback>(this, std::move(query)));
+-}
+-
+-void Client::tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result) {
++               td::make_unique<TdOnCacheLookupCallback>(this, std::move(query), std::move(directories)));
++}
++
++void Client::tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result,
++                                std::shared_ptr<CacheDirectoryChain> directories) {
+   tgd_cache_gate_.resolved();
+   if (result->get_id() != td_api::file::ID || closing_ || logging_out_) {
+     return fail_query(409, "Conflict: cache identity unavailable", std::move(query));
+@@ -17287,7 +17294,7 @@
+                        td::to_integer_safe<int64>(query->arg("expected_size")).ok(),
+                        query->arg("expected_sha256").str());
+       send_request(std::move(recovery),
+-                   td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), 0));
++                   td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), 0, std::move(directories)));
+       return;
+     }
+     TgdCacheReply reply;
+@@ -17303,10 +17310,11 @@
+   auto id = file->id_;
+   tgd_cache_gate_.begin_delete(id);
+   send_request(make_object<td_api::deleteFile>(id),
+-               td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), id));
+-}
+-
+-void Client::tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result) {
++               td::make_unique<TdOnCacheDeleteCallback>(this, std::move(query), id, std::move(directories)));
++}
++
++void Client::tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result,
++                               std::shared_ptr<CacheDirectoryChain> directories) {
+   // The gate belongs to the TD request, not the HTTP connection lifetime.
+   if (file_id == 0) {
+     tgd_cache_gate_.resolved();
+@@ -17328,6 +17336,7 @@
+   }
+   TgdCacheReply reply;
+   reply.generation = query->arg("generation").str();
++  if (directories) directories->prune_parents();
+   reply.status = "deleted";
+   answer_query(reply, std::move(query));
+ }
+@@ -17459,6 +17468,8 @@
+       // and expose uncertainty until this child generation is replaced.
+       return tgd_cache_storage_.failed(true);
+     }
++    // GC has settled; the mutation fence still protects empty-only pruning.
++    prune_cache_empty_directories(files_dir_);
+     // Never report TDLib's removed_stats: unlink failure is only logged there.
+     tgd_cache_storage_.scan = CacheStorage::Scan::Running;
+     send_request(make_object<td_api::getStorageStatistics>(0),
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -39,6 +39,8 @@
+ #include <queue>
+ 
+ namespace telegram_bot_api {
++
++class CacheDirectoryChain;
+ 
+ struct ClientParameters;
+ 
+@@ -1041,8 +1043,10 @@
+   class TdOnCacheLookupCallback;
+   class TdOnCacheDeleteCallback;
+   void tgd_delete_file_cache(PromisedQueryPtr query);
+-  void tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result);
+-  void tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result);
++  void tgd_cache_resolved(PromisedQueryPtr query, object_ptr<td_api::Object> result,
++                          std::shared_ptr<CacheDirectoryChain> directories);
++  void tgd_cache_deleted(PromisedQueryPtr query, int32 file_id, object_ptr<td_api::Object> result,
++                         std::shared_ptr<CacheDirectoryChain> directories);
+   CacheCleanupGate tgd_cache_gate_;
+   CacheStorage tgd_cache_storage_;
+   std::size_t tgd_pending_requests_ = 0;

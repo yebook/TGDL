@@ -179,7 +179,7 @@ docker build -f deploy/bot-api/Dockerfile.verify-cache-recovery -t tgd-native-ca
 docker run --rm --network none --user 1000:1000 --cap-drop ALL --cap-add SYS_PTRACE --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m --security-opt no-new-privileges tgd-native-cache-recovery-acceptance
 ```
 
-夹具离线构造文件关联，使用实际 TDLib 文件管理与删除流程，覆盖进程重启、删除失败后重试、大小及哈希不匹配、路径和文件替换保护，以及 HTTP 超时后继续保持清理互斥。只使用容器内临时文件，保留无关媒体与部分下载；不挂载用户数据、不使用真实账号。后端 `tests/test_cache_cleanup_diagnostics.py` 验证 SHA256 协议和固定安全错误分类。原生补丁变更后还需重新生成并验证预编译包，不能只更新 Python 应用。
+夹具离线构造文件关联，使用实际 TDLib 文件管理与删除流程，覆盖进程重启、删除失败后重试、大小及哈希不匹配、路径和文件替换保护，以及 HTTP 超时后继续保持清理互斥。同一验证入口还运行空目录的真实文件系统测试，并检查缓存清理后 TDLib 按需重建媒体目录、重新写入和占用刷新。只使用容器内临时文件，保留无关媒体与部分下载；不挂载用户数据、不使用真实账号。后端 `tests/test_cache_cleanup_diagnostics.py` 验证 SHA256 协议和固定安全错误分类。原生补丁变更后还需重新生成并验证预编译包，不能只更新 Python 应用。
 
 设置页缓存维护的浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cache.config.ts`。专用配置使用回环端口 `18765` 及固定 `E2E_CACHE_STORAGE=1` 场景；`backend/tools/e2e_app.py` 的 `TGDL_E2E_PORT` 可指定隔离服务端口，默认仍为 `8765`。若平台不能可靠回收测试服务进程，可独立以这两个环境变量启动临时测试服务，并设置 `TGDL_E2E_EXTERNAL_SERVER=1` 运行缓存浏览器配置，检查结束后停止该服务。测试运行真实 REST、缓存服务和任务取消，只替换原生边界，不读取或清理真实用户缓存。
 

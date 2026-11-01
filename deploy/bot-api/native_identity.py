@@ -27,6 +27,7 @@ INPUTS = (
     "deploy/bot-api/native-download-stop.patch",
     "deploy/bot-api/native-cache-live.patch",
     "deploy/bot-api/native-cache-recovery.patch", "deploy/bot-api/CacheRecovery.h",
+    "deploy/bot-api/native-cache-directories.patch", "deploy/bot-api/CacheDirectories.h",
 )
 
 

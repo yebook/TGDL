@@ -47,13 +47,22 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
           "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY",
           "LOCAL_API_START_FAILED"}
+# Fixed getFile descriptions from the pinned Bot API Client. The combined
+# rejection cannot distinguish a bad ID from an interrupted/unavailable file.
+_GETFILE_BAD_REQUEST_REASONS = {
+    "file_id not specified": "getfile_file_id_missing",
+    "invalid file_id": "getfile_file_id_invalid",
+    "file is too big": "getfile_file_too_big",
+    "wrong file_id or the file is temporarily unavailable": "getfile_file_id_or_unavailable",
+}
 REASONS = {"pacing", "cooldown", "backoff", "auth_paused", "protection_unavailable",
            "dns", "proxy_connection", "proxy_auth", "tcp", "tls", "timeout", "network_unknown",
            "cache_invalid_request", "cache_unavailable", "cache_unsupported", "cache_path_invalid",
            "cache_generation_changed", "cache_busy", "cache_identity_unavailable", "cache_identity_changed",
            "cache_removal_unconfirmed", "cache_http_error", "cache_timeout", "cache_network_error",
            "cache_response_invalid", "cache_response_too_large", "cache_recovery_identity_changed",
-           "cache_recovery_content_mismatch", "cache_recovery_unavailable"} | START_FAILURE_MESSAGES.keys()
+           "cache_recovery_content_mismatch", "cache_recovery_unavailable",
+           "getfile_bad_request_unknown"} | set(_GETFILE_BAD_REQUEST_REASONS.values()) | START_FAILURE_MESSAGES.keys()
 STAGES = {"before_send", "dns", "proxy", "connect", "tls", "response", "unknown",
           "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
 ACTIONS = {"switch", "restart", "recover_restart", "cloud_reconnect", "retry", "acknowledge_retry", "bot_retry"}
@@ -153,6 +162,11 @@ class DiagnosticLog:
                     code = {400: "BAD_REQUEST", 401: "UNAUTHORIZED", 403: "FORBIDDEN", 409: "CONFLICT", 429: "RATE_LIMITED"}[status]
                 elif status is not None and status >= 500:
                     code = "SERVER_ERROR"
+                if mode == "local" and method == "getFile" and code == "BAD_REQUEST" and isinstance(error, TelegramBadRequest):
+                    # Accept only exact text, optionally carrying the fixed API
+                    # prefix. Never persist descriptions or parse dynamic suffixes.
+                    reason = _GETFILE_BAD_REQUEST_REASONS.get(
+                        error.message.removeprefix("Bad Request: "), "getfile_bad_request_unknown")
                 # A denied local reservation is not a failed network request. In
                 # particular, normal pacing must not manufacture a later recovery.
                 if code not in {"BOT_REQUEST_PAUSED", "CANCELLED"}:

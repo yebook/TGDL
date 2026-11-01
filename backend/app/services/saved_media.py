@@ -1,4 +1,5 @@
 """Optional final-media removal; durable per-file outcomes, no destructive replay."""
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -17,9 +18,27 @@ from app.db.models import (
 from app.db.session import Database
 from app.services.cache_maintenance import require_no_maintenance
 from app.storage.files import StorageManager
-from app.storage.saved_media import remove_verified
+from app.storage.saved_media import parts, remove_verified
 
 OUTCOMES = ("deleted", "missing", "retained_shared", "retained_unverified", "failed", "uncertain")
+
+
+def _group_directory(session: Session, facts: list[StoredFile], root: str, path: str) -> str | None:
+    """Use the original physical output's frozen group destination, never an alias title."""
+    try:
+        components = parts(path)
+        if len(components) != 3 or date.fromisoformat(components[0]).isoformat() != components[0]:
+            return None
+    except ValueError:
+        return None
+    directory = "/".join(components[:-1])
+    for fact in facts:
+        job = session.get(Job, fact.job_id)
+        request = session.get(MediaRequest, job.request_id) if job else None
+        if (job and request and (job.root_id, job.relative_path) == (root, path)
+                and request.root_id == root and request.kind == "group" and request.destination == directory):
+            return directory
+    return None
 
 
 class SavedMediaService:
@@ -82,6 +101,9 @@ class SavedMediaService:
             else:
                 entry["size_bytes"], entry["sha256"] = expected.pop()
                 entry["stored_ids"] = [row.id for row in facts]
+                directory = _group_directory(session, facts, root, path)
+                if directory is not None:
+                    entry["prune_directory"] = directory
             entries.append(entry)
         session.add(FileDeletionOperation(id=operation_id, request_ids=ids, entries=entries))
 

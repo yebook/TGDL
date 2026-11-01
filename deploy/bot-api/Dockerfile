@@ -3,6 +3,7 @@ ARG TGD_NATIVE_IMAGE=bundled-native
 FROM scratch AS native-inputs
 COPY .dockerignore /.dockerignore
 COPY deploy/bot-api/native-cache-recovery.patch deploy/bot-api/CacheRecovery.h /deploy/bot-api/
+COPY deploy/bot-api/native-cache-directories.patch deploy/bot-api/CacheDirectories.h /deploy/bot-api/
 COPY deploy/bot-api/Dockerfile deploy/bot-api/native_identity.py deploy/bot-api/native-proxy.patch deploy/bot-api/native-progress.patch deploy/bot-api/ProgressCache.h deploy/bot-api/native-cache-cleanup.patch deploy/bot-api/CacheCleanup.h deploy/bot-api/native-http-timeout.patch deploy/bot-api/native-cache-storage.patch deploy/bot-api/CacheStorage.h deploy/bot-api/native-acquisition.patch deploy/bot-api/AcquisitionControl.h deploy/bot-api/native-download-stop.patch deploy/bot-api/native-cache-live.patch /deploy/bot-api/
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS build
@@ -52,6 +53,11 @@ COPY deploy/bot-api/native-cache-recovery.patch /native-cache-recovery.patch
 COPY deploy/bot-api/CacheRecovery.h /src/td/td/telegram/files/CacheRecovery.h
 RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
     cd /src && git apply --check /native-cache-recovery.patch && git apply /native-cache-recovery.patch && \
+    cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
+COPY deploy/bot-api/native-cache-directories.patch /native-cache-directories.patch
+COPY deploy/bot-api/CacheDirectories.h /src/telegram-bot-api/CacheDirectories.h
+RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
+    cd /src && git apply --check /native-cache-directories.patch && git apply /native-cache-directories.patch && \
     cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
 RUN cmp /src/build/telegram-bot-api /out/bin/telegram-bot-api && mkdir -p /out/licenses/tdlib /out/share && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/ && \
     printf '{"bot_api_revision":"%s","tdlib_revision":"%s"}\n' "$(git -C /src rev-parse HEAD)" "$(git -C /src/td rev-parse HEAD)" > /out/share/tgdl-source.json

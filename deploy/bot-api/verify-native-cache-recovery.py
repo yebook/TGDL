@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import runpy
 import stat
 import tempfile
 import time
@@ -108,6 +109,8 @@ def main() -> None:
         service = init(root)
         try:
             bot = next(root.glob('123456*'))
+            directory_checks = runpy.run_path(str(Path(__file__).with_name('verify-native-cache-directories.py')))
+            directory_checks['verify'](service, bot, root, storage, seed, cleanup, success)
             alias, path, content = seed(service, bot, 1)
             success(cleanup(service, alias, path, content))
             assert not path.exists(), 'Ordinary alias cleanup did not remove actual file'

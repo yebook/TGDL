@@ -4,6 +4,8 @@ ARG TGDL_NATIVE_IMAGE=tgd-native:cache-recovery
 ARG TGDL_TOOLS_IMAGE=verification-tools
 FROM ${TGDL_BUILD_IMAGE} AS fixture
 COPY deploy/bot-api/prepare-cache-recovery-fixture.py /verification/
+COPY deploy/bot-api/CacheDirectories.h deploy/bot-api/test-cache-directories.cpp /verification/
+RUN c++ -std=c++17 -Wall -Wextra -Werror -I/verification /verification/test-cache-directories.cpp -o /verification/test-cache-directories
 RUN python3 /verification/prepare-cache-recovery-fixture.py && cmake --build /src/build --parallel 2 && cp /src/build/telegram-bot-api /verification/cache-recovery-fixture
 FROM ${TGDL_NATIVE_IMAGE} AS production
 FROM production AS verification-tools
@@ -13,7 +15,9 @@ FROM ${TGDL_TOOLS_IMAGE}
 USER root
 COPY --from=production /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
 COPY --from=fixture /verification/cache-recovery-fixture /verification/
+COPY --from=fixture /verification/test-cache-directories /verification/
 COPY deploy/bot-api/verify-native-cache-recovery.py /verification/
+COPY deploy/bot-api/verify-native-cache-directories.py /verification/
 COPY deploy/bot-api/verify-native-transport.py deploy/bot-api/verify-native-cache-storage.py /verification/
 USER 1000:1000
 ENTRYPOINT ["python3", "/verification/verify-native-cache-recovery.py"]

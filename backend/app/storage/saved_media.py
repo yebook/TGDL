@@ -28,7 +28,7 @@ def parts(relative: str) -> tuple[str, ...]:
 
 
 @contextmanager
-def parent_fd(storage: Storage, relative: str) -> Iterator[tuple[int, str]]:
+def _parent_chain(storage: Storage, relative: str) -> Iterator[tuple[list[int], tuple[str, ...]]]:
     path = parts(relative)
     expected = root_identity(storage)
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or os.unlink not in os.supports_dir_fd:
@@ -41,10 +41,46 @@ def parent_fd(storage: Storage, relative: str) -> Iterator[tuple[int, str]]:
             raise ValueError("Changed root")
         for part in path[:-1]:
             descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
-        yield descriptors[-1], path[-1]
+        yield descriptors, path
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+@contextmanager
+def parent_fd(storage: Storage, relative: str) -> Iterator[tuple[int, str]]:
+    with _parent_chain(storage, relative) as (descriptors, path):
+        yield descriptors[-1], path[-1]
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _prune_empty_task_directory(storage: Storage, descriptors: list[int], path: tuple[str, ...], directory: Any) -> None:
+    """Remove only the journal's proven group directory; retain date/root directories."""
+    if (not isinstance(directory, str) or len(path) != 3 or directory != "/".join(path[:-1])
+            or os.rmdir not in os.supports_dir_fd):
+        return
+    try:
+        expected = root_identity(storage)
+        root = os.fstat(descriptors[0])
+        if {"device": root.st_dev, "inode": root.st_ino} != expected:
+            return
+        # Each edge must still address the pinned original directory. Directory
+        # timestamps change on unlink, so compare device/inode, not size/time.
+        for index in range(1, len(descriptors)):
+            current = os.stat(path[index - 1], dir_fd=descriptors[index - 1], follow_symlinks=False)
+            if (not stat.S_ISDIR(current.st_mode)
+                    or _directory_identity(current) != _directory_identity(os.fstat(descriptors[index]))):
+                return
+        # rmdir atomically refuses a directory with any remaining/new entry.
+        os.rmdir(path[-2], dir_fd=descriptors[-2])
+        os.fsync(descriptors[-2])
+    except (OSError, AppError, ValueError):
+        # Directory pruning cannot turn proven file deletion into a false failure
+        # or cause a later retry to unlink a replacement file.
+        return
 
 
 def observe(storage: Storage, relative: str, size: int) -> str:
@@ -78,7 +114,8 @@ def fingerprint(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
 def remove_verified(storage: Storage, entry: dict[str, Any]) -> str:
     """Never follow parents/leaf; hash before unlink without any DB write lock."""
     try:
-        with parent_fd(storage, entry["relative_path"]) as (parent, name):
+        with _parent_chain(storage, entry["relative_path"]) as (original, path):
+            parent, name = original[-1], path[-1]
             before = os.stat(name, dir_fd=parent, follow_symlinks=False)
             if (not stat.S_ISREG(before.st_mode) or before.st_size != entry["size_bytes"]
                     or not isinstance(entry.get("sha256"), str)):
@@ -93,7 +130,11 @@ def remove_verified(storage: Storage, entry: dict[str, Any]) -> str:
                     return "retained_unverified"
             root_identity(storage)
             # Rewalk parents to reject rename/replacement during the long hash.
-            with parent_fd(storage, entry["relative_path"]) as (current, current_name):
+            with _parent_chain(storage, entry["relative_path"]) as (descriptors, current_path):
+                current, current_name = descriptors[-1], current_path[-1]
+                if any(_directory_identity(os.fstat(left)) != _directory_identity(os.fstat(right))
+                       for left, right in zip(original, descriptors, strict=True)):
+                    return "retained_unverified"
                 if fingerprint(os.fstat(current)) != fingerprint(os.fstat(parent)):
                     return "retained_unverified"
                 if fingerprint(os.stat(current_name, dir_fd=current, follow_symlinks=False)) != fingerprint(before):
@@ -104,6 +145,7 @@ def remove_verified(storage: Storage, entry: dict[str, Any]) -> str:
                     os.fsync(current)
                 except OSError:
                     return "uncertain"
+                _prune_empty_task_directory(storage, descriptors, current_path, entry.get("prune_directory"))
             return "deleted"
     except FileNotFoundError:
         try:
