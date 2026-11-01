@@ -133,15 +133,21 @@ async def test_protection_arriving_during_pacing_is_rechecked_before_send(client
 
 async def test_admission_timeout_is_bounded_and_does_not_poison_later_requests(client, monkeypatch):
     safety, _ = guard(client)
-    monkeypatch.setattr("app.services.request_safety.PACING_WAIT_SECONDS", 0.03)
-    reserve = safety._reserve
-    # Keep denying a very short slot, exercising the whole queue's wall-clock bound.
-    monkeypatch.setattr(safety, "_reserve", Mock(return_value=(1000.001, False)))
-    results = await asyncio.wait_for(asyncio.gather(
-        *(safety.before(TOKEN) for _ in range(3)), return_exceptions=True), 2)
+
+    async def immediate_reservation(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    with monkeypatch.context() as pacing:
+        pacing.setattr("app.services.request_safety.PACING_WAIT_SECONDS", 0.03)
+        # Keep denying a short slot, exercising the real FIFO/sleep deadline.
+        # Executor starvation would instead test unconfirmed storage admission,
+        # whose conservative classification is covered by the slow-storage test.
+        pacing.setattr(safety, "_reserve", Mock(return_value=(1000.001, False)))
+        pacing.setattr("app.services.request_safety.asyncio.to_thread", immediate_reservation)
+        results = await asyncio.wait_for(asyncio.gather(
+            *(safety.before(TOKEN) for _ in range(3)), return_exceptions=True), 2)
     assert all(isinstance(error, SafetyDeferred) and error.is_pacing for error in results)
     assert not safety.admissions
-    monkeypatch.setattr(safety, "_reserve", reserve)
     await safety.before(TOKEN)
 
 

@@ -16,7 +16,7 @@ const { data, error, loading, refresh } = usePolling(signal => request<TaskDetai
 watch(() => props.id, () => { void refresh() })
 async function action(kind: 'cancel' | 'retry') {
   if (kind === 'cancel') {
-    try { await ElMessageBox.confirm('取消尚未完成的文件下载？已保存的文件会保留。', '取消下载', { confirmButtonText: '确认取消', cancelButtonText: '继续下载', type: 'warning' }) }
+    try { await ElMessageBox.confirm('取消尚未完成的文件下载？已保存的文件会保留，正在下载的文件需确认停止后才会显示已取消。', '取消下载', { confirmButtonText: '确认取消', cancelButtonText: '继续下载', type: 'warning' }) }
     catch { return }
   }
   busy.value = true

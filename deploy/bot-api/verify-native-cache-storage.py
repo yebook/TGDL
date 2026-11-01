@@ -156,6 +156,7 @@ def main() -> None:
             # Native download/upload activity refuses cleanup before accepting its ID.
             for kind in ('download', 'upload'):
                 assert service.call('tgdFixtureActivity', kind=kind)[0] == 200
+                assert refresh(service)['usage'] == {'used_bytes': expected_bytes, 'file_count': 4}
                 code, failure = service.call('tgdClearCacheStorage', generation=GENERATION, operation_id='c' * 32)
                 assert code == 409 and failure['description'] == 'Conflict: TGD_CACHE_STORAGE_BUSY'
                 assert service.snapshot()['operation'] is None

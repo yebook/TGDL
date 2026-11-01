@@ -365,19 +365,21 @@ for (const width of [1440, 390]) {
     let snapshot: DownloadProgress | null = { downloaded_bytes: 0, total_bytes: 1024, total_kind: 'exact', speed_bps: null, active: true, completed: false }
     let state = 'fetching'
     let copyBytes = 900
+    let metadataTotal: number | null = 1024
     await page.route('**/api/v1/tasks/e2e-queued', async route => {
       const response = await route.fetch()
       const detail = await response.json()
-      await route.fulfill({ json: { ...detail, status: state, items: detail.items.map((item: object) => ({
+      await route.fulfill({ json: { ...detail, status: state, can_cancel: ['fetching', 'saving'].includes(state), can_delete: state === 'cancelled', items: detail.items.map((item: object) => ({
         ...item, status: state, phase: state === 'cancelling' ? 'fetching' : state,
-        acquisition_mode: 'local', completed_bytes: copyBytes, total_bytes: 1024, speed_bps: 999,
+        acquisition_mode: 'local', completed_bytes: copyBytes, total_bytes: metadataTotal, speed_bps: 999,
         download_progress: snapshot,
       })) } })
     })
     await login(page)
     await page.getByLabel('搜索名称或任务编号').fill('E2E queued video')
     await page.getByRole('button', { name: '搜索', exact: true }).click()
-    await page.locator('.task-row .task-name').click()
+    await expect(page.locator('.task-row .task-name')).toHaveCount(1)
+    await page.getByRole('button', { name: 'E2E queued video 编号：e2e-queued' }).click()
     const panel = page.locator('.media-progress')
     const bar = panel.getByRole('progressbar')
     await expect(panel).toContainText('已下载 0 B / 1.0 KB')
@@ -386,7 +388,18 @@ for (const width of [1440, 390]) {
     snapshot = { ...snapshot!, downloaded_bytes: 512, speed_bps: 128 }
     await expect(panel).toContainText('已下载 512 B / 1.0 KB · 128 B/s')
     await expect(bar).toHaveAttribute('aria-valuenow', '50')
-    snapshot = { ...snapshot, total_kind: 'estimated' }
+    snapshot = { ...snapshot, downloaded_bytes: 384, total_kind: 'estimated', total_bytes: 2048 }
+    await expect(panel).toContainText('已下载 384 B / 1.0 KB')
+    await expect(bar).toHaveAttribute('aria-valuenow', '38')
+    await expect(panel.locator('.el-progress__text')).toHaveText('38%')
+    snapshot = { ...snapshot, downloaded_bytes: 512, total_kind: 'unknown', total_bytes: null }
+    await expect(panel).toContainText('已下载 512 B / 1.0 KB')
+    await expect(bar).toHaveAttribute('aria-valuenow', '50')
+    await expect(panel.locator('.el-progress__text')).toBeVisible()
+    await page.screenshot({ path: `test-results/local-progress-percent-${width}.png` })
+
+    metadataTotal = null
+    snapshot = { ...snapshot, total_kind: 'estimated', total_bytes: 1024 }
     await expect(panel).toContainText('已下载 512 B / 约 1.0 KB')
     await expect(bar).not.toHaveAttribute('aria-valuenow')
     expect(await panel.locator('.indeterminate-progress span').evaluate(element => getComputedStyle(element).animationName)).toBe('none')
@@ -399,7 +412,8 @@ for (const width of [1440, 390]) {
     await expect(panel).not.toContainText('已下载')
     await expect(bar).not.toHaveAttribute('aria-valuenow')
 
-    snapshot = { downloaded_bytes: 1024, total_bytes: 1024, total_kind: 'exact', speed_bps: null, active: false, completed: true }
+    metadataTotal = 1024
+    snapshot = { downloaded_bytes: 1024, total_bytes: null, total_kind: 'unknown', speed_bps: null, active: false, completed: true }
     await expect(panel).toContainText('媒体已下载，等待开始保存')
     await expect(bar).toHaveAttribute('aria-valuenow', '100')
     state = 'saving'; copyBytes = 0
@@ -408,10 +422,16 @@ for (const width of [1440, 390]) {
     await expect(bar).toHaveAttribute('aria-valuenow', '0')
     state = 'cancelling'
     await expect(panel).toContainText('取消中')
-    await expect(panel).toContainText('正在等待当前下载安全结束')
+    await expect(panel).toContainText('正在停止下载并等待安全确认')
+    await expect(page.locator('.detail-heading')).toContainText('取消中')
+    await expect(page.getByRole('button', { name: '删除任务', exact: true })).toHaveCount(0)
     await expect(bar).not.toHaveAttribute('aria-valuenow')
     await noOverflow(page)
     await page.screenshot({ path: `test-results/local-progress-${width}.png` })
+    state = 'cancelled'
+    await expect(page.locator('.detail-heading')).toContainText('已取消')
+    await expect(panel).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '删除任务', exact: true })).toBeVisible()
   })
 }
 

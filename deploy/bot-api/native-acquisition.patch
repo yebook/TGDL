@@ -1,0 +1,400 @@
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -10,6 +10,7 @@
+ #include "telegram-bot-api/ProgressCache.h"
+ #include "telegram-bot-api/CacheCleanup.h"
+ #include "telegram-bot-api/CacheStorage.h"
++#include "telegram-bot-api/AcquisitionControl.h"
+ #include "telegram-bot-api/Stats.h"
+ #include "telegram-bot-api/WebhookActor.h"
+ 
+@@ -1052,6 +1053,16 @@
+   void tgd_cache_storage_result(int stage, object_ptr<td_api::Object> result);
+   void tgd_read_progress(PromisedQueryPtr query);
+   ProgressCache tgd_progress_;
++  AcquisitionControl tgd_acquisitions_;
++  class TdOnAcquisitionResolvedCallback;
++  class TdOnAcquisitionStoppedCallback;
++  void tgd_acquisition_control(PromisedQueryPtr query);
++  void tgd_acquisition_resolved(td::string id, PromisedQueryPtr query, object_ptr<td_api::Object> result);
++  void tgd_acquisition_settle(const td::string &id, AcquisitionControl::State state);
++  void tgd_acquisition_wait(int32 file_id, const td::string &id, AcquisitionControl::State state);
++  void tgd_acquisition_stop(int32 file_id);
++  void tgd_acquisition_stopped(int32 file_id, td::uint64 epoch, object_ptr<td_api::Object> result);
++  void tgd_acquisition_started(int32 file_id, td::uint64 epoch, object_ptr<td_api::Object> result);
+ 
+   void webhook_verified(td::string cached_ip_address) final;
+   void webhook_success() final;
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -23,6 +23,7 @@
+ #include "td/utils/logging.h"
+ #include "td/utils/misc.h"
+ #include "td/utils/PathView.h"
++#include "td/utils/Random.h"
+ #include "td/utils/port/config.h"
+ #include "td/utils/port/path.h"
+ #include "td/utils/Slice.h"
+@@ -7564,24 +7565,41 @@
+ 
+ class Client::TdOnDownloadFileCallback final : public TdQueryCallback {
+  public:
+-  TdOnDownloadFileCallback(Client *client, int32 file_id) : client_(client), file_id_(file_id) {
+-  }
+-
++  TdOnDownloadFileCallback(Client *client, int32 file_id, td::uint64 epoch)
++      : client_(client), file_id_(file_id), epoch_(epoch) {}
+   void on_result(object_ptr<td_api::Object> result) final {
+-    if (result->get_id() == td_api::error::ID) {
+-      auto error = move_object_as<td_api::error>(result);
+-      return client_->on_file_download(file_id_, td::Status::Error(error->code_, error->message_));
+-    }
+-    CHECK(result->get_id() == td_api::file::ID);
+-    if (client_->is_file_being_downloaded(file_id_)) {  // if download is yet not finished
+-      client_->download_started_file_ids_.insert(file_id_);
+-    }
+-    client_->on_update_file(move_object_as<td_api::file>(result));
+-  }
+-
++    client_->tgd_acquisition_started(file_id_, epoch_, std::move(result));
++  }
+  private:
+   Client *client_;
+   int32 file_id_;
++  td::uint64 epoch_;
++};
++
++class Client::TdOnAcquisitionResolvedCallback final : public TdQueryCallback {
++ public:
++  TdOnAcquisitionResolvedCallback(Client *client, td::string id, PromisedQueryPtr query)
++      : client_(client), id_(std::move(id)), query_(std::move(query)) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_acquisition_resolved(id_, std::move(query_), std::move(result));
++  }
++ private:
++  Client *client_;
++  td::string id_;
++  PromisedQueryPtr query_;
++};
++
++class Client::TdOnAcquisitionStoppedCallback final : public TdQueryCallback {
++ public:
++  TdOnAcquisitionStoppedCallback(Client *client, int32 file_id, td::uint64 epoch)
++      : client_(client), file_id_(file_id), epoch_(epoch) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_acquisition_stopped(file_id_, epoch_, std::move(result));
++  }
++ private:
++  Client *client_;
++  int32 file_id_;
++  td::uint64 epoch_;
+ };
+ 
+ class Client::TdOnCancelDownloadFileCallback final : public TdQueryCallback {
+@@ -8672,6 +8690,8 @@
+ }
+ 
+ void Client::send(PromisedQueryPtr query) {
++  if (query->method() == "tgdpreparefileacquisition" || query->method() == "tgdgetfileacquisition" ||
++      query->method() == "tgdcancelfileacquisition") return tgd_acquisition_control(std::move(query));
+   if (query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage") {
+     return tgd_cache_storage(std::move(query));
+   }
+@@ -17204,6 +17224,7 @@
+ }
+ 
+ void Client::tgd_delete_file_cache(PromisedQueryPtr query) {
++  tgd_acquisitions_.prune(td::Time::now());
+   const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
+   if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
+       !generation || !*generation || td::Slice(generation).size() > 128) {
+@@ -17228,7 +17249,7 @@
+       td::ends_with(path, "/..") || td::ends_with(path, "/.")) {
+     return fail_query(400, "Bad Request: invalid cache path", std::move(query));
+   }
+-  if (tgd_cache_storage_.busy() || !tgd_cache_gate_.begin_resolution()) {
++  if (tgd_cache_storage_.busy() || tgd_acquisitions_.busy() || !tgd_cache_gate_.begin_resolution()) {
+     return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
+   }
+   // Block new getFile callbacks even while the offline alias resolution is pending.
+@@ -17342,7 +17363,7 @@
+ }
+ 
+ bool Client::tgd_cache_native_busy() const {
+-  return tgd_cache_gate_.busy() || tgd_cache_storage_.has_active_files() ||
++  return tgd_cache_gate_.busy() || tgd_acquisitions_.busy() || tgd_cache_storage_.has_active_files() ||
+          tgd_pending_requests_ != 0 || !cmd_queue_.empty() ||
+          !file_download_listeners_.empty() || !download_started_file_ids_.empty() ||
+          !pending_send_message_queries_.empty() || !yet_unsent_messages_.empty() || !yet_unsent_stories_.empty();
+@@ -17354,6 +17375,7 @@
+ }
+ 
+ void Client::tgd_cache_storage(PromisedQueryPtr query) {
++  tgd_acquisitions_.prune(td::Time::now());
+   const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
+   if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
+       !generation || !*generation || td::Slice(generation).size() > 128) {
+@@ -17425,12 +17447,197 @@
+                td::make_unique<TdOnCacheStorageCallback>(this, 2));
+ }
+ 
++namespace {
++struct TgdAcquisitionReply final : td::Jsonable {
++  td::string generation;
++  td::string id;
++  AcquisitionControl::Owner owner;
++  TgdAcquisitionReply(td::string g, td::string i, const AcquisitionControl::Owner &o)
++      : generation(std::move(g)), id(std::move(i)), owner(o) {}
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("generation", generation);
++    o("acquisition_id", id);
++    o("state", AcquisitionControl::name(owner.state));
++    o("settled", td::JsonBool(owner.settled));
++  }
++};
++}
++
++void Client::tgd_acquisition_settle(const td::string &id, AcquisitionControl::State state) {
++  auto *owner = tgd_acquisitions_.get(id);
++  if (!owner) return;
++  owner->state = state;
++  owner->settled = true;
++  owner->touched = td::Time::now();
++}
++
++void Client::tgd_acquisition_control(PromisedQueryPtr query) {
++  const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++  if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ ||
++      !generation || !*generation || td::Slice(generation).size() > 128) {
++    return fail_query(404, "Not Found: acquisition control unavailable", std::move(query));
++  }
++  auto expected = query->arg("generation");
++  if (expected.empty() || expected.size() > 128 || !query->files().empty()) {
++    return fail_query(400, "Bad Request: invalid acquisition request", std::move(query));
++  }
++  if (expected != td::Slice(generation)) {
++    return fail_query(409, "Conflict: acquisition generation changed", std::move(query));
++  }
++  tgd_acquisitions_.prune(td::Time::now());
++  td::string id = query->arg("acquisition_id").str();
++  if (query->method() == "tgdpreparefileacquisition") {
++    auto alias = query->arg("file_id").str();
++    if (alias.empty() || alias.size() > 4096 || query->args().size() != 2) {
++      return fail_query(400, "Bad Request: invalid acquisition request", std::move(query));
++    }
++    if (tgd_cache_storage_.busy() || tgd_cache_gate_.busy()) {
++      return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
++    }
++    // Never reuse an owner ID. Native-minted registration means delayed getFile
++    // cannot create work once an expired/cancelled token has been retired.
++    do {
++      char random[32];
++      td::Random::secure_bytes(td::MutableSlice(random, sizeof(random)));
++      id = td::hex_encode(td::Slice(random, sizeof(random)));
++    } while (tgd_acquisitions_.get(id));
++    if (!tgd_acquisitions_.prepare(id, alias, td::Time::now())) {
++      return fail_query(409, "Conflict: acquisition capacity reached", std::move(query));
++    }
++  } else {
++    if (id.size() != 64 || query->args().size() != 2 ||
++        id.find_first_not_of("0123456789abcdef") != td::string::npos) {
++      return fail_query(400, "Bad Request: invalid acquisition request", std::move(query));
++    }
++    auto *owner = tgd_acquisitions_.get(id);
++    if (!owner) return fail_query(404, "Not Found: acquisition unavailable", std::move(query));
++    if (query->method() == "tgdcancelfileacquisition" && !owner->settled) {
++      if (owner->file_id == 0) {
++        // The still-pending resolver only reads metadata and rechecks this token.
++        tgd_acquisition_settle(id, AcquisitionControl::State::Cancelled);
++      } else {
++        const auto file_id = owner->file_id;
++        owner->state = AcquisitionControl::State::Cancelling;
++        auto it = file_download_listeners_.find(file_id);
++        if (it != file_download_listeners_.end()) {
++          auto &queries = it->second;
++          for (auto q = queries.begin(); q != queries.end();) {
++            if ((*q)->arg("tgd_acquisition_id") == id) {
++              fail_query(400, "Bad Request: TGD_ACQUISITION_CANCELLED", std::move(*q));
++              q = queries.erase(q);
++            } else ++q;
++          }
++          if (queries.empty()) file_download_listeners_.erase(it);
++        }
++        if (is_file_being_downloaded(file_id)) {
++          // Another owned/legacy same-ID listener owns the continuing transfer.
++          tgd_acquisition_settle(id, AcquisitionControl::State::Cancelled);
++        } else {
++          tgd_acquisition_wait(file_id, id, AcquisitionControl::State::Cancelled);
++        }
++      }
++    }
++  }
++  TgdAcquisitionReply reply(expected.str(), id, *tgd_acquisitions_.get(id));
++  answer_query(reply, std::move(query));
++}
++
++void Client::tgd_acquisition_resolved(td::string id, PromisedQueryPtr query, object_ptr<td_api::Object> result) {
++  auto *owner = tgd_acquisitions_.get(id);
++  if (!owner || owner->state != AcquisitionControl::State::Resolving) {
++    return fail_query(400, "Bad Request: TGD_ACQUISITION_CANCELLED", std::move(query));
++  }
++  if (result->get_id() == td_api::error::ID) {
++    tgd_acquisition_settle(id, AcquisitionControl::State::Failed);
++    return fail_query_with_error(std::move(query), move_object_as<td_api::error>(result));
++  }
++  CHECK(result->get_id() == td_api::file::ID);
++  auto file = move_object_as<td_api::file>(result);
++  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file->id_) ||
++      tgd_acquisitions_.blocks(file->id_)) {
++    tgd_acquisition_settle(id, AcquisitionControl::State::Failed);
++    return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
++  }
++  do_get_file(std::move(file), std::move(query));
++}
++
++void Client::tgd_acquisition_wait(int32 file_id, const td::string &id, AcquisitionControl::State state) {
++  auto &file = tgd_acquisitions_.files[file_id];
++  bool found = false;
++  for (auto &waiter : file.waiters) if (waiter.first == id) { waiter.second = state; found = true; }
++  if (!found) file.waiters.emplace_back(id, state);
++  file.stopping = true;  // Exclude new aliases, cleanup and GC immediately.
++  tgd_acquisition_stop(file_id);
++}
++
++void Client::tgd_acquisition_stop(int32 file_id) {
++  auto it = tgd_acquisitions_.files.find(file_id);
++  if (it == tgd_acquisitions_.files.end()) return;
++  auto &file = it->second;
++  // Initial downloadFile may still be checking a partial location asynchronously.
++  // Cancelling before this callback can be a no-op followed by a late new writer.
++  if (!file.stopping || file.starts || file.stop_sent || is_file_being_downloaded(file_id)) return;
++  file.stop_sent = true;
++  send_request(make_object<td_api::tgdCancelDownloadFile>(file_id),
++               td::make_unique<TdOnAcquisitionStoppedCallback>(this, file_id, file.epoch));
++}
++
++void Client::tgd_acquisition_stopped(int32 file_id, td::uint64 epoch, object_ptr<td_api::Object> result) {
++  auto it = tgd_acquisitions_.files.find(file_id);
++  if (it == tgd_acquisitions_.files.end() || it->second.epoch != epoch) return;
++  if (result->get_id() != td_api::file::ID || closing_ || logging_out_) {
++    // Unknown outcome retains gate and nonsettled owners until child replacement.
++    return;
++  }
++  auto file = move_object_as<td_api::file>(result);
++  tgd_cache_storage_.observe_file(file->id_, file->local_->is_downloading_active_, file->remote_->is_uploading_active_);
++  for (const auto &waiter : it->second.waiters) tgd_acquisition_settle(waiter.first, waiter.second);
++  download_started_file_ids_.erase(file_id);
++  tgd_progress_.finish(file_id, td::Time::now(), true);
++  tgd_acquisitions_.files.erase(it);
++}
++
++void Client::tgd_acquisition_started(int32 file_id, td::uint64 epoch, object_ptr<td_api::Object> result) {
++  auto it = tgd_acquisitions_.files.find(file_id);
++  if (it == tgd_acquisitions_.files.end() || it->second.epoch != epoch) return;
++  CHECK(it->second.starts > 0);
++  --it->second.starts;
++  if (result->get_id() == td_api::error::ID) {
++    auto error = move_object_as<td_api::error>(result);
++    on_file_download(file_id, td::Status::Error(error->code_, error->message_));
++  } else {
++    CHECK(result->get_id() == td_api::file::ID);
++    if (is_file_being_downloaded(file_id)) download_started_file_ids_.insert(file_id);
++    on_update_file(move_object_as<td_api::file>(result));
++  }
++  tgd_acquisition_stop(file_id);
++  // Ordinary legacy requests have no owner record; retire their idle start fence.
++  it = tgd_acquisitions_.files.find(file_id);
++  if (it != tgd_acquisitions_.files.end() && !it->second.stopping &&
++      !it->second.starts && !is_file_being_downloaded(file_id)) tgd_acquisitions_.files.erase(it);
++}
++
++
+ td::Status Client::process_get_file_query(PromisedQueryPtr &query) {
+   if (tgd_cache_storage_.busy()) {
+     fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+     return td::Status::OK();
+   }
+   td::string file_id = query->arg("file_id").str();
++  auto owner_id = query->arg("tgd_acquisition_id").str();
++  auto expected = query->arg("tgd_generation");
++  if (query->has_arg("tgd_acquisition_id") || query->has_arg("tgd_generation")) {
++    const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++    if (!parameters_->local_mode_ || !generation || expected != td::Slice(generation) ||
++        !tgd_acquisitions_.claim(owner_id, file_id, td::Time::now())) {
++      fail_query(400, "Bad Request: TGD_ACQUISITION_INVALID", std::move(query));
++      return td::Status::OK();
++    }
++    send_request(make_object<td_api::getRemoteFile>(file_id, nullptr),
++                 td::make_unique<TdOnAcquisitionResolvedCallback>(this, owner_id, std::move(query)));
++    return td::Status::OK();
++  }
+   check_remote_file_id(file_id, std::move(query), [this](object_ptr<td_api::file> file, PromisedQueryPtr query) {
+     do_get_file(std::move(file), std::move(query));
+   });
+@@ -17444,7 +17651,7 @@
+   }
+ 
+   auto file_id = file->id_;
+-  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file_id)) {
++  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file_id) || tgd_acquisitions_.blocks(file_id)) {
+     return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+   }
+   if (parameters_->local_mode_) {
+@@ -17452,9 +17659,18 @@
+                        {file->local_->downloaded_size_, file->size_, file->expected_size_,
+                         file->local_->is_downloading_active_, file->local_->is_downloading_completed_}, td::Time::now());
+   }
++  auto owner_id = query->arg("tgd_acquisition_id").str();
++  if (!owner_id.empty()) {
++    auto *owner = tgd_acquisitions_.get(owner_id);
++    if (!owner || owner->state != AcquisitionControl::State::Resolving) {
++      return fail_query(400, "Bad Request: TGD_ACQUISITION_CANCELLED", std::move(query));
++    }
++    owner->state = AcquisitionControl::State::Downloading;
++    owner->file_id = file_id;
++  }
+   file_download_listeners_[file_id].push_back(std::move(query));
+   send_request(make_object<td_api::downloadFile>(file_id, 1, 0, 0, false),
+-               td::make_unique<TdOnDownloadFileCallback>(this, file_id));
++               td::make_unique<TdOnDownloadFileCallback>(this, file_id, tgd_acquisitions_.start(file_id)));
+ }
+ 
+ bool Client::is_file_being_downloaded(int32 file_id) const {
+@@ -17476,12 +17692,23 @@
+   file_download_listeners_.erase(it);
+   download_started_file_ids_.erase(file_id);
+   for (auto &query : queries) {
++    auto owner_id = query->arg("tgd_acquisition_id").str();
++    if (parameters_->local_mode_) {
++      // Legacy listeners also retain physical cache exclusion through teardown.
++      // An empty owner ID is a file-only fence; it never creates a control token.
++      tgd_acquisition_wait(file_id, owner_id, r_file.is_error() ? AcquisitionControl::State::Failed :
++                                                              AcquisitionControl::State::Completed);
++    }
+     if (r_file.is_error()) {
+       const auto &error = r_file.error();
+       fail_query_with_error(std::move(query), error.code(), error.public_message());
+     } else {
+       answer_query(JsonFile(r_file.ok().get(), this, true), std::move(query));
+     }
++  }
++  auto fence = tgd_acquisitions_.files.find(file_id);
++  if (fence != tgd_acquisitions_.files.end() && !fence->second.stopping && !fence->second.starts) {
++    tgd_acquisitions_.files.erase(fence);
+   }
+ }
+ 
+--- a/telegram-bot-api/ClientManager.cpp
++++ b/telegram-bot-api/ClientManager.cpp
+@@ -90,7 +90,9 @@
+ 
+   auto id_it = token_to_id_.find(token);
+   if ((query->method() == "tgdgetfileprogress" || query->method() == "tgddeletefilecache" ||
+-       query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage")) {
++       query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage" ||
++       query->method() == "tgdpreparefileacquisition" || query->method() == "tgdgetfileacquisition" ||
++       query->method() == "tgdcancelfileacquisition")) {
+     if (!parameters_->local_mode_ || id_it == token_to_id_.end()) {
+       return fail_query(404, "Not Found: progress unavailable", std::move(query));
+     }

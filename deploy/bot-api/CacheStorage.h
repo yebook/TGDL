@@ -28,6 +28,8 @@ class CacheStorage {
   const char *error_code = nullptr;
 
   bool busy() const { return scan == Scan::Running || operation == Operation::Running; }
+  // Read-only scans exclude GC/deletion, never media acquisition or controls.
+  bool mutation_busy() const { return operation == Operation::Running; }
   bool begin_scan() {
     if (busy()) return false;
     scan = Scan::Running;

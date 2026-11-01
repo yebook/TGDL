@@ -19,7 +19,7 @@ from sqlalchemy import delete, select
 from app.bot.client import TelegramClient, cloud_size_check
 from app.core.config import Config
 from app.core.errors import AppError
-from app.core.security import Secrets
+from app.core.security import Secrets, digest
 from app.db.models import (
     Attempt,
     CacheCleanup,
@@ -37,6 +37,7 @@ from app.db.session import Database
 from app.services.cache_maintenance import maintenance_blocked
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress, ProgressOwner
+from app.services.file_acquisition import AcquisitionOwner, AcquisitionStore, uncertain_message
 from app.services.request_safety import RequestSafetyService, SafetyDeferralReason, SafetyDeferred
 from app.services.tasks import project
 from app.storage.files import (
@@ -72,8 +73,9 @@ class DownloadWorker:
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
         self.cleanup_paused = False
-        self.cache_scan_paused = False
         self.secrets = secrets or Secrets(config.data_dir)
+        self.acquisitions = AcquisitionStore(db)
+        self.acquisition_generation: Callable[[], str] = lambda: ""
 
     def progress_job(self, job_id: str) -> tuple[Job, MediaItem] | None:
         with self.db.sessions() as session:
@@ -141,7 +143,7 @@ class DownloadWorker:
 
     def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str]) -> str | None:
         with self.db.transaction() as session:
-            if self.cleanup_paused or self.cache_scan_paused or maintenance_blocked(session):
+            if self.cleanup_paused or maintenance_blocked(session):
                 return None
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
             if safety and RequestSafetyService.blocked(safety.values, time.time()):
@@ -384,8 +386,8 @@ class DownloadWorker:
                     owner = None
                 if owner:
                     observer = asyncio.create_task(self.observe_download(client, file_id, owner))
-            # Never wrap in wait_for/cancel on user cancellation: request holds slot until it actually returns.
-            source = await self.cloud_operation(client.get_file(file_id), job_id) if cloud else await client.get_file(file_id)
+            source = (await self.cloud_operation(client.get_file(file_id), job_id) if cloud
+                      else await self.local_acquisition(client, file_id, job_id))
             if observer:
                 observer.cancel()
                 await asyncio.gather(observer, return_exceptions=True)
@@ -455,7 +457,9 @@ class DownloadWorker:
                            "protection_unavailable": "请求保护状态不可用，任务已暂停，请检查系统诊断"}[reason]
                 await asyncio.to_thread(self.failed, job_id, "BOT_REQUEST_WAITING" if pacing else "BOT_REQUEST_PAUSED", message, True, False, max(1, delay))
                 return
-            uncertain = not cloud and phase == "fetching" and not isinstance(exc, (AppError, TelegramRetryAfter, TelegramBadRequest, TelegramUnauthorizedError))
+            uncertain = not cloud and phase == "fetching" and (
+                isinstance(exc, AppError) and exc.code == "ACQUISITION_UNCERTAIN"
+                or not isinstance(exc, (AppError, TelegramRetryAfter, TelegramBadRequest, TelegramUnauthorizedError)))
             code, message, retry, delay = self.classify(exc)
             await asyncio.to_thread(self.failed, job_id, code, message, retry, uncertain, delay)
         finally:
@@ -465,6 +469,7 @@ class DownloadWorker:
             if owner and self.download_progress:
                 self.download_progress.clear(owner)
             self.progress_times.pop(job_id, None)
+            await owned_thread(self.acquisitions.prune)
             if self.diagnostics:
                 try:
                     await asyncio.to_thread(self.record_result, job_id, deferral)
@@ -503,6 +508,123 @@ class DownloadWorker:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    async def local_acquisition(self, client: TelegramClient, file_id: str, job_id: str) -> str:
+        """Only a settled, attempt-bound native control result can stop the HTTP owner early."""
+        if await asyncio.to_thread(self.cancelled, job_id):
+            raise AppError("CANCELLED", "下载已取消")
+        generation = await asyncio.to_thread(self.acquisition_generation)
+        if not hasattr(client, "file_acquisition") or (not generation and not self.config.managed_local_api):
+            # Legacy/external APIs cannot prove cancellation. Retain old ownership semantics.
+            return await client.get_file(file_id)
+        if not generation:
+            raise AppError("ACQUISITION_CONTROL_UNAVAILABLE", "获取控制暂不可用，请检查本地 API")
+        try:
+            prepared = await client.file_acquisition(generation, file_id=file_id)
+        except AppError as exc:
+            if exc.code == "ACQUISITION_CONTROL_UNSUPPORTED" and not self.config.managed_local_api:
+                return await client.get_file(file_id)
+            raise
+        with self.db.sessions() as session:
+            job = session.get(Job, job_id)
+            item = session.get(MediaItem, job.item_id) if job else None
+            assert job and item and job.boot_id
+            owner = AcquisitionOwner(job.id, job.attempt_sequence, job.boot_id, item.bot_id,
+                                     digest(client.bot.token), self.secrets.encrypt(client.bot.token),
+                                     generation, prepared["acquisition_id"])
+        if not await owned_thread(self.acquisitions.persist, owner):
+            # No getFile was issued; this idle native registration can only expire.
+            raise AppError("CANCELLED", "下载已取消")
+        task: asyncio.Task[str] | None = None
+        try:
+            if not await asyncio.to_thread(self.cancelled, job_id):
+                task = asyncio.create_task(client.get_file(file_id, generation=generation,
+                                                          acquisition_id=owner.acquisition_id))
+            last_control = 0.0
+            while True:
+                cancelled = await asyncio.to_thread(self.cancelled, job_id)
+                if task and task.done() and not cancelled:
+                    try:
+                        result = task.result()
+                    except Exception as exc:
+                        if isinstance(exc, SafetyDeferred) and not exc.sent:
+                            # Joined admission never sent getFile; no deferred callback can start it.
+                            try:
+                                await client.file_acquisition(generation, acquisition_id=owner.acquisition_id,
+                                                              cancel=True)
+                            except AppError:
+                                pass  # An abandoned idle preparation can never start itself.
+                            raise
+                        rejected = (isinstance(exc, (TelegramBadRequest, TelegramRetryAfter,
+                                                     TelegramUnauthorizedError, SafetyDeferred))
+                                    or isinstance(exc, AppError) and exc.code in {
+                                        "CACHE_CLEANUP_BUSY", "ACQUISITION_REJECTED"})
+                        try:
+                            state = (await self.stop_acquisition(client, owner)
+                                     if rejected
+                                     else await client.file_acquisition(generation, acquisition_id=owner.acquisition_id))
+                        except AppError:
+                            state = {}
+                        if not state.get("settled"):
+                            if state and isinstance(exc, (AppError, TelegramBadRequest, TelegramRetryAfter,
+                                                          TelegramUnauthorizedError, SafetyDeferred)):
+                                # A definite native response may precede its stop barrier.
+                                await asyncio.sleep(0.5)
+                                continue
+                            raise AppError("ACQUISITION_UNCERTAIN", "获取状态待确认，请取消任务或重启本地 API") from exc
+                        if state["state"] == "cancelled" and not rejected:
+                            raise AppError("CANCELLED", "下载已取消") from exc
+                        raise
+                    try:
+                        state = await client.file_acquisition(generation, acquisition_id=owner.acquisition_id)
+                    except AppError:
+                        state = {}
+                    if state.get("settled"):
+                        if state["state"] != "completed":
+                            raise AppError("CANCELLED" if state["state"] == "cancelled" else "TELEGRAM_REJECTED",
+                                           "下载已取消" if state["state"] == "cancelled" else "本地 API 文件获取失败")
+                        return result
+                    # getFile may return before its native downloader actor teardown.
+                    # Keep the slot and permit cancellation while that barrier settles.
+                    await asyncio.sleep(0.5)
+                    continue
+                if cancelled and time.monotonic() - last_control >= 0.5:
+                    last_control = time.monotonic()
+                    try:
+                        state = await self.stop_acquisition(client, owner)
+                        if state["settled"]:
+                            if task and not task.done():
+                                task.cancel()
+                            if task:
+                                await asyncio.gather(task, return_exceptions=True)
+                            raise AppError("CANCELLED", "下载已取消")
+                    except AppError as exc:
+                        if exc.code == "CANCELLED":
+                            raise
+                        # Hand the durable owner to reconciliation. Keeping this HTTP
+                        # coroutine alive would prevent an explicit child restart from
+                        # draining, even when both private control routes are unavailable.
+                        raise AppError("ACQUISITION_UNCERTAIN", "取消结果待确认，请恢复连接或重启本地 API") from exc
+                if task and not task.done():
+                    await asyncio.wait({task}, timeout=0.2)
+                else:
+                    await asyncio.sleep(0.2)
+        finally:
+            if task and not task.done():
+                task.cancel()
+            if task:
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def stop_acquisition(self, client: TelegramClient, owner: AcquisitionOwner) -> dict[str, Any]:
+        """A lost stop reply cannot prevent an independent authoritative status check."""
+        try:
+            state = await client.file_acquisition(owner.generation, acquisition_id=owner.acquisition_id,
+                                                  cancel=True)
+            if state["settled"]:
+                return state
+        except AppError:
+            pass
+        return await client.file_acquisition(owner.generation, acquisition_id=owner.acquisition_id)
 
     async def cloud_copy(self, client: TelegramClient, source: str, temporary: Path,
                          expected: int | None, job_id: str) -> tuple[int, str]:
@@ -550,10 +672,15 @@ class DownloadWorker:
             return "STORAGE_ERROR", "文件保存失败，请检查存储和原子发布能力", False, 0
         return "NETWORK_ERROR", "Telegram 连接异常，请检查网络或代理", True, 0
 
-    def failed(self, job_id: str, code: str, message: str, retry: bool, uncertain: bool = False, delay: float = 0) -> None:
+    def failed(self, job_id: str, code: str, message: str, retry: bool, uncertain: bool = False,
+               delay: float = 0, owner: AcquisitionOwner | None = None) -> None:
         with self.db.transaction() as session:
             job = session.get(Job, job_id)
             if not job or job.state in {"succeeded", "already_exists"}:
+                return
+            if owner and (job.id != owner.job_id or job.attempt_sequence != owner.attempt
+                          or job.boot_id != owner.boot_id or job.phase != "fetching"
+                          or job.state not in {"fetching", "cancelling", "recovery_blocked"}):
                 return
             request = session.get(MediaRequest, job.request_id)
             if request and request.deleted_at is not None:
@@ -580,10 +707,11 @@ class DownloadWorker:
                 attempt.finished_at, attempt.error_code = time.time(), code
             if uncertain:
                 job.state, job.phase = "recovery_blocked", "fetching"
-                job.error_message = "本地 Bot API 可能仍在获取文件；请重启该服务以安全恢复并发槽"
+                job.error_message = uncertain_message(session, job)
             elif job.cancel_requested or code == "CANCELLED":
                 job.state, job.phase, job.finished_at = "cancelled", "cancelled", time.time()
-            elif code in {"BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING", "CACHE_CLEANUP_BUSY"}:
+            elif code in {"BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING", "CACHE_CLEANUP_BUSY",
+                          "ACQUISITION_CONTROL_UNAVAILABLE", "ACQUISITION_CONTROL_BUSY"}:
                 job.state, job.phase = "retry_wait", "retry_wait"
                 job.next_run_at = time.time() + max(2, delay)
             elif retry and job.auto_retries < job.max_auto_retries:
@@ -648,7 +776,7 @@ class DownloadWorker:
                     assert job
                     if job.phase == "fetching" and not api_restarted and not cloud_attempt:
                         job.state = "recovery_blocked"
-                        job.error_code, job.error_message = "ACQUISITION_UNCERTAIN", "请重启本地 Bot API 以安全恢复获取槽"
+                        job.error_code, job.error_message = "ACQUISITION_UNCERTAIN", uncertain_message(session, job)
                     else:
                         job.state = "cancelled" if job.cancel_requested else "queued"
                         job.phase, job.next_run_at = job.state, time.time()

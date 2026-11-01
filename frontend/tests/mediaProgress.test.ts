@@ -40,16 +40,38 @@ describe('measured transfer progress and honest unknown download progress', () =
     })
     expect(mediaProgress(transfer)).toMatchObject({ measured: false, completedBytes: null, percentage: undefined })
   })
-  it('marks estimated totals and never converts them into exact percentages', () => {
-    expect(mediaProgress({ ...transfer, download_progress: { ...snapshot, total_kind: 'estimated', downloaded_bytes: 2048 } })).toMatchObject({
+  it('uses the known Telegram size when native totals are estimated or unknown', () => {
+    for (const total_kind of ['estimated', 'unknown'] as const) {
+      expect(mediaProgress({ ...transfer, completed_bytes: 999, download_progress: {
+        ...snapshot, total_kind, total_bytes: total_kind === 'estimated' ? 2048 : null,
+      } })).toMatchObject({
+        measured: true, percentage: 25, completedBytes: 256, totalBytes: 1024, estimated: false,
+      })
+    }
+  })
+  it('marks estimated-only totals and never converts them into exact percentages', () => {
+    expect(mediaProgress({ ...transfer, total_bytes: null, download_progress: { ...snapshot, total_kind: 'estimated', downloaded_bytes: 2048 } })).toMatchObject({
       measured: true, percentage: undefined, completedBytes: 2048, totalBytes: 1024, estimated: true,
     })
   })
   it('shows real bytes and optional speed with unknown totals', () => {
-    expect(mediaProgress({ ...transfer, download_progress: { ...snapshot, total_kind: 'unknown', total_bytes: null, speed_bps: null } })).toMatchObject({
-      measured: true, percentage: undefined, totalBytes: null, completedBytes: 256, speedBps: null, estimated: false,
+    for (const total_bytes of [null, 0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(mediaProgress({ ...transfer, total_bytes, download_progress: { ...snapshot, total_kind: 'unknown', total_bytes: null, speed_bps: null } })).toMatchObject({
+        measured: true, percentage: undefined, totalBytes: null, completedBytes: 256, speedBps: null, estimated: false,
+      })
+    }
+    expect(mediaProgress({ ...transfer, total_bytes: null, download_progress: { ...snapshot, total_bytes: 0 } }).percentage).toBeUndefined()
+  })
+  it('prefers exact native size and refuses percentages for contradictory counters', () => {
+    expect(mediaProgress({ ...transfer, total_bytes: 512, download_progress: snapshot })).toMatchObject({ percentage: 25, totalBytes: 1024 })
+    for (const total_kind of ['exact', 'estimated', 'unknown'] as const) {
+      expect(mediaProgress({ ...transfer, download_progress: {
+        ...snapshot, downloaded_bytes: 2048, total_kind, total_bytes: total_kind === 'unknown' ? null : 1024,
+      } })).toMatchObject({ percentage: undefined, completedBytes: 2048, totalBytes: total_kind === 'unknown' ? null : 1024 })
+    }
+    expect(mediaProgress({ ...transfer, download_progress: { ...snapshot, total_kind: 'estimated', total_bytes: 4096, downloaded_bytes: 2048 } })).toMatchObject({
+      percentage: undefined, totalBytes: 4096, estimated: true,
     })
-    expect(mediaProgress({ ...transfer, download_progress: { ...snapshot, total_bytes: 0 } }).percentage).toBeUndefined()
   })
   it('keeps cache completion separate from final saving and file success', () => {
     const cached = { ...snapshot, downloaded_bytes: 1024, completed: true, active: false }
@@ -57,6 +79,9 @@ describe('measured transfer progress and honest unknown download progress', () =
       label: '下载中', percentage: 100, explanation: '媒体已下载，等待开始保存',
     })
     expect(mediaState({ ...transfer, download_progress: cached })).toBe('fetching')
+    expect(mediaProgress({ ...transfer, download_progress: { ...cached, total_kind: 'unknown', total_bytes: null } })).toMatchObject({
+      label: '下载中', percentage: 100, totalBytes: 1024, explanation: '媒体已下载，等待开始保存',
+    })
     expect(mediaProgress({ ...transfer, status: 'saving', phase: 'saving', download_progress: cached, completed_bytes: 0 })).toMatchObject({
       label: '保存中', verb: '已保存', percentage: 0, completedBytes: 0,
     })
@@ -65,6 +90,13 @@ describe('measured transfer progress and honest unknown download progress', () =
   it('ignores late native snapshots for cancellation, cloud and unknown mode', () => {
     expect(mediaProgress({ ...transfer, status: 'cancelling', download_progress: snapshot })).toMatchObject({
       label: '取消中', measured: false, percentage: undefined, completedBytes: null,
+      explanation: '正在停止下载并等待安全确认',
+    })
+    expect(mediaProgress({ ...transfer, status: 'cancelling', phase: 'saving', completed_bytes: 512 })).toMatchObject({
+      label: '取消中', percentage: 50, explanation: '正在停止保存并清理临时文件',
+    })
+    expect(mediaProgress({ ...transfer, status: 'cancelling', phase: 'saving', acquisition_mode: 'cloud' })).toMatchObject({
+      label: '取消中', explanation: '正在停止下载并清理临时文件',
     })
     for (const acquisition_mode of ['cloud', null] as const) {
       expect(mediaProgress({ ...transfer, acquisition_mode, download_progress: snapshot })).toMatchObject({ measured: false, percentage: undefined })

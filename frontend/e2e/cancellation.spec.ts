@@ -1,0 +1,84 @@
+import { expect, test, type Page } from '@playwright/test'
+
+async function settleDrawer(page: Page) {
+  await page.locator('.el-drawer').evaluate(async element => {
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    await Promise.all(element.getAnimations({ subtree: true })
+      .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+      .map(animation => animation.finished.catch(() => {})))
+  })
+}
+
+// Run against a fresh tools.e2e_app with E2E_ACQUISITION_CANCEL=1.
+// Native transport is replaced there; every browser REST request is real.
+for (const width of [1440, 390]) {
+  test(`pending getFile cancellation survives reload at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/')
+    await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
+    await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page.getByRole('link', { name: '下载任务', exact: true })).toHaveAttribute('aria-current', 'page')
+    const id = `cancel-acquisition-${width}`
+    const title = `Acquisition cancellation fixture ${width}`
+    const apiPath = `/api/v1/tasks/${id}`
+    let cancelRequests = 0
+    page.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === `${apiPath}/cancel`) cancelRequests++
+    })
+    await page.getByLabel('搜索名称或任务编号').fill(title)
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(page.locator('.task-row')).toHaveCount(1)
+    await page.locator('.task-row .task-name').click()
+    const detail = page.locator('.detail-view')
+    await expect(detail.locator('.detail-heading')).toContainText('下载中')
+    await expect(detail.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50')
+    expect((await (await page.request.get(apiPath)).json()).items[0].phase).toBe('fetching')
+    await detail.getByRole('button', { name: '取消下载', exact: true }).click()
+    const confirmation = page.locator('.el-message-box')
+    await expect(confirmation).toContainText('已保存的文件会保留')
+    await expect(confirmation).toContainText('确认停止')
+    await confirmation.getByRole('button', { name: '继续下载', exact: true }).click()
+    await expect(confirmation).not.toBeVisible()
+    expect(cancelRequests).toBe(0)
+    expect((await (await page.request.get(apiPath)).json()).status).toBe('fetching')
+
+    await detail.getByRole('button', { name: '取消下载', exact: true }).click()
+    const submitted = page.waitForResponse(response => new URL(response.url()).pathname === `${apiPath}/cancel`
+      && response.request().method() === 'POST')
+    await confirmation.getByRole('button', { name: '确认取消', exact: true }).click()
+    expect((await submitted).ok()).toBe(true)
+    await expect(detail.locator('.detail-heading')).toContainText('取消中')
+    await expect(detail.locator('.media-progress')).toContainText('正在停止下载并等待安全确认')
+    await expect(detail.getByRole('button', { name: '取消下载', exact: true })).toHaveCount(0)
+    await expect(detail.getByRole('button', { name: '删除任务', exact: true })).toHaveCount(0)
+    const pending = await (await page.request.get(apiPath)).json()
+    expect(pending.status).toBe('cancelling')
+    expect(pending.can_cancel).toBe(false)
+    expect(pending.can_delete).toBe(false)
+    expect(pending.items[0].phase).toBe('fetching')
+    expect(pending.items[0].attempts[0].finished_at).toBeNull()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await settleDrawer(page)
+    await page.screenshot({ path: testInfo.outputPath(`getfile-cancelling-${width}.png`), fullPage: true })
+
+    await expect(detail.locator('.detail-heading')).toContainText('已取消', { timeout: 10_000 })
+    expect(cancelRequests).toBe(1)
+    const terminal = await (await page.request.get(apiPath)).json()
+    expect(terminal.status).toBe('cancelled')
+    expect(terminal.can_delete).toBe(true)
+    expect(terminal.items[0].status).toBe('cancelled')
+    expect(terminal.items[0].attempts[0].error_code).toBe('CANCELLED')
+    expect(terminal.items[0].attempts[0].finished_at).not.toBeNull()
+    await page.reload()
+    await page.getByLabel('搜索名称或任务编号').fill(title)
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(page.locator('.task-row')).toHaveCount(1)
+    await page.locator('.task-row .task-name').click()
+    await expect(detail.locator('.detail-heading')).toContainText('已取消')
+    await expect(detail.getByRole('button', { name: '取消下载', exact: true })).toHaveCount(0)
+    await settleDrawer(page)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`getfile-cancelled-${width}.png`), fullPage: true })
+  })
+}

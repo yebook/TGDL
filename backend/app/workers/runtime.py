@@ -60,16 +60,54 @@ class Runtime:
         self.loops: list[asyncio.Task[None]] = []
         self.stopping = False
         self.api_generation = ""
+        self.acquisition_reconcile_cursor = 0
         self.poll_lock = asyncio.Lock()
         self.notify_lock = asyncio.Lock()
         self.local_api = LocalApiService(settings)
         self.local_api.diagnostics = self.diagnostics
         self.download_progress = DownloadProgress(generation=self.progress_generation)
         self.worker.download_progress = self.download_progress
+        self.worker.acquisition_generation = self.acquisition_generation
         self.tasks.download_progress = self.download_progress
         self.connection_lock = asyncio.Lock()
         self.cache_cleanup = CacheCleanupService(db, storage, self.diagnostics, settings.secrets)
         self.cache_maintenance = CacheMaintenanceService(self)
+
+    def acquisition_generation(self) -> str:
+        # Freeze this before prepare. Draining/offline/cooldown must not revoke an
+        # existing owner's local cancellation capability.
+        if self.client_generation:
+            return self.client_generation
+        if not self.config.managed_local_api:
+            try:
+                return (self.config.bot_api_root / ".tgd-api-generation").read_text().strip()
+            except OSError:
+                pass
+        return ""
+
+    async def reconcile_acquisition_cancellations(self) -> None:
+        owners = [owner for owner in await asyncio.to_thread(self.worker.acquisitions.owners, cancelled_only=True)
+                  if owner.job_id not in self.running or self.running[owner.job_id].done()]
+        if not owners:
+            return
+        # One bounded owner per tick; a broken child must not stall all lifecycle work.
+        owner = owners[self.acquisition_reconcile_cursor % len(owners)]
+        self.acquisition_reconcile_cursor += 1
+        token = self.settings.secrets.decrypt(owner.token_encrypted)
+        if not token or digest(token) != owner.credential:
+            return
+        client = TelegramClient(token, self.config, UserSettings(bot_api_mode="local"))
+        try:
+            result = await self.worker.stop_acquisition(client, owner)
+            if result["settled"] and owner in await asyncio.to_thread(self.worker.acquisitions.owners,
+                                                                      cancelled_only=True):
+                await owned_thread(self.worker.failed, owner.job_id, "CANCELLED", "下载已取消", False,
+                                   False, 0, owner)
+                await owned_thread(self.worker.acquisitions.remove, owner)
+        except AppError:
+            pass  # Unknown/stale/unsupported/transport errors cannot release a slot.
+        finally:
+            await client.close()
 
     def progress_generation(self) -> str:
         applied = self.local_api.applied() if self.config.managed_local_api else {}
@@ -140,6 +178,7 @@ class Runtime:
             return
         if initial or restarted:
             self.worker.recover(restarted)
+            self.worker.acquisitions.prune()
         if current and (initial or current != self.api_generation):
             stored_path.write_text(json.dumps({"generation": current}))
             self.api_generation = current
@@ -346,8 +385,7 @@ class Runtime:
                         if update.get("message"):
                             await asyncio.to_thread(self.ingest.message, self.bot_id, update["message"], inbox_id)
                         elif update.get("callback_query"):
-                            if (self.worker.cache_scan_paused or
-                                    (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}):
+                            if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
                                 break  # Keep durable callback pending until maintenance releases it.
                             callback = update["callback_query"]
                             try:
@@ -390,7 +428,7 @@ class Runtime:
 
     async def cleanup_cache(self) -> bool:
         """Return true while draining/cleaning; every failure releases dispatch for backoff."""
-        if self.worker.cache_scan_paused or (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
+        if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
             return True
         client, bot_id = self.client, self.bot_id
         if client is None or bot_id is None or client.mode != "local":
@@ -415,7 +453,7 @@ class Runtime:
                 await owned_thread(self.cache_cleanup.retry, row.job_id, "CACHE_FINAL_UNAVAILABLE")
                 return True
             async with self.connection_lock:
-                if self.worker.cache_scan_paused or (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
+                if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
                     return True
                 # Hashing can take time. Do not use an obsolete generation/client or
                 # run housekeeping while an API/proxy operation is underway.
@@ -445,6 +483,7 @@ class Runtime:
     async def tick_loop(self) -> None:
         while not self.stopping:
             try:
+                await self.reconcile_acquisition_cancellations()
                 await self.cache_maintenance.resume()
                 async with self.connection_lock:
                     paused = await self.local_api.reconcile(self)
@@ -462,8 +501,6 @@ class Runtime:
                     continue
                 revision, settings, _ = await asyncio.to_thread(self.settings.read)
                 active, blocked, pending = await asyncio.to_thread(self.counts)
-                if active or blocked:
-                    self.cache_maintenance.invalidate()
                 can_dispatch = (pending > 0 and active < settings.download_concurrency and bool(settings.bot_token)
                                 and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
                                 and not blocked)
@@ -503,7 +540,7 @@ class Runtime:
     def next_notification(self, bot_id: int | None = None) -> tuple[str, int, dict[str, Any], str | None] | None:
         bot_id = self.bot_id if bot_id is None else bot_id
         with self.db.transaction() as session:
-            if self.worker.cache_scan_paused or maintenance_blocked(session):
+            if maintenance_blocked(session):
                 return None
             row = session.scalar(select(Notification).where(Notification.state == "pending", Notification.next_run_at <= time.time())
                                  .order_by(Notification.next_run_at).limit(1))

@@ -153,6 +153,7 @@ class CacheStatus(BaseModel):
     file_count: int | None
     usage_state: Literal["ready", "refreshing", "stale", "unavailable", "unsupported"]
     measured_at: str | None
+    refresh_error: str | None = None
     scope: Literal["current_bot_media"]
     maintenance: CacheMaintenanceStatus
 

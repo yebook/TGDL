@@ -61,6 +61,55 @@ class TelegramClient:
         self._progress_failures = 0
         self._cleanup_session: ClientSession | None = None
         self._cache_storage_session: ClientSession | None = None
+        self._acquisition_session: ClientSession | None = None
+
+    async def file_acquisition(self, generation: str, *, file_id: str | None = None,
+                               acquisition_id: str | None = None, cancel: bool = False) -> dict[str, Any]:
+        """Bounded local control only: it neither enters nor clears Telegram protection."""
+        if (self.mode != "local" or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", generation)
+                or file_id is not None and not 1 <= len(file_id.encode("utf-8")) <= 4096
+                or acquisition_id is not None and not re.fullmatch(r"[0-9a-f]{64}", acquisition_id)
+                or (file_id is None) == (acquisition_id is None)):
+            raise AppError("ACQUISITION_CONTROL_UNAVAILABLE", "获取控制暂不可用")
+        data = {"generation": generation}
+        if file_id is not None:
+            method = "tgdPrepareFileAcquisition"
+            data["file_id"] = file_id
+        else:
+            method = "tgdCancelFileAcquisition" if cancel else "tgdGetFileAcquisition"
+            data["acquisition_id"] = str(acquisition_id)
+        try:
+            if self._acquisition_session is None:
+                self._acquisition_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
+            url = self.bot.session.api.api_url(self.bot.token, method)
+            async with self._acquisition_session.post(url, data=data, allow_redirects=False) as response:
+                body = bytearray()
+                async for block in response.content.iter_chunked(4096):
+                    body.extend(block)
+                    if len(body) > 8192:
+                        raise ValueError("Acquisition response too large")
+                payload = json.loads(body)
+                if response.status in {404, 405, 501} or (response.status == 400
+                        and isinstance(payload, dict) and payload.get("description") == "Bad Request: method not found"):
+                    raise AppError("ACQUISITION_CONTROL_UNSUPPORTED", "当前本地 API 不支持获取阶段取消，请更新配套服务")
+                if response.status != 200:
+                    raise ValueError("Acquisition unavailable")
+                if not isinstance(payload, dict) or set(payload) != {"ok", "result"} or payload["ok"] is not True:
+                    raise ValueError("Invalid acquisition response")
+                result = payload["result"]
+                if (not isinstance(result, dict) or set(result) != {"generation", "acquisition_id", "state", "settled"}
+                        or result["generation"] != generation
+                        or not isinstance(result["acquisition_id"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", result["acquisition_id"])
+                        or acquisition_id is not None and result["acquisition_id"] != acquisition_id
+                        or result["state"] not in {"prepared", "resolving", "downloading", "completed", "cancelling", "cancelled", "failed"}
+                        or type(result["settled"]) is not bool
+                        or result["settled"] != (result["state"] in {"completed", "cancelled", "failed"})
+                        or file_id is not None and result["state"] != "prepared"):
+                    raise ValueError("Invalid acquisition identity")
+                return dict(result)
+        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError) as exc:
+            raise AppError("ACQUISITION_CONTROL_UNAVAILABLE", "获取控制暂不可用，仍保留下载槽位") from exc
 
     async def _cache_storage(self, generation: str, *, refresh: bool = False,
                              operation_id: str | None = None) -> dict[str, Any]:
@@ -193,6 +242,11 @@ class TelegramClient:
             await self.record(method, exc, started)
             raise
         except Exception as exc:
+            if isinstance(exc, AppError) and exc.code in {"ACQUISITION_CANCELLED", "ACQUISITION_REJECTED"}:
+                # A fixed private control outcome is not a Telegram failure/success.
+                await self.record(method, AppError("CANCELLED", "下载已取消")
+                                  if exc.code == "ACQUISITION_CANCELLED" else exc, started)
+                raise
             if (self.mode == "local" and isinstance(exc, TelegramConflictError)
                     and exc.message in {"TGD_CACHE_STORAGE_BUSY", "Conflict: TGD_CACHE_STORAGE_BUSY"}):
                 deferred = AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在维护，稍后自动继续")
@@ -219,17 +273,25 @@ class TelegramClient:
                                 request_timeout=35), method="getUpdates")
         return [item.model_dump(mode="json", exclude_none=True) for item in result]
 
-    async def get_file(self, file_id: str) -> str:
+    async def get_file(self, file_id: str, *, generation: str | None = None,
+                       acquisition_id: str | None = None) -> str:
         async def acquire() -> File:
             try:
                 # Local getFile includes the download itself. aiogram forwards a non-None
                 # timeout to aiohttp unchanged, although its annotation only allows int.
                 # Keep connection setup bounded without imposing a download/read deadline.
                 timeout = cast(Any, LOCAL_GET_FILE_TIMEOUT) if self.mode == "local" else self.timeout
-                return await self.bot(GetFile(file_id=file_id), request_timeout=timeout)
+                extra = {"tgd_generation": generation, "tgd_acquisition_id": acquisition_id} if acquisition_id else {}
+                return await self.bot(GetFile(file_id=file_id, **extra), request_timeout=timeout)
             except TelegramBadRequest as exc:
                 if self.mode == "local" and exc.message in {"TGD_CACHE_CLEANUP_BUSY", "Bad Request: TGD_CACHE_CLEANUP_BUSY"}:
                     raise AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在清理，稍后自动继续下载") from exc
+                if self.mode == "local" and acquisition_id and exc.message in {
+                        "TGD_ACQUISITION_CANCELLED", "Bad Request: TGD_ACQUISITION_CANCELLED"}:
+                    raise AppError("ACQUISITION_CANCELLED", "正在确认获取已停止") from exc
+                if self.mode == "local" and acquisition_id and exc.message in {
+                        "TGD_ACQUISITION_INVALID", "Bad Request: TGD_ACQUISITION_INVALID"}:
+                    raise AppError("ACQUISITION_REJECTED", "获取控制身份无效，请检查本地 API") from exc
                 raise
         result = await self.request(acquire, method="getFile")
         if self.mode == "cloud":
@@ -330,6 +392,8 @@ class TelegramClient:
         await self.request(lambda: self.bot.answer_callback_query(query_id, text=text[:150], show_alert=True, request_timeout=15), method="answerCallbackQuery")
 
     async def close(self) -> None:
+        if self._acquisition_session:
+            await self._acquisition_session.close()
         if self._cache_storage_session:
             await self._cache_storage_session.close()
         if self._cleanup_session:

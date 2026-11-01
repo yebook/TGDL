@@ -35,6 +35,13 @@ async def eventually(predicate):
             await asyncio.sleep(.01)
 
 
+def pending_notice(state):
+    with state.db.transaction() as session:
+        for row in session.scalars(select(Notification)):
+            row.state = "obsolete"
+        session.add(Notification(event_key="independent-test-notice", chat_id=42, payload={"bot_id": 7}))
+
+
 def ready(client, monkeypatch):
     state, ingest = setup_pipeline(client)
     runtime = state.runtime
@@ -144,7 +151,6 @@ async def test_status_reads_snapshot_and_refresh_is_single_flight(client, monkey
         await service._task
     assert service.status()["used_bytes"] == 4096
     assert service.status()["maintenance"]["can_clean"]
-    assert not state.runtime.worker.cache_scan_paused
 
 
 @pytest.mark.parametrize("blocked", ["fetching", "saving", "cancelling", "recovery_blocked", "queued", "retry_wait", "waiting_existing"])
@@ -174,11 +180,14 @@ async def test_missing_final_pending_cleanup_preserves_only_cache_copy(client, m
     with state.db.sessions() as session:
         final = runtime.config.download_root / session.get(Job, job_id).relative_path
     final.unlink()
-    assert service.status()["maintenance"]["blocked_reason"] == "pending_verification"
+    assert service.status()["maintenance"]["can_clean"]
     await service.start(clean=False)  # Read-only statistics still work when final output is missing.
     await service._task
-    with pytest.raises(AppError):
-        await service.start(clean=True)
+    await service.start(clean=True)
+    await service._task
+    assert service.read()["state"] == "failed"
+    assert service.read()["blocked_reason"] == "pending_verification"
+    assert service.status()["maintenance"]["message"]
     telegram.clear_cache_storage.assert_not_awaited()
     assert source.exists()
     with state.db.sessions() as session:
@@ -319,38 +328,25 @@ async def test_accepted_running_result_stays_running_until_exact_terminal_poll(c
     assert "完成" in service.status()["maintenance"]["message"]
 
 
-async def test_scan_lost_response_keeps_claim_and_notification_barriers_until_poll_finishes(client, monkeypatch):
+async def test_lost_scan_response_keeps_last_usage_and_allows_claim_notification_and_retry(client, monkeypatch):
     state, ingest, service, telegram, _ = ready(client, monkeypatch)
-    entered, release = asyncio.Event(), asyncio.Event()
-    requests = []
-
-    async def scan(generation, *, refresh=False):
-        requests.append(refresh)
-        if refresh:
-            raise TimeoutError()
-        entered.set()
-        await release.wait()
-        return snapshot(used=4096)
-
-    telegram.cache_storage.side_effect = scan
+    telegram.cache_storage.side_effect = TimeoutError()
     await service.start(clean=False)
-    await entered.wait()
+    await service._task
     ingest.message(7, message(), "in")
-    confirm_all(state)  # Confirming during a read-only scan may queue, but cannot claim.
-    try:
-        assert state.runtime.worker.claim() is None
-        assert state.runtime.next_notification() is None
-        with state.db.sessions() as session:
-            assert session.scalar(select(Notification.attempts)) == 0
-        assert await state.runtime.cleanup_cache()
-        assert state.runtime.worker.cache_scan_paused
-        assert not state.runtime.worker.cleanup_paused
-    finally:
-        release.set()
-        await service._task
-    assert requests == [True, False]
-    assert not state.runtime.worker.cache_scan_paused
+    confirm_all(state)
+    pending_notice(state)
     assert state.runtime.worker.claim()
+    assert state.runtime.next_notification()
+    assert not service.read()
+    assert service.status()["used_bytes"] == 8192
+    assert service.status()["refresh_error"]
+    telegram.cache_storage.side_effect = None
+    telegram.cache_storage.return_value = snapshot(used=4096)
+    await service.start(clean=False)
+    await service._task
+    assert service.status()["used_bytes"] == 4096
+    assert service.status()["refresh_error"] is None
 
 
 async def test_failed_scan_without_usage_cannot_report_clean_available(client, monkeypatch):
@@ -360,9 +356,10 @@ async def test_failed_scan_without_usage_cannot_report_clean_available(client, m
     await service.start(clean=False)
     await service._task
     assert not service.status()["maintenance"]["can_clean"]
+    assert service.status()["refresh_error"]
 
 
-def test_cache_usage_stays_stale_after_local_activity_and_running_scan_keeps_measurement_time(client, monkeypatch):
+def test_refreshed_usage_stays_ready_during_existing_download_and_invalidation_only_on_new_activity(client, monkeypatch):
     state, ingest, service, _, _ = ready(client, monkeypatch)
     measured = service.status()["measured_at"]
     service._snapshot(snapshot(scan="running"), "child", digest(TOKEN))
@@ -373,10 +370,15 @@ def test_cache_usage_stays_stale_after_local_activity_and_running_scan_keeps_mea
     with state.db.transaction() as session:
         job = session.scalar(select(Job))
         job.state, job.acquisition_mode = "fetching", "local"
+    assert service.status()["usage_state"] == "ready"
+    service.invalidate()  # A new claim or cache deletion invalidates the snapshot.
     assert service.status()["usage_state"] == "stale"
+    assert service.status()["refresh_error"] is None
+    service._snapshot(snapshot(used=16384), "child", digest(TOKEN))
+    assert service.status()["usage_state"] == "ready"
     with state.db.transaction() as session:
         session.scalar(select(Job)).state = "failed"
-    assert service.status()["usage_state"] == "stale"
+    assert service.status()["usage_state"] == "ready"
 
 
 @pytest.mark.parametrize("description,expected", [
@@ -406,7 +408,7 @@ async def test_native_notification_busy_does_not_consume_telegram_backoff(config
         await telegram.close()
 
 
-async def test_read_only_refresh_allows_queued_work_but_cannot_claim_until_finished(client, monkeypatch):
+async def test_read_only_refresh_allows_new_claims_notifications_and_connection_lock(client, monkeypatch):
     state, ingest, service, telegram, _ = ready(client, monkeypatch)
     ingest.message(7, message(), "in")
     confirm_all(state)
@@ -421,11 +423,15 @@ async def test_read_only_refresh_allows_queued_work_but_cannot_claim_until_finis
     await service.start(clean=False)
     await entered.wait()
     try:
-        assert state.runtime.worker.claim() is None
+        assert state.runtime.worker.claim()
+        pending_notice(state)
+        assert state.runtime.next_notification()
+        assert not state.runtime.connection_lock.locked()
+        assert not state.runtime.worker.cleanup_paused
+        assert not service.read()
     finally:
         release.set()
         await service._task
-    assert state.runtime.worker.claim()
 
 
 async def test_new_confirmation_without_local_mode_snapshot_still_blocks_clean(client, monkeypatch):
@@ -436,3 +442,74 @@ async def test_new_confirmation_without_local_mode_snapshot_still_blocks_clean(c
     with pytest.raises(AppError):
         await service.start(clean=True)
     telegram.clear_cache_storage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("owner", ["fetching", "saving", "cancelling", "recovery_blocked"])
+async def test_refresh_during_local_ownership_never_uses_cleanup_admission(client, monkeypatch, owner):
+    state, ingest, service, telegram, _ = ready(client, monkeypatch)
+    ingest.message(7, message(), "in")
+    confirm_all(state)
+    with state.db.transaction() as session:
+        job = session.scalar(select(Job))
+        job.state, job.acquisition_mode = owner, "local"
+    telegram.cache_storage.return_value = snapshot(used=16384)
+    await service.start(clean=False)
+    await service._task
+    assert service.status()["used_bytes"] == 16384
+    assert service.status()["usage_state"] == "ready"
+    assert not service.status()["maintenance"]["can_clean"]
+    assert not service.read()
+    telegram.cache_storage.assert_awaited_once_with("child", refresh=True)
+    telegram.clear_cache_storage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("output", ["valid", "corrupt", "changed_after_hash", "record_changed_after_hash", "other_bot_missing"])
+async def test_manual_clean_validates_pending_outputs_instead_of_disabling_for_pending_rows(client, monkeypatch, output):
+    state, _, _, job_id, source = await published(client)
+    runtime = state.runtime
+    telegram = SimpleNamespace(mode="local", bot=SimpleNamespace(token=TOKEN), clear_cache_storage=AsyncMock(),
+                              cache_storage=AsyncMock(return_value=snapshot()))
+    runtime.client, runtime.bot_id = telegram, 7
+    monkeypatch.setattr(runtime, "progress_generation", lambda: "child")
+    service = runtime.cache_maintenance
+    service._snapshot(snapshot(), "child", digest(TOKEN))
+    with state.db.transaction() as session:
+        row = session.get(CacheCleanup, job_id)
+        final = runtime.config.download_root / row.relative_path
+        row.attempts, row.error_code = 5, "CACHE_CLEANUP_UNAVAILABLE"
+        if output == "other_bot_missing":
+            row.bot_id = 8
+            final.unlink()
+        elif output == "corrupt":
+            final.write_bytes(b"badbad")
+    original = runtime.cache_cleanup.verify_final
+
+    def verify(row):
+        assert service.read()["state"] == "running"
+        assert not runtime.connection_lock.locked()
+        assert runtime.worker.claim() is None
+        fingerprint = original(row)
+        if output == "changed_after_hash":
+            final.write_bytes(b"change")
+        elif output == "record_changed_after_hash":
+            with state.db.transaction() as session:
+                session.get(CacheCleanup, job_id).sha256 = "a" * 64
+        return fingerprint
+
+    monkeypatch.setattr(runtime.cache_cleanup, "verify_final", verify)
+
+    async def clear(generation, opid):
+        return snapshot(operation=operation(opid, "succeeded", after_bytes=0, released_bytes=8192), used=0)
+
+    telegram.clear_cache_storage.side_effect = clear
+    assert service.status()["maintenance"]["can_clean"]
+    await service.start(clean=True)
+    await service._task
+    if output in {"valid", "other_bot_missing"}:
+        telegram.clear_cache_storage.assert_awaited_once()
+        assert service.read()["state"] == "succeeded"
+    else:
+        telegram.clear_cache_storage.assert_not_awaited()
+        assert service.read()["state"] == "failed"
+        assert service.read()["blocked_reason"] == "pending_verification"
+    assert source.exists()  # The application never mutates the read-only API mount.

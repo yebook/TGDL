@@ -406,13 +406,18 @@ def create_app(config: Config | None = None) -> FastAPI:
             pass
         cache.update(runtime.cache_maintenance.status())
         active, blocked, pending = runtime.counts()
+        recovery_message = ""
+        if blocked:
+            recovery_message = ("可在任务详情取消获取并等待停止确认；无法确认时请重启本地 Bot API 恢复"
+                                if runtime.worker.acquisitions.owners()
+                                else "请重启本地 Bot API 以恢复不确定的获取槽")
         return {"version": VERSION,
                 "diagnostic_log": runtime.diagnostics.status(), "bot": bot,
                 "local_api": api,
                 "storage": {"selected_root_id": values.download_root_id, "roots": roots, "cache": cache},
                 "proxy": proxy,
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
-                "recovery": {"blocked_jobs": blocked, "message": "请重启本地 Bot API 以恢复不确定的获取槽" if blocked else ""}}
+                "recovery": {"blocked_jobs": blocked, "message": recovery_message}}
 
     async def cache_action(request: Request, *, clean: bool) -> dict[str, Any]:
         if request.query_params:

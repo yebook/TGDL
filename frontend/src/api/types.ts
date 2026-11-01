@@ -66,6 +66,7 @@ export interface CacheStatus {
   free_bytes: number | null; total_bytes: number | null
   used_bytes: number | null; file_count: number | null
   usage_state: 'ready' | 'refreshing' | 'stale' | 'unavailable' | 'unsupported'
+  refresh_error: string | null
   measured_at: string | null
   scope: 'current_bot_media'
   maintenance: {

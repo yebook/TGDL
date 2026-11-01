@@ -7,10 +7,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch as patch_method
 
 import uvicorn
 from fastapi import FastAPI
+from sqlalchemy import select
 
 # Never inherit production credentials, root mappings or deployment overrides.
 for key in tuple(os.environ):
@@ -21,7 +24,7 @@ from app.core.config import Config  # noqa: E402
 from app.core.security import password_hasher, private_file  # noqa: E402
 from app.db.models import Admin, Attempt, Job, MediaItem, MediaRequest  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.schemas.contracts import SettingsPatch  # noqa: E402
+from app.schemas.contracts import ProxySettings, SettingsPatch  # noqa: E402
 
 
 def seed_request_safety(app: FastAPI, scenario: str) -> None:
@@ -136,6 +139,172 @@ def seed(app: FastAPI) -> None:
             ))
 
 
+@asynccontextmanager
+async def cache_storage(app: FastAPI) -> AsyncIterator[None]:
+    """Real cache REST/service/store; substitute only the private native boundary."""
+    runtime = app.state.runtime
+    generation = "e2e-process-instance"
+
+    class NativeCacheBoundary:
+        mode = "local"
+        bot = SimpleNamespace(token="98765:" + "e" * 35)
+
+        def __init__(self) -> None:
+            self.used = 4 * 1024**3
+            self.operation: dict[str, Any] | None = None
+            self.finishes_at = 0.0
+
+        def snapshot(self) -> dict[str, Any]:
+            if self.operation and self.operation["state"] == "running" and time.monotonic() >= self.finishes_at:
+                self.used = 0
+                self.operation = self.operation | {"state": "succeeded", "after_bytes": 0,
+                                                    "released_bytes": self.operation["before_bytes"]}
+            return {"generation": generation, "scope": "current_bot", "scan_state": "ready",
+                    "usage": {"used_bytes": self.used, "file_count": 3 if self.used else 0},
+                    "operation": self.operation}
+
+        async def cache_storage(self, observed_generation: str, *, refresh: bool = False) -> dict[str, Any]:
+            assert observed_generation == generation
+            await asyncio.sleep(.15)
+            return self.snapshot()
+
+        async def clear_cache_storage(self, observed_generation: str, operation_id: str) -> dict[str, Any]:
+            assert observed_generation == generation
+            assert not self.operation or self.operation["state"] != "running", "duplicate native clear"
+            self.operation = {"operation_id": operation_id, "state": "running", "before_bytes": self.used,
+                              "after_bytes": None, "released_bytes": None, "error_code": None}
+            self.finishes_at = time.monotonic() + 1.8
+            return self.snapshot()
+
+        async def close(self) -> None:
+            pass
+
+    # Historical queued fixtures are terminal only in this opt-in scenario.
+    with app.state.db.transaction() as session:
+        for job in session.scalars(select(Job).where(Job.state == "queued")):
+            job.state, job.phase = "cancelled", "cancelled"
+            request = session.get(MediaRequest, job.request_id)
+            assert request
+            request.status = "cancelled"
+    runtime.client, runtime.bot_id = cast(Any, NativeCacheBoundary()), 98765
+    runtime.progress_generation = lambda: generation
+    runtime.local_api.update(applied_mode="local", phase="idle", operation_id=None)
+    try:
+        async with acquisition_cancellation(app):
+            yield
+    finally:
+        await runtime.cache_maintenance.close()
+        runtime.client, runtime.bot_id = None, None
+
+
+@asynccontextmanager
+async def acquisition_cancellation(app: FastAPI) -> AsyncIterator[None]:
+    """Real worker/DB/REST lifecycle; replace only the native network boundary."""
+    from app.bot.client import TelegramClient
+
+    generation = "e2e-process-instance"
+    token = "98765:" + "e" * 35
+    # Small known size keeps real storage admission portable on development/CI disks.
+    total_bytes = 32 * 1024**2
+    settings = app.state.settings
+    patch = SettingsPatch(revision=settings.read()[0], bot_token=token)
+    settings.save(patch, settings.candidate(patch))
+    runtime = app.state.runtime
+    worker = runtime.worker
+    worker.acquisition_generation = lambda: generation
+    runtime.download_progress.generation = lambda: generation
+    runtime.local_api.update(applied_mode="local", phase="idle", operation_id=None)
+    with app.state.db.transaction() as session:
+        # Do not claim unrelated historical action fixtures in this opt-in scenario.
+        for job in session.scalars(select(Job).where(Job.state == "queued")):
+            job.next_run_at = time.time() + 3600
+        for width in (1440, 390):
+            request_id = f"cancel-acquisition-{width}"
+            session.add(MediaRequest(
+                id=request_id, bot_id=98765, chat_id=12345, user_id=12345,
+                kind="single", title=f"Acquisition cancellation fixture {width}",
+                status="queued", collect_until=time.time(), destination=f"2026-11-01/{request_id}",
+            ))
+            session.flush()
+            session.add(MediaItem(
+                id=f"{request_id}-item", request_id=request_id, bot_id=98765, chat_id=12345,
+                message_id=width, file_id=f"offline-{width}", file_unique_id=f"unique-{width}",
+                media_type="video", original_name=f"pending-{width}.mp4", size_bytes=total_bytes,
+            ))
+            session.flush()
+            session.add(Job(id=f"job-{request_id}", item_id=f"{request_id}-item", request_id=request_id,
+                            state="queued", phase="queued", next_run_at=0,
+                            relative_path=f"2026-11-01/{request_id}/pending-{width}.mp4"))
+
+    class NativeBoundary:
+        mode = "local"
+
+        def __init__(self, index: int) -> None:
+            self.bot = SimpleNamespace(token=token)
+            self.acquisition_id = f"{index:064x}"
+            self.entered = asyncio.Event()
+            self.joined = asyncio.Event()
+            self.cancelled_at: float | None = None
+            self.stopped = False
+
+        async def file_acquisition(self, observed_generation: str, *, file_id: str | None = None,
+                                   acquisition_id: str | None = None, cancel: bool = False) -> dict[str, Any]:
+            assert observed_generation == generation
+            if file_id is not None:
+                state = "prepared"
+            else:
+                assert acquisition_id == self.acquisition_id
+                if cancel and self.cancelled_at is None:
+                    self.cancelled_at = time.monotonic()
+                if self.cancelled_at is None:
+                    state = "downloading"
+                elif self.stopped or time.monotonic() - self.cancelled_at >= 1.8:
+                    self.stopped, state = True, "cancelled"
+                else:
+                    state = "cancelling"
+            return {"generation": generation, "acquisition_id": self.acquisition_id,
+                    "state": state, "settled": state == "cancelled"}
+
+        async def get_file(self, file_id: str, **identity: str) -> str:
+            assert identity == {"generation": generation, "acquisition_id": self.acquisition_id}
+            self.entered.set()
+            try:
+                # Never return a successful path or time out the original getFile.
+                await asyncio.Future[None]()
+                raise AssertionError("pending getFile cannot complete")
+            finally:
+                assert self.stopped, "HTTP owner released before native stop proof"
+                self.joined.set()
+
+        async def file_progress(self, file_ids: list[str]) -> tuple[str, dict[str, dict[str, Any]]]:
+            return generation, {file_id: {"downloaded_bytes": total_bytes // 2,
+                                          "total_bytes": None, "total_kind": "unknown",
+                                          "active": True, "completed": False, "speed_bps": None}
+                                for file_id in file_ids}
+
+    owners: list[tuple[str, NativeBoundary, asyncio.Task[None]]] = []
+    try:
+        for index in (1, 2):
+            job_id = worker.claim(bot_id=98765, mode="local")
+            assert job_id and job_id.startswith("job-cancel-acquisition-")
+            boundary = NativeBoundary(index)
+            task = asyncio.create_task(worker.run(cast(TelegramClient, boundary), job_id))
+            runtime.running[job_id] = task
+            owners.append((job_id, boundary, task))
+            await asyncio.wait_for(boundary.entered.wait(), 5)
+        yield
+    finally:
+        # Graceful fixture shutdown uses the same durable intent and joins every owner.
+        for job_id, boundary, task in owners:
+            if not task.done():
+                app.state.tasks.cancel(job_id.removeprefix("job-"))
+                boundary.stopped = True
+        await asyncio.gather(*(task for _, _, task in owners))
+        assert all(boundary.joined.is_set() for _, boundary, _ in owners)
+        for job_id, _, _ in owners:
+            runtime.running.pop(job_id, None)
+
+
 def main() -> None:
     # No caller-provided data directory is accepted; every run creates and deletes its own.
     with TemporaryDirectory(prefix="tgd-e2e-") as temporary:
@@ -149,7 +318,7 @@ def main() -> None:
                         cookie_secure=False, minimum_free_bytes=1024)
         # A fixed test scenario is allowed; no caller-provided paths, secrets or real upstream.
         scenario = os.getenv("E2E_MANAGED_API", "")
-        if scenario in {"credentials", "restart", "uncertain", "cooldown", "connection"}:
+        if scenario in {"credentials", "restart", "uncertain", "cooldown", "connection"} or os.getenv("E2E_CACHE_STORAGE") == "1":
             config.managed_local_api = True
             config.local_api_control_dir = root / "api-control"
         if not (config.static_dir / "index.html").is_file():
@@ -175,7 +344,7 @@ def main() -> None:
                         patch = SettingsPatch(revision=settings.read()[0],
                                               telegram_api_hash="0123456789abcdef0123456789abcdef",
                                               bot_token="98765:offline-e2e-only-bot-token",
-                                              proxy={"enabled": False, "password": "offline-fixture-password"})
+                                              proxy=ProxySettings(enabled=False, password="offline-fixture-password"))
                         settings.save(patch, settings.candidate(patch))
                     service.update(applied_mode="local", phase="idle", operation_id=None)
                     if scenario == "uncertain":
@@ -203,15 +372,22 @@ def main() -> None:
                 elif scenario in {"cloud-connection", "cloud-recovery"}:
                     settings = application.state.settings
                     patch = SettingsPatch(revision=settings.read()[0], bot_api_mode="cloud",
-                                          proxy={"enabled": True, "host": "offline.invalid", "port": 1080})
+                                          proxy=ProxySettings(enabled=True, host="offline.invalid", port=1080))
                     settings.save(patch, settings.candidate(patch))
                     application.state.runtime.local_api.update(applied_mode="cloud", phase="idle", operation_id=None)
                     if scenario == "cloud-recovery":
-                        patch = SettingsPatch(revision=settings.read()[0], proxy={"enabled": False})
+                        patch = SettingsPatch(revision=settings.read()[0], proxy=ProxySettings(enabled=False))
                         settings.save(patch, settings.candidate(patch))
                         application.state.runtime.local_api.update(phase="failed", error_code="LOCAL_API_PREFLIGHT_FAILED")
                 try:
-                    yield
+                    if os.getenv("E2E_CACHE_STORAGE") == "1":
+                        async with cache_storage(application):
+                            yield
+                    elif os.getenv("E2E_ACQUISITION_CANCEL") == "1":
+                        async with acquisition_cancellation(application):
+                            yield
+                    else:
+                        yield
                 finally:
                     if heartbeat:
                         heartbeat.cancel()

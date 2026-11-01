@@ -18,6 +18,31 @@ from app.services.cache_maintenance import maintenance_blocked, require_no_maint
 managed = managed_fixture
 
 
+@pytest.mark.parametrize("owner", ["automatic_cleanup", "worker_tail"])
+async def test_clean_status_matches_live_owner_admission_and_recovers_when_owner_finishes(client, monkeypatch, owner):
+    state, _, service, telegram, _ = ready(client, monkeypatch)
+    runtime = state.runtime
+    pending = asyncio.get_running_loop().create_future()
+    if owner == "automatic_cleanup":
+        runtime.worker.cleanup_paused = True
+    else:
+        runtime.running["review-worker-tail"] = pending
+    try:
+        assert not service.status()["maintenance"]["can_clean"]
+        with pytest.raises(AppError) as error:
+            await service.start(clean=True)
+        assert error.value.code == "CACHE_CLEANUP_BLOCKED"
+        telegram.clear_cache_storage.assert_not_awaited()
+        runtime.worker.cleanup_paused = False
+        pending.set_result(None)
+        assert service.status()["maintenance"]["can_clean"]
+    finally:
+        runtime.worker.cleanup_paused = False
+        runtime.running.pop("review-worker-tail", None)
+        if not pending.done():
+            pending.cancel()
+
+
 async def test_cancelled_admission_joins_late_intent_without_issuing_clear(client, monkeypatch):
     _, _, service, telegram, _ = ready(client, monkeypatch)
     entered, release = threading.Event(), threading.Event()
@@ -43,16 +68,28 @@ async def test_cancelled_admission_joins_late_intent_without_issuing_clear(clien
     telegram.clear_cache_storage.assert_not_awaited()
 
 
-async def test_refresh_waiting_for_lock_does_not_use_replaced_client(client, monkeypatch):
+async def test_refresh_does_not_hold_connection_lock_and_discards_replaced_client_reply(client, monkeypatch):
     state, _, service, old, generation = ready(client, monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def read(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return snapshot(used=16384)
+
+    old.cache_storage.side_effect = read
     await state.runtime.connection_lock.acquire()
     refresh = asyncio.create_task(service._refresh(old, "child", digest(old.bot.token)))
-    await asyncio.sleep(0)
-    state.runtime.client = SimpleNamespace(mode="local", bot=SimpleNamespace(token=old.bot.token))
-    generation[0] = "replacement"
-    state.runtime.connection_lock.release()
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        state.runtime.client = SimpleNamespace(mode="local", bot=SimpleNamespace(token=old.bot.token))
+        generation[0] = "replacement"
+    finally:
+        state.runtime.connection_lock.release()
+        release.set()
     await refresh
-    old.cache_storage.assert_not_awaited()
+    assert service.status()["used_bytes"] is None
+    assert service._usage["used_bytes"] == 8192
 
 
 async def test_monitor_rechecks_identity_after_connection_lock_wait(client, monkeypatch):
@@ -114,6 +151,21 @@ def test_old_bot_completion_and_late_error_do_not_leak_into_new_bot_status(clien
     assert status["used_bytes"] == 16384
     assert status["usage_state"] == "ready"
     assert status["maintenance"]["last_result"] is None
+
+
+def test_refresh_error_is_scoped_to_snapshot_identity_and_not_worker_invalidation(client, monkeypatch):
+    state, _, service, old, generation = ready(client, monkeypatch)
+    credential = digest(old.bot.token)
+    service._unavailable(TimeoutError("never expose transport details"), "child", credential, refresh=True)
+    assert service.status()["refresh_error"]
+    service.invalidate()
+    assert service.status()["refresh_error"]
+    generation[0] = "replacement"
+    assert service.status()["refresh_error"] is None
+    service._snapshot(snapshot(generation="replacement", scan="running", used=None), "replacement", credential)
+    assert service.status()["refresh_error"] is None
+    service._unavailable(TimeoutError(), "child", credential, refresh=True)
+    assert service.status()["refresh_error"] is None
 
 
 async def test_invalid_gate_restart_requires_verified_replacement_before_unlock(managed, monkeypatch):

@@ -1,0 +1,323 @@
+--- a/td/td/generate/scheme/td_api.tl
++++ b/td/td/generate/scheme/td_api.tl
+@@ -13990,6 +13990,10 @@
+ //@description Stops the downloading of a file. If a file has already been downloaded, does nothing @file_id Identifier of a file to stop downloading @only_if_pending Pass true to stop downloading only if it hasn't been started, i.e. request hasn't been sent to server
+ cancelDownloadFile file_id:int32 only_if_pending:Bool = Ok;
+ 
++//-TGDL private cancellation barrier. Removes the user request, preserves other consumers, and waits for retired download writers to be destroyed
++//-file_id Identifier of the file
++tgdCancelDownloadFile file_id:int32 = File;
++
+ //@description Returns suggested name for saving a file in a given directory @file_id Identifier of the file @directory Directory in which the file is expected to be saved
+ getSuggestedFileName file_id:int32 directory:string = Text;
+ 
+--- a/td/td/telegram/files/FileDownloadManager.cpp
++++ b/td/td/telegram/files/FileDownloadManager.cpp
+@@ -48,7 +48,8 @@
+   Node *node = nodes_container_.get(node_id);
+   CHECK(node);
+   node->query_id_ = query_id;
+-  auto callback = make_unique<FileDownloaderCallback>(actor_shared(this, node_id));
++  CHECK(live_workers_.insert(query_id).second);
++  auto callback = make_unique<FileDownloaderCallback>(actor_shared(this, node_id), actor_shared(this, static_cast<uint64>(-1)), query_id);
+   bool is_small = size < 20 * 1024;
+   node->downloader_ =
+       create_actor<FileDownloader>("Downloader", remote_location, local, size, std::move(name), encryption_key,
+@@ -84,7 +85,8 @@
+   Node *node = nodes_container_.get(node_id);
+   CHECK(node);
+   node->query_id_ = query_id;
+-  auto callback = make_unique<FileFromBytesCallback>(actor_shared(this, node_id));
++  CHECK(live_workers_.insert(query_id).second);
++  auto callback = make_unique<FileFromBytesCallback>(actor_shared(this, node_id), actor_shared(this, static_cast<uint64>(-1)), query_id);
+   node->from_bytes_ =
+       create_actor<FileFromBytes>("FromBytes", type, std::move(bytes), std::move(name), std::move(callback));
+   bool is_inserted = query_id_to_node_id_.emplace(query_id, node_id).second;
+@@ -183,13 +185,31 @@
+   close_node(node_id);
+ }
+ 
++void FileDownloadManager::on_worker_destroyed(QueryId query_id) {
++  CHECK(live_workers_.erase(query_id) == 1);
++  auto it = query_id_to_node_id_.find(query_id);
++  if (it != query_id_to_node_id_.end()) {
++    on_error_impl(it->second, Status::Error(-1, "Canceled"));
++  }
++  // Final result/error was posted to FileManager before close_node requested
++  // destruction. Same-sender actor message ordering drains that bookkeeping
++  // before FileManager receives this separate physical-stop notification.
++  if (!stop_flag_) {
++    callback_->on_worker_stopped(query_id);
++  }
++  try_stop();
++}
++
+ void FileDownloadManager::hangup_shared() {
+   auto node_id = get_link_token();
++  if (node_id == static_cast<uint64>(-1)) {
++    return;  // Separate worker lifetime reference; never a normal callback.
++  }
+   on_error_impl(node_id, Status::Error(-1, "Canceled"));
+ }
+ 
+ void FileDownloadManager::try_stop() {
+-  if (stop_flag_ && nodes_container_.empty()) {
++  if (stop_flag_ && nodes_container_.empty() && live_workers_.empty()) {
+     stop();
+   }
+ }
+--- a/td/td/telegram/files/FileDownloadManager.h
++++ b/td/td/telegram/files/FileDownloadManager.h
+@@ -22,6 +22,7 @@
+ #include "td/utils/Status.h"
+ 
+ #include <map>
++#include <set>
+ 
+ namespace td {
+ 
+@@ -36,6 +37,8 @@
+     virtual void on_partial_download(QueryId query_id, PartialLocalFileLocation partial_local, int64 size) = 0;
+     virtual void on_download_ok(QueryId query_id, FullLocalFileLocation local, int64 size, bool is_new) = 0;
+     virtual void on_error(QueryId query_id, Status status) = 0;
++    // Delivered after the worker and every owned file descriptor are destroyed.
++    virtual void on_worker_stopped(QueryId query_id) = 0;
+   };
+ 
+   FileDownloadManager(unique_ptr<Callback> callback, ActorShared<> parent);
+@@ -67,6 +70,9 @@
+   unique_ptr<Callback> callback_;
+   ActorShared<> parent_;
+   std::map<QueryId, NodeId> query_id_to_node_id_;
++  // Unlike nodes, these entries survive logical cancellation and ActorOwn reset.
++  std::set<QueryId> live_workers_;
++  void on_worker_destroyed(QueryId query_id);
+   int64 max_download_resource_limit_ = 1 << 21;
+   bool stop_flag_ = false;
+ 
+@@ -88,11 +94,19 @@
+ 
+   class FileDownloaderCallback final : public FileDownloader::Callback {
+    public:
+-    explicit FileDownloaderCallback(ActorShared<FileDownloadManager> actor_id) : actor_id_(std::move(actor_id)) {
++    FileDownloaderCallback(ActorShared<FileDownloadManager> actor_id,
++                           ActorShared<FileDownloadManager> lifetime, QueryId query_id)
++        : actor_id_(std::move(actor_id)), lifetime_(std::move(lifetime)), query_id_(query_id) {
++    }
++    ~FileDownloaderCallback() final {
++      // FileDownloader declares callback_ before fd_: fd_ is already closed here.
++      send_closure(lifetime_, &FileDownloadManager::on_worker_destroyed, query_id_);
+     }
+ 
+    private:
+     ActorShared<FileDownloadManager> actor_id_;
++    ActorShared<FileDownloadManager> lifetime_;
++    QueryId query_id_;
+ 
+     void on_start_download() final {
+       send_closure(actor_id_, &FileDownloadManager::on_start_download);
+@@ -110,11 +124,18 @@
+ 
+   class FileFromBytesCallback final : public FileFromBytes::Callback {
+    public:
+-    explicit FileFromBytesCallback(ActorShared<FileDownloadManager> actor_id) : actor_id_(std::move(actor_id)) {
++    FileFromBytesCallback(ActorShared<FileDownloadManager> actor_id,
++                          ActorShared<FileDownloadManager> lifetime, QueryId query_id)
++        : actor_id_(std::move(actor_id)), lifetime_(std::move(lifetime)), query_id_(query_id) {
++    }
++    ~FileFromBytesCallback() final {
++      send_closure(lifetime_, &FileDownloadManager::on_worker_destroyed, query_id_);
+     }
+ 
+    private:
+     ActorShared<FileDownloadManager> actor_id_;
++    ActorShared<FileDownloadManager> lifetime_;
++    QueryId query_id_;
+ 
+     void on_ok(const FullLocalFileLocation &full_local, int64 size) final {
+       send_closure(std::move(actor_id_), &FileDownloadManager::on_ok_download, full_local, size, true);
+--- a/td/td/telegram/files/FileManager.cpp
++++ b/td/td/telegram/files/FileManager.cpp
+@@ -2794,6 +2794,9 @@
+     return true;
+   }
+ 
++  if (tgd_has_download_worker(node, true)) {
++    return false;  // An inline replacement must not overlap a retiring writer.
++  }
+   do_cancel_download(node);
+ 
+   class Callback final : public DownloadCallback {
+@@ -2819,6 +2822,7 @@
+       download_queries_.create(DownloadQuery{file_id, DownloadQuery::Type::SetContent});
+   node->download_id_ = query_id;
+   node->is_download_started_ = true;
++  CHECK(tgd_download_workers_.emplace(query_id, file_id).second);
+   send_closure(file_download_manager_, &FileDownloadManager::from_bytes, query_id,
+                node->remote_.full.value().file_type_, std::move(bytes), node->suggested_path());
+   return true;
+@@ -3194,6 +3198,69 @@
+   try_flush_node(node, "cancel_download");
+ }
+ 
++bool FileManager::tgd_has_download_worker(FileNodePtr node, bool include_current) const {
++  for (const auto &entry : tgd_download_workers_) {
++    if ((!include_current && node->download_priority_ > 0 && entry.first == node->download_id_)) {
++      continue;  // A shared surviving consumer owns this current writer.
++    }
++    if (get_file_node(entry.second).get() == node.get()) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void FileManager::cancel_download_and_wait(FileId file_id,
++                                         Promise<td_api::object_ptr<td_api::file>> promise) {
++  TRY_STATUS_PROMISE(promise, G()->close_status());
++  auto node = get_sync_file_node(file_id);
++  if (!node) {
++    return promise.set_error(400, "Unknown file ID");
++  }
++  if (tgd_download_stop_waiters_.size() >= 128) {
++    return promise.set_error(429, "Too many download stop waiters");
++  }
++  const bool had_generator = node->generate_ != nullptr || node->generate_id_ != 0;
++  cancel_download(file_id, 0, false);
++  // Bot API remote media uses FileDownloader. A generated-file actor has a
++  // different writer lifetime and must never be reported stopped by this gate.
++  if (had_generator) {
++    return promise.set_error(409, "Generated file stop proof unavailable");
++  }
++  tgd_download_stop_waiters_.push_back({file_id, std::move(promise)});
++  tgd_finish_download_stops();
++}
++
++void FileManager::tgd_finish_download_stops() {
++  for (size_t i = 0; i < tgd_download_stop_waiters_.size();) {
++    auto &waiter = tgd_download_stop_waiters_[i];
++    auto node = get_file_node(waiter.file_id);
++    if (!node || node->generate_id_ != 0 || tgd_has_download_worker(node, false)) {
++      ++i;
++      continue;
++    }
++    // No user request can be re-admitted by this completion. Client's per-file
++    // gate remains held until it consumes this token-specific authoritative reply.
++    waiter.promise.set_value(get_file_object(waiter.file_id));
++    tgd_download_stop_waiters_.erase(tgd_download_stop_waiters_.begin() + i);
++  }
++}
++
++void FileManager::on_download_worker_stopped(FileDownloadManager::QueryId query_id) {
++  auto it = tgd_download_workers_.find(query_id);
++  CHECK(it != tgd_download_workers_.end());
++  auto file_id = it->second;
++  tgd_download_workers_.erase(it);
++  // The manager posted ordinary completion/error first. Do not consume a
++  // download query here: that would let a stale lifetime event touch a retry.
++  CHECK(download_queries_.get(query_id) == nullptr);
++  auto node = get_file_node(file_id);
++  if (node) {
++    run_download(node, false);  // Resume a deferred internal/other-alias owner.
++  }
++  tgd_finish_download_stops();
++}
++
+ void FileManager::run_download(FileNodePtr node, bool force_update_priority) {
+   int8 priority = 0;
+   bool ignore_download_limit = false;
+@@ -3266,6 +3333,12 @@
+   }
+ 
+   CHECK(node->download_id_ == 0);
++  // Old ActorOwn reset is asynchronous. Never reopen the same partial cache
++  // for a fresh writer while the previous downloader still owns its fd.
++  if (tgd_has_download_worker(node, true)) {
++    node->set_download_priority(0);
++    return;
++  }
+   CHECK(!node->file_ids_.empty());
+   auto file_id = node->main_file_id_;
+ 
+@@ -3330,6 +3403,7 @@
+     download_limit += download_offset;
+     download_offset = 0;
+   }
++  CHECK(tgd_download_workers_.emplace(query_id, file_id).second);
+   send_closure(file_download_manager_, &FileDownloadManager::download, query_id, node->remote_.full.value(),
+                node->local_, node->size_, node->suggested_path(), node->encryption_key_, node->can_search_locally_,
+                download_offset, download_limit, priority);
+@@ -5384,6 +5458,10 @@
+ }
+ 
+ void FileManager::hangup() {
++  for (auto &waiter : tgd_download_stop_waiters_) {
++    waiter.promise.set_error(Global::request_aborted_error());
++  }
++  tgd_download_stop_waiters_.clear();
+   file_db_.reset();
+   file_generate_manager_.reset();
+   file_download_manager_.reset();
+--- a/td/td/telegram/files/FileManager.h
++++ b/td/td/telegram/files/FileManager.h
+@@ -527,6 +527,7 @@
+                 Promise<td_api::object_ptr<td_api::file>> promise = Promise<td_api::object_ptr<td_api::file>>());
+ 
+   void cancel_download(FileId file_id, int64 internal_download_id, bool only_if_pending);
++  void cancel_download_and_wait(FileId file_id, Promise<td_api::object_ptr<td_api::file>> promise);
+ 
+   static int64 get_internal_upload_id();
+ 
+@@ -656,6 +657,9 @@
+    private:
+     ActorId<FileManager> actor_id_;
+ 
++    void on_worker_stopped(FileDownloadManager::QueryId query_id) final {
++      send_closure(actor_id_, &FileManager::on_download_worker_stopped, query_id);
++    }
+     void on_start_download(FileDownloadManager::QueryId query_id) final {
+       send_closure(actor_id_, &FileManager::on_start_download, query_id);
+     }
+@@ -902,6 +906,17 @@
+   ActorOwn<FileGenerateManager> file_generate_manager_;
+ 
+   Container<DownloadQuery> download_queries_;
++  // Entries survive finish_download_query/do_cancel_download; FileId resolves
++  // through merge, so a retired writer cannot disappear with its old node.
++  std::map<FileDownloadManager::QueryId, FileId> tgd_download_workers_;
++  struct DownloadStopWaiter {
++    FileId file_id;
++    Promise<td_api::object_ptr<td_api::file>> promise;
++  };
++  vector<DownloadStopWaiter> tgd_download_stop_waiters_;
++  bool tgd_has_download_worker(FileNodePtr node, bool include_current) const;
++  void on_download_worker_stopped(FileDownloadManager::QueryId query_id);
++  void tgd_finish_download_stops();
+   Container<GenerateQuery> generate_queries_;
+   Container<UploadQuery> upload_queries_;
+ 
+--- a/td/td/telegram/Requests.cpp
++++ b/td/td/telegram/Requests.cpp
+@@ -6466,6 +6466,11 @@
+                td_api::make_object<td_api::fileDownloadedPrefixSize>(file_view.downloaded_prefix(request.offset_)));
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::tgdCancelDownloadFile &request) {
++  CREATE_REQUEST_PROMISE();
++  td_->file_manager_->cancel_download_and_wait(FileId(request.file_id_, 0), std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::cancelDownloadFile &request) {
+   td_->file_manager_->cancel_download(FileId(request.file_id_, 0), 0, request.only_if_pending_);
+   send_closure(td_actor_, &Td::send_result, id, td_api::make_object<td_api::ok>());
+--- a/td/td/telegram/Requests.h
++++ b/td/td/telegram/Requests.h
+@@ -1264,6 +1264,8 @@
+ 
+   void on_request(uint64 id, const td_api::cancelDownloadFile &request);
+ 
++  void on_request(uint64 id, const td_api::tgdCancelDownloadFile &request);
++
+   void on_request(uint64 id, const td_api::getSuggestedFileName &request);
+ 
+   void on_request(uint64 id, const td_api::preliminaryUploadFile &request);

@@ -11,18 +11,21 @@ int main() {
   assert(!state.has_usage && !state.busy());
   assert(state.begin_scan());
   assert(state.busy() && !state.begin_scan());
+  assert(!state.mutation_busy());  // Scanning does not fence download work.
   assert(state.begin_operation(first, false) == Admission::Busy);
   state.scanned(0, 2);  // Empty/sparse files still count.
   assert(state.has_usage && state.file_count == 2);
   assert(state.begin_operation(first, true) == Admission::Busy);
   assert(state.operation == Operation::None);  // Rejected IDs were never accepted.
   assert(state.begin_operation(first, false) == Admission::Accepted);
+  assert(state.mutation_busy());
   assert(!state.begin_scan());
   assert(state.begin_operation(first, true) == Admission::Repeated);
   assert(state.begin_operation(second, false) == Admission::Busy);
   state.before_scanned(8192, 4);
   state.succeeded(4096, 2);
   assert(state.released_bytes == 4096 && state.has_after && !state.busy());
+  assert(!state.mutation_busy());
   assert(state.begin_operation(first, false) == Admission::Repeated);
   assert(state.operation == Operation::Succeeded);  // Terminal retry cannot repeat GC.
   assert(state.begin_operation(second, false) == Admission::Accepted);

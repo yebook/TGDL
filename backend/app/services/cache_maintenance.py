@@ -22,7 +22,7 @@ MESSAGES = {
     "active_downloads": "请等待下载和保存完成后清理缓存",
     "recovery_required": "存在获取状态未知的任务，请先重启本地 API 恢复",
     "queued_downloads": "存在排队或重试任务，请先完成或取消这些任务",
-    "pending_verification": "已保存文件的缓存仍待安全校验，请先处理存储或缓存清理问题",
+    "pending_verification": "已保存文件未通过校验，已保留缓存；请检查保存目录和文件后重试",
     "maintenance_running": "正在清理缓存，暂不开始新的下载",
     "maintenance_uncertain": "缓存清理结果尚未确认，正在核对；如持续未恢复，请重启本地 API",
 }
@@ -62,8 +62,6 @@ def owners_reason(session: Session) -> str | None:
         return "active_downloads"
     if states & {"queued", "retry_wait", "waiting_existing"}:
         return "queued_downloads"
-    if session.scalar(select(CacheCleanup.job_id).limit(1)):
-        return "pending_verification"
     return None
 
 
@@ -75,6 +73,7 @@ class CacheMaintenanceService:
         self._identity: tuple[str, str] | None = None
         self._usage_state = "unavailable"
         self._measured_at: str | None = None
+        self._refresh_error: str | None = None
         self._task: asyncio.Task[None] | None = None
         # A previous app may have exited after mutation intent but before its response.
         current = self.read()
@@ -117,8 +116,11 @@ class CacheMaintenanceService:
         with self.runtime.db.sessions() as session:
             maintenance = dict(maintenance_values(session))
             reason = owners_reason(session)
-        if reason in {"active_downloads", "recovery_required", "pending_verification"}:
-            self.invalidate()
+        if reason is None:
+            if self.runtime.worker.cleanup_paused:
+                reason = "maintenance_running"
+            elif any(not task.done() for task in tuple(self.runtime.running.values())):
+                reason = "active_downloads"
         state = maintenance.get("state", "idle")
         if state not in BUSY and identity and maintenance.get("credential") != identity[2]:
             maintenance, state = {}, "idle"
@@ -133,6 +135,7 @@ class CacheMaintenanceService:
             usage_state = self._usage_state if matching else "unavailable"
             usage = self._usage if matching else None
             measured = self._measured_at if matching else None
+            refresh_error = self._refresh_error if matching else None
         if usage_state == "unsupported" and state not in BUSY:
             reason = "unsupported"
         elif (usage is None or usage_state in {"unavailable", "refreshing"}) and reason is None:
@@ -141,10 +144,11 @@ class CacheMaintenanceService:
             reason = "maintenance_running"
         return {"used_bytes": usage["used_bytes"] if usage else None,
                 "file_count": usage["file_count"] if usage else None,
-                "usage_state": usage_state, "measured_at": measured, "scope": "current_bot_media",
+                "usage_state": usage_state, "measured_at": measured, "refresh_error": refresh_error,
+                "scope": "current_bot_media",
                 "maintenance": {"state": state, "operation_id": maintenance.get("operation_id"),
                     "can_clean": reason is None and not (self._task and not self._task.done()),
-                    "blocked_reason": reason, "message": MESSAGES.get(reason or "", {
+                    "blocked_reason": reason, "message": MESSAGES.get(reason or maintenance.get("blocked_reason", ""), {
                         "idle": "缓存占用已更新，可在下载空闲时清理",
                         "succeeded": "缓存清理完成，已更新实际占用",
                         "failed": "缓存清理未完成，请刷新占用后重试；如仍有问题，请重启本地 API",
@@ -165,7 +169,8 @@ class CacheMaintenanceService:
             operation_id = uuid4().hex
             row.values = dict(row.values) | {"cache_maintenance": {
                 "state": "running", "operation_id": operation_id, "generation": generation,
-                "credential": credential, "started_at": time.time(), "last_result": None}}
+                "credential": credential, "bot_id": runtime.bot_id,
+                "started_at": time.time(), "last_result": None}}
             return operation_id
 
     async def start(self, *, clean: bool) -> None:
@@ -203,25 +208,13 @@ class CacheMaintenanceService:
                     raise
                 self._task = asyncio.create_task(self._clear(client, generation, credential, operation_id))
             else:
-                runtime.worker.cache_scan_paused = True
-                try:
-                    def check_scan() -> str | None:
-                        # Wait for any claim already in progress before checking its owner.
-                        with runtime.db.transaction() as session:
-                            require_no_maintenance(session)
-                            reason = owners_reason(session)
-                            return reason if reason in {"active_downloads", "recovery_required"} else None
-
-                    reason = await asyncio.to_thread(check_scan)
-                    if reason or runtime.worker.cleanup_paused or any(not task.done() for task in runtime.running.values()):
-                        raise AppError("CACHE_CLEANUP_BLOCKED", MESSAGES[reason or "active_downloads"], 409)
-                except BaseException:
-                    runtime.worker.cache_scan_paused = False
-                    raise
+                # Full statistics are read-only. Native serializes them with GC;
+                # ongoing/new downloads, saves and notifications remain independent.
                 with self._lock:
                     if self._identity != (generation, credential):
                         self._usage, self._measured_at = None, None
                     self._identity, self._usage_state = (generation, credential), "refreshing"
+                    self._refresh_error = None
                 self._task = asyncio.create_task(self._refresh(client, generation, credential))
 
     def _snapshot(self, snapshot: dict[str, Any], generation: str, credential: str) -> None:
@@ -232,7 +225,10 @@ class CacheMaintenanceService:
             before_state = self._usage_state
             if self._identity != (generation, credential):
                 self._usage, self._measured_at = None, None
+                self._refresh_error = None
             self._identity = generation, credential
+            if snapshot["scan_state"] in {"ready", "failed"}:
+                self._refresh_error = "缓存占用刷新失败，请稍后重试" if snapshot["scan_state"] == "failed" else None
             usage = snapshot["usage"]
             if usage is not None:
                 if snapshot["scan_state"] == "ready" and (usage != self._usage or before_state == "refreshing" or self._measured_at is None):
@@ -252,20 +248,75 @@ class CacheMaintenanceService:
                 self._write(current["operation_id"], state=state, last_result={
                     key: operation[key] for key in ("before_bytes", "after_bytes", "released_bytes")})
 
-    def _unavailable(self, error: Exception, generation: str, credential: str) -> None:
+    def _unavailable(self, error: Exception, generation: str, credential: str, *, refresh: bool = False) -> None:
         with self._lock:
             if self._identity != (generation, credential):
                 return
             self._usage_state = "unsupported" if isinstance(error, AppError) and error.code == "CACHE_UNSUPPORTED" else "stale" if self._usage else "unavailable"
+            if refresh:
+                self._refresh_error = MESSAGES["unsupported"] if self._usage_state == "unsupported" else "缓存占用刷新失败，请稍后重试"
 
     async def _clear(self, client: Any, generation: str, credential: str, operation_id: str) -> None:
+        mutation_sent = False
         try:
+            bot_id = (await asyncio.to_thread(self.read)).get("bot_id")
+            if bot_id is None or self.runtime.bot_id != bot_id:
+                await asyncio.to_thread(self._write, operation_id, state="failed")
+                return
+
+            def cleanup_signature(row: CacheCleanup) -> tuple[Any, ...]:
+                return (row.job_id, row.bot_id, row.file_id, row.source_path_encrypted,
+                        row.root_id, row.relative_path, row.size_bytes, row.sha256)
+
+            # Pending automatic cleanup is not itself evidence of an unsafe final
+            # output (e.g. a transient native deletion failure). Hold the durable
+            # mutation gate while hashing, without blocking connection recovery.
+            def verify_finals() -> list[tuple[CacheCleanup, tuple[int, int, int, int, int]]] | None:
+                with self.runtime.db.sessions() as session:
+                    rows = list(session.scalars(select(CacheCleanup).where(CacheCleanup.bot_id == bot_id)))
+                verified = []
+                for row in rows:
+                    try:
+                        fingerprint = self.runtime.cache_cleanup.verify_final(row)
+                    except (OSError, AppError, ValueError):
+                        return None
+                    if fingerprint is None:
+                        return None
+                    verified.append((row, fingerprint))
+                return verified
+
+            # A cancelled to_thread hash must finish before close can release ownership.
+            from app.workers.download import owned_thread
+
+            verified = await owned_thread(verify_finals)
+            if verified is None:
+                await asyncio.to_thread(self._write, operation_id, state="failed", blocked_reason="pending_verification")
+                return  # No native mutation was issued; keep the only cache copy.
             async with self.runtime.connection_lock:
                 identity = await asyncio.to_thread(self.identity)
                 if not identity or identity != (client, generation, credential):
                     await asyncio.to_thread(self._write, operation_id, state="failed")
                     return  # No mutation was sent.
+                def safe_to_clear() -> bool:
+                    with self.runtime.settings.connection_publication_lock, self.runtime.db.transaction() as session:
+                        local = session.get(LocalApiRuntime, 1)
+                        if (self.runtime.bot_id != bot_id or owners_reason(session) is not None
+                                or not local or local.values.get("phase") != "idle"
+                                or maintenance_values(session).get("operation_id") != operation_id):
+                            return False
+                        current = session.scalars(select(CacheCleanup).where(CacheCleanup.bot_id == bot_id))
+                        if {cleanup_signature(row) for row in current} != {cleanup_signature(row) for row, _ in verified}:
+                            return False
+                        try:
+                            return all(self.runtime.cache_cleanup.final_unchanged(row, fingerprint) for row, fingerprint in verified)
+                        except (OSError, AppError, ValueError):
+                            return False
+
+                if not await owned_thread(safe_to_clear):
+                    await asyncio.to_thread(self._write, operation_id, state="failed", blocked_reason="pending_verification")
+                    return
                 try:
+                    mutation_sent = True
                     snapshot = await client.clear_cache_storage(generation, operation_id)
                 except AppError as exc:
                     if exc.code == "CACHE_NATIVE_BUSY":
@@ -274,38 +325,33 @@ class CacheMaintenanceService:
                     raise
                 await asyncio.to_thread(self._snapshot, snapshot, generation, credential)
         except asyncio.CancelledError:
-            await asyncio.to_thread(self._write, operation_id, state="uncertain")
+            await asyncio.to_thread(self._write, operation_id, state="uncertain" if mutation_sent else "failed")
             raise
         except Exception as exc:
             self._unavailable(exc, generation, credential)
-            await asyncio.to_thread(self._write, operation_id, state="uncertain")
+            await asyncio.to_thread(self._write, operation_id, state="uncertain" if mutation_sent else "failed")
         await self._monitor()
 
     async def _refresh(self, client: Any, generation: str, credential: str) -> None:
         refresh = True
-        try:
-            while not self.runtime.stopping:
-                try:
-                    async with self.runtime.connection_lock:
-                        if await asyncio.to_thread(self.identity) != (client, generation, credential):
-                            return
-                        start_scan, refresh = refresh, False
-                        snapshot = await client.cache_storage(generation, refresh=start_scan)
-                        await asyncio.to_thread(self._snapshot, snapshot, generation, credential)
-                        if (snapshot["scan_state"] != "running"
-                                and not (snapshot["operation"] and snapshot["operation"]["state"] == "running")):
-                            return
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._unavailable(exc, generation, credential)
-                    if isinstance(exc, AppError) and exc.code in {"CACHE_NATIVE_BUSY", "CACHE_UNSUPPORTED"}:
-                        return  # Known unaccepted scan/capability failure.
-                    # A lost scan response cannot prove native work stopped. Poll only;
-                    # retain dispatch/notification barriers until it finishes or is replaced.
-                await asyncio.sleep(1)
-        finally:
-            self.runtime.worker.cache_scan_paused = False
+        while not self.runtime.stopping:
+            try:
+                if await asyncio.to_thread(self.identity) != (client, generation, credential):
+                    return
+                start_scan, refresh = refresh, False
+                snapshot = await client.cache_storage(generation, refresh=start_scan)
+                await asyncio.to_thread(self._snapshot, snapshot, generation, credential)
+                if (snapshot["scan_state"] != "running"
+                        and not (snapshot["operation"] and snapshot["operation"]["state"] == "running")):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._unavailable(exc, generation, credential, refresh=True)
+                # A lost read-only response has no mutation uncertainty. Keep the
+                # last values and allow an explicit refresh to retry/coalesce.
+                return
+            await asyncio.sleep(1)
 
     async def _monitor(self) -> None:
         while not self.runtime.stopping:

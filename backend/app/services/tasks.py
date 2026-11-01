@@ -18,6 +18,7 @@ from app.db.session import Database
 from app.services.cache_maintenance import require_no_maintenance
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
+from app.services.file_acquisition import uncertain_message
 from app.services.settings import SettingsService
 from app.storage.files import contained
 from app.storage.naming import fit_name, planned_name, request_caption, request_summary, unique_name
@@ -283,7 +284,9 @@ class TaskService:
             "total_bytes": sum(s for s in sizes if s is not None) if all(s is not None for s in sizes) else None,
             "completed_bytes": sum(j.completed_bytes for j in jobs.values()),
             "effective_destination": request.destination, "notification_status": notification_status,
-            "can_cancel": request.status in ACTIVE | {"collecting", "awaiting_confirmation"},
+            "can_cancel": (request.status in {"collecting", "awaiting_confirmation"}
+                           or request.status in ACTIVE and any(j.state in ACTIVE and not j.cancel_requested
+                                                              for j in jobs.values())),
             "can_retry": any(j.state == "failed" for j in jobs.values()),
             "can_delete": request.status in DELETABLE and all(j.state in TERMINAL for j in jobs.values()),
         }
@@ -357,6 +360,8 @@ class TaskService:
                     job.state, job.finished_at = "cancelled", time.time()
                 else:
                     job.state = "cancelling" if job.state != "recovery_blocked" else "recovery_blocked"
+                    if job.state == "recovery_blocked":
+                        job.error_message = uncertain_message(session, job)
             session.flush()
             project(session, request)
             outcome = request.status

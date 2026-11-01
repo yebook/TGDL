@@ -9,19 +9,39 @@ import type { CacheStatus } from '../api/types'
 const props = defineProps<{ status?: CacheStatus; active: boolean; available?: boolean; stale?: boolean; disabled?: boolean; draft?: boolean }>()
 const emit = defineEmits<{ changed: [status: CacheStatus]; sync: [] }>()
 const busy = ref<'refresh' | 'clean' | null>(null)
+const refreshError = ref('')
 const outcomeUnknown = ref(false)
 const awaitingOperation = ref<string | null>(null)
 let previousOperation: string | null = null
+let pendingResult: string | null = null
 let opened = false
 let confirming = false
 const controller = new AbortController()
 onUnmounted(() => { controller.abort(); if (confirming) ElMessageBox.close() })
 const running = computed(() => props.status?.maintenance.state === 'running' || !!awaitingOperation.value)
-const cleanDisabled = computed(() => !!busy.value || props.stale || props.disabled || outcomeUnknown.value || running.value || !props.status?.maintenance.can_clean)
-const usageLabel = computed(() => ({ ready: '已统计', refreshing: '统计中', stale: '待更新', unavailable: '暂不可用', unsupported: '服务不支持' })[props.status?.usage_state ?? 'unavailable'])
-const measuredAt = computed(() => props.status?.measured_at ? new Date(props.status.measured_at).toLocaleString('zh-CN', { hour12: false }) : '尚未统计')
+const cleanReason = computed(() => {
+  if (outcomeUnknown.value) return '清理结果尚未确认，请刷新占用查询；确认服务空闲后可重新载入页面。持续无法确认时请在连接设置中重启本地 API。'
+  if (running.value) return '正在清理媒体缓存，请等待完成。'
+  if (busy.value) return busy.value === 'refresh' ? '正在刷新缓存占用，请稍候。' : '请先完成当前清理操作。'
+  if (props.disabled) return '请先完成当前设置操作，再清理缓存。'
+  if (props.stale) return '服务状态未更新，请刷新状态后再清理缓存。'
+  if (!props.status?.maintenance.can_clean) return props.status?.maintenance.message || '请先刷新缓存占用。'
+  return ''
+})
+const cleanDisabled = computed(() => !!cleanReason.value)
+const usage = computed(() => props.status?.used_bytes == null ? '—' : bytes(props.status.used_bytes))
 watch(() => props.status, status => {
   if (status?.maintenance.operation_id === awaitingOperation.value) awaitingOperation.value = null
+  const maintenance = status?.maintenance
+  if (maintenance?.state === 'running' && maintenance.operation_id) pendingResult = maintenance.operation_id
+  if (maintenance?.operation_id && maintenance.operation_id === pendingResult
+      && ['succeeded', 'failed'].includes(maintenance.state) && maintenance.blocked_reason !== 'maintenance_running') {
+    pendingResult = null
+    const succeeded = maintenance.state === 'succeeded'
+    ElMessage({ type: succeeded ? 'success' : 'error',
+      message: succeeded ? '缓存清理完成' : maintenance.blocked_reason ? '缓存清理未完成，请刷新占用后重试。' : maintenance.message,
+      duration: 6000, showClose: true })
+  }
 })
 watch(() => props.active, active => { if (!active && confirming) ElMessageBox.close() })
 watch(() => [props.active, props.status, props.stale, props.available, props.disabled] as const, () => {
@@ -33,6 +53,7 @@ watch(() => [props.active, props.status, props.stale, props.available, props.dis
 async function refresh(automatic = false) {
   if (busy.value || props.disabled || controller.signal.aborted) return
   busy.value = 'refresh'
+  refreshError.value = ''
   try {
     const status = await boundedRequest<CacheStatus>('/system/cache/refresh', { method: 'POST', signal: controller.signal })
     if (controller.signal.aborted) return
@@ -40,7 +61,10 @@ async function refresh(automatic = false) {
     if (outcomeUnknown.value && status.maintenance.operation_id && status.maintenance.operation_id !== previousOperation) outcomeUnknown.value = false
     emit('changed', status)
   } catch (cause) {
-    if (!controller.signal.aborted && !automatic) ElMessage({ type: 'error', message: errorMessage(cause), duration: 6000, showClose: true })
+    if (!controller.signal.aborted) {
+      refreshError.value = errorMessage(cause)
+      if (!automatic) ElMessage({ type: 'error', message: refreshError.value, duration: 6000, showClose: true })
+    }
   } finally { busy.value = null }
 }
 async function clean() {
@@ -56,9 +80,10 @@ async function clean() {
     previousOperation = props.status.maintenance.operation_id
     const status = await boundedRequest<CacheStatus>('/system/cache/clean', { method: 'POST', signal: controller.signal })
     if (controller.signal.aborted) return
+    pendingResult = status.maintenance.operation_id
     if (status.maintenance.state === 'running') awaitingOperation.value = status.maintenance.operation_id
     emit('changed', status)
-    ElMessage.info('缓存清理已提交，可在此查看结果。')
+    ElMessage.info('缓存清理已提交。')
   } catch (cause) {
     if (controller.signal.aborted) return
     if (!(cause instanceof ApiError) || cause.status === 0 || cause.status >= 500) outcomeUnknown.value = true
@@ -69,20 +94,24 @@ async function clean() {
 </script>
 <template>
   <div class="cache-panel" data-testid="cache-storage-panel" :aria-busy="!!busy || running">
-    <div class="cache-title"><h3>Telegram 媒体缓存</h3><el-tag type="info" round>{{ stale ? '状态待更新' : usageLabel }}</el-tag></div>
-    <p class="field-hint">当前 Bot 的媒体缓存占用，包含未完成下载。缓存盘剩余 {{ bytes(status?.free_bytes ?? null) }} / {{ bytes(status?.total_bytes ?? null) }}。</p>
-    <dl class="cache-meta"><div><dt>缓存占用</dt><dd>{{ bytes(status?.used_bytes ?? null) }}<span v-if="status?.file_count != null"> · {{ status.file_count }} 个文件</span></dd></div><div><dt>统计时间</dt><dd>{{ measuredAt }}</dd></div></dl>
-    <p v-if="status?.usage_state === 'stale' || stale" class="field-hint">以上为上次统计，请刷新占用确认当前情况。</p>
-    <p role="status" aria-live="polite" :class="outcomeUnknown || status?.maintenance.state === 'uncertain' ? 'warning-text' : 'field-hint'">{{ outcomeUnknown ? '清理结果尚未确认，请刷新占用查询。系统不会自动重复清理；仍无法确认时请在连接设置中重启本地 API。' : status?.maintenance.message || '正在获取缓存状态。' }}</p>
-    <p v-if="status?.maintenance.last_result?.released_bytes != null" class="field-hint">上次清理实际释放 {{ bytes(status.maintenance.last_result.released_bytes) }}。</p>
-    <div class="cache-actions"><el-button :loading="busy === 'refresh'" :disabled="!!busy || disabled" @click="refresh()">刷新占用</el-button><el-button type="danger" plain :loading="busy === 'clean' || running" :disabled="cleanDisabled" @click="clean">{{ running ? '正在清理' : '清理媒体缓存' }}</el-button></div>
-    <p class="field-hint">下载与恢复处理结束后可统计和清理。缓存和保存目录均需足够空间。</p>
+    <h3>Telegram 媒体缓存</h3>
+    <p class="cache-usage" aria-live="polite">缓存占用 {{ usage }}<span v-if="status?.file_count != null"> · {{ status.file_count }} 个文件</span></p>
+    <p v-if="refreshError || status?.refresh_error" class="warning-text" role="alert">{{ refreshError || status?.refresh_error }}</p>
+    <div class="cache-actions">
+      <el-button :loading="busy === 'refresh'" :disabled="!!busy || disabled" @click="refresh()">刷新占用</el-button>
+      <el-tooltip :content="cleanReason" :disabled="!cleanDisabled" :trigger="['hover', 'focus']" placement="top">
+        <span class="cache-clean-control" :tabindex="cleanDisabled ? 0 : undefined" :aria-label="cleanDisabled ? `清理媒体缓存：${cleanReason}` : undefined" :title="cleanReason || undefined">
+          <el-button type="danger" plain :loading="busy === 'clean' || running" :disabled="cleanDisabled" :aria-label="cleanReason ? `清理媒体缓存：${cleanReason}` : undefined" @click="clean">{{ running ? '正在清理' : '清理媒体缓存' }}</el-button>
+        </span>
+      </el-tooltip>
+    </div>
   </div>
 </template>
 <style scoped>
 .cache-panel { margin-top: 24px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 12px; }
-.cache-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.cache-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.cache-usage { margin: 12px 0; }
+.cache-clean-control { display: inline-flex; }
+.cache-clean-control:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; border-radius: 4px; }
 .cache-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .cache-actions .el-button { margin-left: 0; min-height: 44px; }
 </style>

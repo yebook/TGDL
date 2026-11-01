@@ -168,7 +168,7 @@ docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-op
 
 验证复用生产代码中的可删除条件、并发保护与文件消失检查，并确认缺少已有客户端时，实际服务不创建客户端、不对外连接。后端 `tests/test_cache_cleanup.py` 覆盖发布与恢复、取消、存储不足、校验失败、并发等待和独立重试。隔离检查不包含真实授权客户端的 TDLib 删除，实际文件删除和空间释放仍需真实环境验收；不得把成功回调直接视为磁盘空间已释放。
 
-设置页缓存维护的浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cache.config.ts`。专用配置使用回环端口 `18765`；`backend/tools/e2e_app.py` 的 `TGDL_E2E_PORT` 可指定隔离服务端口，默认仍为 `8765`。若平台不能可靠回收测试服务进程，可独立启动该临时测试服务，并设置 `TGDL_E2E_EXTERNAL_SERVER=1` 运行缓存浏览器配置，检查结束后停止该服务。所有缓存响应均为合成边界，不读取或清理真实用户缓存。
+设置页缓存维护的浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cache.config.ts`。专用配置使用回环端口 `18765` 及固定 `E2E_CACHE_STORAGE=1` 场景；`backend/tools/e2e_app.py` 的 `TGDL_E2E_PORT` 可指定隔离服务端口，默认仍为 `8765`。若平台不能可靠回收测试服务进程，可独立以这两个环境变量启动临时测试服务，并设置 `TGDL_E2E_EXTERNAL_SERVER=1` 运行缓存浏览器配置，检查结束后停止该服务。测试运行真实 REST、缓存服务和任务取消，只替换原生边界，不读取或清理真实用户缓存。
 
 完整的缓存占用与手动清理原生验证，需编译固定源码并构建独立夹具：
 
@@ -180,6 +180,22 @@ docker run --rm --network none --user 1000:1000 --cap-drop ALL --read-only --tmp
 ```
 
 夹具仅在测试镜像中离线构造已有客户端，运行实际 TDLib 扫描和 GC；不改变生产认证逻辑。检查按分配块统计、空/稀疏/取消残留文件、重复请求、扫描和删除权限失败，并保留其他 Bot、数据库及最终文件的标记。生产二进制另验证缺少客户端时不创建客户端、不出网。真实 NAS 或 Telegram 仍需单独验收。修改原生输入后按上方预编译产物流程重新打包并验证来源，不能只更新应用。
+
+### 获取阶段取消
+
+取消验证使用配套的生产二进制和独立测试二进制。先构建固定源码，再构建离线夹具；不挂载用户数据，也不使用真实凭据：
+
+```sh
+docker build --target build -f deploy/bot-api/Dockerfile -t tgd-native-acquisition-build .
+docker build --target native -f deploy/bot-api/Dockerfile -t tgd-native:acquisition .
+docker build -f deploy/bot-api/Dockerfile.verify-acquisition -t tgd-native-acquisition-acceptance .
+docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m --cap-drop ALL --security-opt no-new-privileges tgd-native-acquisition-acceptance
+docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m --cap-drop ALL --security-opt no-new-privileges --entrypoint python3 tgd-native-acquisition-acceptance /verification/verify-native-acquisition-production.py
+```
+
+夹具保留真实 TDLib 文件管理、分块记录、文件写入和线程退出路径，仅替换远端数据并设置隔离的测试屏障。检查迟到回调、共享消费者、取消确认前仍打开的写入句柄、确认后不再写入、同进程分块复用，以及取消／正常完成期间的缓存清理保护。活跃写入期间也运行实际占用扫描，核对新增分块引起的分配空间增长、临时文件改名不重复计数，扫描期间新下载和取消仍可用、清理保持互斥。生产二进制另检查私有请求不会创建缺失的 Bot 客户端或产生外连；真实 Telegram 大文件与 NAS 仍需单独验收。
+
+浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cancellation.config.ts`。专用配置使用端口 `18766` 和固定的 `E2E_ACQUISITION_CANCEL=1` 场景，运行真实 REST、任务服务、工作器和持久状态，只替换原生传输边界。若独立启动测试服务，设置 `TGDL_E2E_PORT=18766`、`E2E_ACQUISITION_CANCEL=1`，然后以 `TGDL_E2E_EXTERNAL_SERVER=1` 运行上述浏览器配置并在检查后停止服务。
 
 ## 文档开发
 

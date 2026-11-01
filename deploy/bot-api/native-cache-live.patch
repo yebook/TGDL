@@ -1,0 +1,208 @@
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -8695,9 +8695,9 @@
+   if (query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage") {
+     return tgd_cache_storage(std::move(query));
+   }
+-  // No new media readers, uploads or generators during maintenance. Only these
++  // No new media readers, uploads or generators during destructive GC. Only these
+   // existing memory-only projections and update reads may enter the command queue.
+-  if (tgd_cache_storage_.busy() && query->method() != "tgdgetfileprogress" &&
++  if (tgd_cache_storage_.mutation_busy() && query->method() != "tgdgetfileprogress" &&
+       query->method() != "getme" && query->method() != "getupdates" &&
+       query->method() != "getwebhookinfo") {
+     if (query->method() == "getfile") {
+@@ -9436,7 +9436,7 @@
+     return handler->on_result(make_object<td_api::error>(error.code, error.message.str()));
+   }
+ 
+-  if (tgd_cache_storage_.busy() && f->get_id() != td_api::getStorageStatistics::ID &&
++  if (tgd_cache_storage_.mutation_busy() && f->get_id() != td_api::getStorageStatistics::ID &&
+       f->get_id() != td_api::optimizeStorage::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
+     return handler->on_result(make_object<td_api::error>(400, "TGD_CACHE_CLEANUP_BUSY"));
+   }
+@@ -17394,7 +17394,8 @@
+       return fail_query(400, "Bad Request: invalid cache storage request", std::move(query));
+     }
+     if (refresh == "1" && !tgd_cache_storage_.busy()) {
+-      if (tgd_cache_native_busy()) {
++      // Stats may observe active downloads; only deletion must stay exclusive.
++      if (tgd_cache_gate_.busy()) {
+         return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
+       }
+       CHECK(tgd_cache_storage_.begin_scan());
+@@ -17492,7 +17493,7 @@
+     if (alias.empty() || alias.size() > 4096 || query->args().size() != 2) {
+       return fail_query(400, "Bad Request: invalid acquisition request", std::move(query));
+     }
+-    if (tgd_cache_storage_.busy() || tgd_cache_gate_.busy()) {
++    if (tgd_cache_storage_.mutation_busy() || tgd_cache_gate_.busy()) {
+       return fail_query(409, "Conflict: TGD_CACHE_STORAGE_BUSY", std::move(query));
+     }
+     // Never reuse an owner ID. Native-minted registration means delayed getFile
+@@ -17554,7 +17555,7 @@
+   }
+   CHECK(result->get_id() == td_api::file::ID);
+   auto file = move_object_as<td_api::file>(result);
+-  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file->id_) ||
++  if (tgd_cache_storage_.mutation_busy() || tgd_cache_gate_.blocks(file->id_) ||
+       tgd_acquisitions_.blocks(file->id_)) {
+     tgd_acquisition_settle(id, AcquisitionControl::State::Failed);
+     return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+@@ -17620,7 +17621,7 @@
+ 
+ 
+ td::Status Client::process_get_file_query(PromisedQueryPtr &query) {
+-  if (tgd_cache_storage_.busy()) {
++  if (tgd_cache_storage_.mutation_busy()) {
+     fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+     return td::Status::OK();
+   }
+@@ -17651,7 +17652,7 @@
+   }
+ 
+   auto file_id = file->id_;
+-  if (tgd_cache_storage_.busy() || tgd_cache_gate_.blocks(file_id) || tgd_acquisitions_.blocks(file_id)) {
++  if (tgd_cache_storage_.mutation_busy() || tgd_cache_gate_.blocks(file_id) || tgd_acquisitions_.blocks(file_id)) {
+     return fail_query(400, "Bad Request: TGD_CACHE_CLEANUP_BUSY", std::move(query));
+   }
+   if (parameters_->local_mode_) {
+--- a/td/td/telegram/files/FileStatsWorker.cpp
++++ b/td/td/telegram/files/FileStatsWorker.cpp
+@@ -31,6 +31,11 @@
+ #include "td/utils/Time.h"
+ #include "td/utils/tl_parsers.h"
+ 
++#include <set>
++#include <utility>
++#include <dirent.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <cerrno>
+ #include <sys/stat.h>
+ 
+@@ -103,9 +108,45 @@
+   uint64 mtime_nsec;
+ };
+ 
++// Directory-entry type may be unknown on NAS filesystems. Stat relative to the
++// open directory and skip only entries that disappeared; keep traversing siblings.
++// Neither symlinks nor a rename can redirect a scan outside TDLib media storage.
+ template <class CallbackT>
+-Status scan_fs(CancellationToken &token, CallbackT &&callback) {
++Status walk_media_files(CancellationToken &token, int parent_fd, const string &name,
++                        const string &path, CallbackT &callback) {
++  auto fd = ::openat(parent_fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++  if (fd < 0) return errno == ENOENT ? Status::OK() : Status::Error(500, "Cache scan failed");
++  auto *directory = ::fdopendir(fd);
++  if (!directory) {
++    ::close(fd);
++    return Status::Error(500, "Cache scan failed");
++  }
++  SCOPE_EXIT { ::closedir(directory); };
++  while (!token) {
++    errno = 0;
++    auto *entry = ::readdir(directory);
++    if (!entry) return errno == 0 ? Status::OK() : Status::Error(500, "Cache scan failed");
++    auto name = string(entry->d_name);
++    if (name == "." || name == "..") continue;
++    struct ::stat info;
++    if (::fstatat(fd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
++      if (errno == ENOENT) continue;
++      return Status::Error(500, "Cache scan failed");
++    }
++    auto child_path = path + "/" + name;
++    if (S_ISREG(info.st_mode)) {
++      callback(CSlice(child_path), info);
++    } else if (S_ISDIR(info.st_mode)) {
++      TRY_STATUS(walk_media_files(token, fd, name, child_path, callback));
++    }
++  }
++  return Status::OK();
++}
++
++template <class CallbackT>
++Status scan_fs(CancellationToken &token, bool need_all_files, CallbackT &&callback) {
+   Status scan_error = Status::OK();
++  std::set<std::pair<uint64, uint64>> scanned_inodes;
+   std::unordered_set<string, Hash<string>> scanned_file_dirs;
+   auto scan_dir = [&](FileType file_type, const string &file_dir) {
+     if (!scanned_file_dirs.insert(file_dir).second) {
+@@ -125,41 +166,36 @@
+       return;
+     }
+     LOG(INFO) << "Scanning directory " << file_dir;
+-    auto walk_status = walk_path(file_dir, [&](CSlice path, WalkPath::Type type) {
+-      if (token) {
+-        return WalkPath::Action::Abort;
+-      }
+-      if (type != WalkPath::Type::RegularFile) {
+-        return WalkPath::Action::Continue;
+-      }
+-      auto r_stat = stat(path);
+-      if (r_stat.is_error()) {
+-        scan_error = Status::Error(500, "Cache scan failed");
+-        return WalkPath::Action::Continue;
+-      }
+-      auto stat = r_stat.move_as_ok();
+-      if (stat.size_ == 0 && ends_with(path, "/.nomedia")) {
+-        // skip .nomedia file
+-        return WalkPath::Action::Continue;
++    auto on_file = [&](CSlice path, const struct ::stat &info_stat) {
++      // Files can finish and move while this read-only worker is scanning.
++      // The directory-relative stat observes identity and allocation atomically.
++      if (info_stat.st_size == 0 && ends_with(path, "/.nomedia")) {
++        return;
++      }
++      // Scan temp before destinations, deduplicating a temp->final rename.
++      // GC needs every pathname, including hard links, so retain those there.
++      if (!need_all_files && !scanned_inodes.emplace(info_stat.st_dev, info_stat.st_ino).second) {
++        return;
+       }
+ 
+       FsFileInfo info;
+       info.path = path.str();
+-      info.size = stat.real_size_;
++      info.size = info_stat.st_blocks * 512;
+       info.file_type = guess_file_type_by_path(path, file_type);
+-      info.atime_nsec = stat.atime_nsec_;
+-      info.mtime_nsec = stat.mtime_nsec_;
++      info.atime_nsec = static_cast<uint64>(info_stat.st_atim.tv_sec) * 1000000000 + info_stat.st_atim.tv_nsec;
++      info.mtime_nsec = static_cast<uint64>(info_stat.st_mtim.tv_sec) * 1000000000 + info_stat.st_mtim.tv_nsec / 1000 * 1000;
+       callback(info);
+-      return WalkPath::Action::Continue;
+-    });
++    };
++    auto walk_status = walk_media_files(token, AT_FDCWD, checked_dir, checked_dir, on_file);
+     if (walk_status.is_error()) scan_error = Status::Error(500, "Cache scan failed");
+   };
++  // A completed download only moves from temporary to final storage.
++  scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::SecureDecrypted));
++  scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::Video));
+   for (int32 i = 0; i < MAX_FILE_TYPE; i++) {
+     auto file_type = static_cast<FileType>(i);
+     scan_dir(get_main_file_type(file_type), get_files_dir(file_type));
+   }
+-  scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::SecureDecrypted));
+-  scan_dir(get_main_file_type(FileType::Temp), get_files_temp_dir(FileType::Video));
+   return scan_error;
+ }
+ }  // namespace
+@@ -168,7 +204,7 @@
+   if (!G()->use_file_database()) {
+     FileStats file_stats(need_all_files, false);
+     auto start = Time::now();
+-    auto scan_status = scan_fs(token_, [&](FsFileInfo &fs_info) {
++    auto scan_status = scan_fs(token_, need_all_files, [&](FsFileInfo &fs_info) {
+       FullFileInfo info;
+       info.file_type = fs_info.file_type;
+       info.path = std::move(fs_info.path);
+@@ -188,7 +224,7 @@
+     auto start = Time::now();
+ 
+     vector<FullFileInfo> full_infos;
+-    auto scan_status = scan_fs(token_, [&](FsFileInfo &fs_info) {
++    auto scan_status = scan_fs(token_, need_all_files, [&](FsFileInfo &fs_info) {
+       FullFileInfo info;
+       info.file_type = fs_info.file_type;
+       info.path = std::move(fs_info.path);
