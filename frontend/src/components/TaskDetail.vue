@@ -46,7 +46,7 @@ async function action(kind: 'cancel' | 'retry') {
       <h3>文件明细 <span class="muted">{{ data.completed_count }} / {{ data.item_count }}</span></h3>
       <article v-for="(item, index) in data.items" :key="item.id" class="media-card">
         <div class="media-heading"><div><span class="eyebrow">{{ item.media_type === 'video' ? '视频' : '图片' }} · {{ index + 1 }}</span><h4>{{ item.original_name || '自动命名文件' }}</h4></div><StatusBadge :status="mediaState(item)" /></div>
-        <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 视频时长 {{ duration(item.duration_seconds) }}</template></p>
+        <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 视频时长 {{ duration(item.duration_seconds) }}</template><template v-if="item.status === 'succeeded'"> · 下载耗时 {{ duration(item.elapsed_seconds) }}</template></p>
         <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
         <p v-if="localFileLabel(item.local_file_state)" class="local-file-status" :class="item.local_file_state === 'present' ? 'muted' : 'warning-text'">{{ localFileLabel(item.local_file_state) }}</p>
