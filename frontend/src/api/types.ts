@@ -7,6 +7,7 @@ export interface SettingsValues {
   bot_api_mode: 'cloud' | 'local'
   telegram_api_id: string; telegram_api_hash: string
   confirmation_template: string; filename_template: string
+  auto_download: boolean
   confirmation_timeout_seconds: number; download_concurrency: number; max_auto_retries: number
   diagnostic_log_retention_days: number
   diagnostic_log_cleanup_time: string

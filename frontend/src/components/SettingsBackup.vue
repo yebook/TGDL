@@ -24,7 +24,7 @@ const labels: Record<string, string> = {
   bot_api_mode: 'API 服务', bot_token: 'Bot Token', allowed_user_ids: '允许使用的用户',
   telegram_api_id: 'API ID', telegram_api_hash: 'API Hash', proxy: '网络代理',
   confirmation_template: '确认提示模板', filename_template: '文件名模板',
-  confirmation_timeout_seconds: '确认有效期', download_concurrency: '下载并发',
+  auto_download: '自动下载', confirmation_timeout_seconds: '确认有效期', download_concurrency: '下载并发',
   max_auto_retries: '自动重试', download_root_id: '下载根目录', timezone: '归档时区',
   diagnostic_log_retention_days: '日志保留天数', diagnostic_log_cleanup_time: '日志清理时间',
 }

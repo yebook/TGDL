@@ -144,9 +144,12 @@ class IngestService:
                     response = "\n\n".join(task_message(f"{status_label(r.status)}\n{r.title}", r.id, limit=750)
                                              for r in rows) or "📭 暂无下载任务，发送文件即可开始。"
                 else:
-                    response = ("📥 发送或转发文件（如 APK、PDF）、视频、图片、音频、语音、动画或视频留言，"
+                    workflow = ("我会先整理文件信息，然后自动加入下载队列，无需手动确认。同组文件会一起整理。\n"
+                                if settings.auto_download else
                                 "我会先整理文件信息，等你确认后再下载。同组文件共用确认提示。\n"
-                                "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n"
+                                "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n")
+                    response = ("📥 发送或转发文件（如 APK、PDF）、视频、图片、音频、语音、动画或视频留言，"
+                                + workflow +
                                 "📋 /status 查看最近任务；/help 查看使用说明。\n"
                                 "✏️ 转发时可先附带一条文字，作为下一条文件或文件组的名称，仅使用一次。\n"
                                 "暂不支持消息链接和贴纸。")

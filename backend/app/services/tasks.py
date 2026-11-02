@@ -24,7 +24,8 @@ from app.db.models import (
     uid,
 )
 from app.db.session import Database
-from app.services.cache_maintenance import require_no_maintenance
+from app.schemas.contracts import UserSettings
+from app.services.cache_maintenance import maintenance_blocked, require_no_maintenance
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.file_acquisition import uncertain_message
@@ -189,6 +190,9 @@ class TaskService:
                     MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
                 if not items:
                     continue
+                automatic = settings.auto_download and request.user_id in settings.allowed_user_ids
+                if automatic and maintenance_blocked(session):
+                    continue  # Retry collection after maintenance releases download admission.
                 request.status = "awaiting_confirmation"
                 request.config_revision = revision
                 request.root_id = settings.download_root_id
@@ -224,6 +228,10 @@ class TaskService:
                     item.planned_filename = unique_name(planned_name(
                         item, request, settings.filename_template, settings.timezone, index, caption=caption), used)
                     lines.append(f"文件名：{item.planned_filename}\n文件大小：{format_bytes(item.size_bytes)}")
+                if automatic:
+                    request.expires_at = None
+                    self._queue(session, request, items, settings)
+                    continue
                 sizes = [item.size_bytes for item in items]
                 text = render_confirmation(settings.confirmation_template, {
                     "title": request.title, "destination": request.destination,
@@ -266,15 +274,18 @@ class TaskService:
                 return "configuration_changed"
             request.config_revision = revision
             items = list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
-            if not items or any(not item.planned_filename for item in items):
-                raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送文件", 409)
-            for item in items:
-                name = item.planned_filename
-                session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,
-                                relative_path=f"{request.destination}/{name}", max_auto_retries=settings.max_auto_retries))
-            request.status, request.updated_at = "queued", time.time()
-            enqueue(session, request, f"queued:{request.id}", f"⏳ 已加入下载队列：{request.title}\n完成后会在这里通知你。")
+            self._queue(session, request, items, settings)
             return "queued"
+
+    def _queue(self, session: Session, request: MediaRequest, items: list[MediaItem], settings: UserSettings) -> None:
+        require_no_maintenance(session)
+        if not items or any(not item.planned_filename for item in items):
+            raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送文件", 409)
+        for item in items:
+            session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,
+                            relative_path=f"{request.destination}/{item.planned_filename}", max_auto_retries=settings.max_auto_retries))
+        request.status, request.updated_at = "queued", time.time()
+        enqueue(session, request, f"queued:{request.id}", f"⏳ 已加入下载队列：{request.title}\n完成后会在这里通知你。")
 
     def _dto(self, session: Session, request: MediaRequest, detail: bool = False, *,
              related: tuple[list[MediaItem], list[Job], list[Notification]] | None = None) -> dict[str, Any]:

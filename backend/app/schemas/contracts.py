@@ -44,6 +44,7 @@ class UserSettings(BaseModel):
     bot_api_mode: Literal["cloud", "local"] = "cloud"
     confirmation_template: str = DEFAULT_CONFIRMATION_TEMPLATE
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
+    auto_download: bool = False
     confirmation_timeout_seconds: int = Field(default=1800, ge=30, le=86400)
     download_concurrency: int = Field(default=3, ge=1, le=16)
     max_auto_retries: int = Field(default=3, ge=0, le=10)
@@ -98,6 +99,7 @@ class SettingsPatch(BaseModel):
     revision: int | None = None
     confirmation_template: str | None = None
     filename_template: str | None = None
+    auto_download: bool | None = None
     confirmation_timeout_seconds: int | None = None
     download_concurrency: int | None = None
     max_auto_retries: int | None = None

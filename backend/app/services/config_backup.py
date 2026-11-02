@@ -67,6 +67,11 @@ class ConfigBackupService:
             payload = BackupPayload.model_validate_json(plaintext)
             fields = set(UserSettings.model_fields)
             excluded = set(payload.excluded_fields)
+            # Backups predating automatic downloads contain the previous complete
+            # field set. Restore their manual-confirmation behavior explicitly.
+            if (set(payload.settings).isdisjoint(excluded)
+                    and set(payload.settings) | excluded == fields - {"auto_download"}):
+                payload.settings["auto_download"] = False
             if (len(excluded) != len(payload.excluded_fields) or not excluded <= fields
                     or set(payload.settings) != fields - excluded):
                 raise ValueError("Invalid fields")

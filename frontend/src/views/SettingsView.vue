@@ -27,7 +27,7 @@ const form = reactive<SettingsValues>({
   bot_api_mode: 'cloud',
   telegram_api_id: '', telegram_api_hash: '',
   confirmation_template: defaultConfirmationTemplate, filename_template: defaultFilenameTemplate,
-  bot_token: '', allowed_user_ids: [], confirmation_timeout_seconds: 1800, download_concurrency: 3,
+  bot_token: '', allowed_user_ids: [], auto_download: false, confirmation_timeout_seconds: 1800, download_concurrency: 3,
   max_auto_retries: 3, download_root_id: 'default', timezone: 'Asia/Shanghai',
   diagnostic_log_retention_days: 7,
   diagnostic_log_cleanup_time: '08:00',
@@ -272,6 +272,11 @@ onMounted(load)
         </section>
         <section v-show="section === 'download'" class="panel settings-section">
           <div class="section-heading"><div><h2>下载与保存</h2><p class="muted">后续任务使用新设置，已有任务保留保存位置。</p></div></div>
+          <el-form-item label="自动下载" label-for="auto-download">
+            <template #label><span class="setting-label">自动下载<SettingsSource :source="settings.sources.auto_download" :editable="editable('auto_download')" /></span></template>
+            <el-switch id="auto-download" aria-label="自动下载" v-model="form.auto_download" :disabled="!editable('auto_download')" @keydown.space.prevent="form.auto_download = !form.auto_download" /><span class="switch-label">{{ form.auto_download ? '已开启（当前表单）' : '已关闭（当前表单）' }}</span>
+            <p class="field-hint">默认关闭。开启并保存后，新文件整理完成即自动下载，无需手动确认；已发出的确认提示仍需确认。</p>
+          </el-form-item>
           <div class="form-grid">
             <el-form-item label="下载根目录" label-for="download-root">
               <template #label><span class="setting-label">下载根目录<SettingsSource :source="settings.sources.download_root_id" :editable="editable('download_root_id')" /></span></template>

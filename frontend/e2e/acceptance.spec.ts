@@ -3,6 +3,35 @@ import { readFile } from 'node:fs/promises'
 import type { DownloadProgress, NetworkTestResult, SystemStatus, TaskDetail } from '../src/api/types'
 
 for (const width of [1440, 390]) {
+  test(`automatic download defaults off and persists at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 600 })
+    await login(page)
+    await settings(page)
+    await page.getByRole('button', { name: '下载与保存', exact: true }).click()
+    const toggle = page.getByRole('switch', { name: '自动下载', exact: true })
+    await expect(toggle).not.toBeChecked()
+    await toggle.focus()
+    await page.keyboard.press('Space')
+    await expect(toggle).toBeChecked()
+    await page.getByRole('button', { name: '提示与命名', exact: true }).click()
+    await page.getByRole('button', { name: '下载与保存', exact: true }).click()
+    await expect(toggle).toBeChecked()
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.save-bar')).toContainText('所有修改已保存')
+    expect((await (await page.request.get('/api/v1/settings')).json()).values.auto_download).toBe(true)
+    await page.reload()
+    await page.getByRole('button', { name: '下载与保存', exact: true }).click()
+    await expect(toggle).toBeChecked()
+    await noOverflow(page)
+    await page.screenshot({ path: testInfo.outputPath(`automatic-download-${width}.png`) })
+    await toggle.locator('..').click()
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.save-bar')).toContainText('所有修改已保存')
+    expect((await (await page.request.get('/api/v1/settings')).json()).values.auto_download).toBe(false)
+  })
+}
+
+for (const width of [1440, 390]) {
   test(`multi-type files show accurate labels, duration and long filenames at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 844 })
     await login(page)
