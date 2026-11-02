@@ -317,7 +317,7 @@ networks:
 
 ## 源码镜像与构建缓存
 
-本机使用 `tgd-app-source:0.2.0` 与 `tgd-bot-api-source:0.2.0`。默认 `pull_policy: build` 会在启动时构建源码，Docker 仍会复用有效构建缓存。基础镜像与应用依赖仍需联网下载，Bot API／TDLib 使用仓库附带的预编译包。
+本机镜像名称与标签由 `compose.yaml` 定义，无需手动填写。默认 `pull_policy: build` 会在启动时构建源码，Docker 仍会复用有效构建缓存。基础镜像与应用依赖仍需联网下载，Bot API／TDLib 使用仓库附带的预编译包。
 
 ## 修改配置时不用构建
 

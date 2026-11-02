@@ -1,7 +1,6 @@
 import { defineConfig } from 'vitepress'
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import release from '../../backend/app/version.json'
 
 const base = process.env.DOCS_BASE || '/TGDL/'
 if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(base)) {
@@ -26,7 +25,7 @@ export default defineConfig({
     nav: [
       { text: '开始使用', link: '/quick-start' },
       { text: '使用指南', link: '/settings' },
-      { text: release.version, link: '/changelog' },
+      { text: '更新日志', link: '/changelog' },
     ],
     sidebar: [
       { text: '开始使用', items: [
@@ -63,7 +62,7 @@ export default defineConfig({
     sidebarMenuLabel: '目录',
     returnToTopLabel: '返回顶部',
     socialLinks: [{ icon: 'github', link: 'https://github.com/yebook/TGDL' }],
-    footer: { message: `${release.version} · MIT 许可`,
+    footer: { message: 'MIT 许可',
       copyright: 'Copyright © 2026 TGDL contributors' },
   },
 })

@@ -20,7 +20,7 @@ def planned_updates(root: Path) -> dict[Path, str]:
         ("backend/uv.lock", r'(name = "tgd-backend"\r?\nversion = ")[^"]+(")', version, 1),
         ("frontend/package.json", r'(?m)^(  "version": ")[^"]+(",?\r?$)', version, 1),
         ("compose.yaml", r'(?m)^(    image: tgd-(?:app|bot-api)-source:)[0-9.]+(\r?$)', version, 3),
-        ("docs/deployment.md", r'(tgd-(?:app|bot-api)-source:)[0-9]+\.[0-9]+\.[0-9]+()', version, 5),
+        ("docs/deployment.md", r'(tgd-(?:app|bot-api)-source:)[0-9]+\.[0-9]+\.[0-9]+()', version, 3),
         ("docs/development.md", r'(tgd-bot-api-source:)[0-9]+\.[0-9]+\.[0-9]+()', version, 2),
         ("docs/docker-acceptance.md", r'(tgd-app-source:)[0-9]+\.[0-9]+\.[0-9]+()', version, 1),
         ("Dockerfile", r'(LABEL org.opencontainers.image.version=")[^"]+(")', version, 1),

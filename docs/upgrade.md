@@ -59,7 +59,7 @@ docker compose logs --tail 100 app bot-api init-volumes
 
 打开 WebUI 刷新页面，确认左下角显示目标版本，任务记录、设置和已有媒体仍可访问；查看顶栏实际 API 模式、Bot 与代理状态。需要时手动校验连接，再向 Bot 发送一张图片，确认能够正常保存并收到回复。
 
-从近期开发版本升级到 v0.2.0 时，启动会自动补充删除操作所需的数据表，保留已有任务、设置和文件索引。无需重建数据库或清空媒体；升级本身不会删除已下载文件。仍使用早期 `.tgd-root` 目录标记的部署，请先阅读 [下载目录标识调整](changelog.md#storage-identity-011)。
+应用启动时会自动执行支持的数据库迁移，无需手动重建数据库或清空媒体。历史版本涉及额外操作时，以 [更新日志](changelog.md) 中的对应说明为准；仍使用早期 `.tgd-root` 目录标记的部署，请先阅读 [下载目录标识调整](changelog.md#storage-identity-011)。
 
 仅改 `.env` 而没有更新源码时，使用 `docker compose up -d --no-build`；单纯 `restart` 不会加载新的挂载或环境变量。
 
