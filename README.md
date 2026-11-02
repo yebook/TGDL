@@ -1,3 +1,5 @@
+![TGDL · Telegram 媒体下载助手：确认后保存到本地或 NAS](docs/assets/tgdl-banner.png)
+
 # TGDL · Telegram 媒体下载助手
 
 把发送或转发给专属 Telegram Bot 的视频、图片，经确认后保存到本地或 NAS。通过中文 WebUI 配置 Bot、管理下载和维护服务，适合个人内网自托管。
