@@ -121,7 +121,7 @@ def project(session: Session, request: MediaRequest) -> None:
             if "failed" in states:
                 lines.append("请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。")
             elif "cancelled" in states:
-                lines.append("已保存的文件会保留。如需再次下载，请重新发送媒体。")
+                lines.append("已保存的文件会保留。如需再次下载，请重新发送文件。")
             enqueue(session, request, f"result:{request.id}:{request.result_revision}", "\n".join(lines))
 
 
@@ -267,7 +267,7 @@ class TaskService:
             request.config_revision = revision
             items = list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id)))
             if not items or any(not item.planned_filename for item in items):
-                raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送媒体", 409)
+                raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送文件", 409)
             for item in items:
                 name = item.planned_filename
                 session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,

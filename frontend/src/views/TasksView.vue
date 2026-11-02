@@ -63,10 +63,10 @@ async function removed(ids: string[]) {
       <el-alert v-if="error && !data" :title="error" type="error" :closable="false" show-icon />
       <el-skeleton v-if="!data && loading" :rows="5" animated class="list-skeleton" />
       <div v-else-if="data?.items.length" class="task-list">
-        <div class="task-list-head"><span></span><span>文件 / 媒体组</span><span>状态</span><span>文件进度</span><span class="task-date">创建时间</span><span>操作</span></div>
+        <div class="task-list-head"><span></span><span>文件 / 文件组</span><span>状态</span><span>文件进度</span><span class="task-date">创建时间</span><span>操作</span></div>
         <div v-for="task in data.items" :key="task.id" class="task-row" :class="{ 'task-row-selected': selectedIds.includes(task.id) }">
           <el-checkbox :model-value="selectedIds.includes(task.id)" :aria-label="'选择任务 ' + task.title" :disabled="!task.can_delete || deleting" :title="task.can_delete ? '选择任务' : '活动任务请先在详情中取消'" @change="toggle(task.id, $event)" />
-          <button class="task-name" :disabled="deleting" @click="selected = task.id"><span class="file-symbol"><AppIcon name="download" /></span><span><strong>{{ task.title || '未命名媒体' }}</strong><small class="task-id">编号：{{ task.id }}</small><small>{{ task.kind === 'group' ? '媒体组' : '单文件' }} · {{ bytes(task.total_bytes) }}</small></span></button>
+          <button class="task-name" :disabled="deleting" @click="selected = task.id"><span class="file-symbol"><AppIcon name="download" /></span><span><strong>{{ task.title || '未命名文件' }}</strong><small class="task-id">编号：{{ task.id }}</small><small>{{ task.kind === 'group' ? '文件组' : '单文件' }} · {{ bytes(task.total_bytes) }}</small></span></button>
           <span class="task-status"><StatusBadge :status="task.status" /><small v-if="localFilesSummary(task.local_files)" class="local-file-status warning-text">{{ localFilesSummary(task.local_files) }}</small></span><span class="file-progress">{{ task.completed_count }} / {{ task.item_count }}</span><span class="task-date">{{ dateTime(task.created_at) }}</span><el-button class="task-delete" type="danger" link :disabled="!task.can_delete || deleting" :aria-label="'删除任务 ' + task.title" :title="task.can_delete ? '删除任务记录' : '活动任务请先在详情中取消'" @click="remove([task.id])">删除</el-button>
         </div>
       </div>

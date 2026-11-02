@@ -1,6 +1,59 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
-import type { DownloadProgress, NetworkTestResult, SystemStatus } from '../src/api/types'
+import type { DownloadProgress, NetworkTestResult, SystemStatus, TaskDetail } from '../src/api/types'
+
+for (const width of [1440, 390]) {
+  test(`multi-type files show accurate labels, duration and long filenames at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 })
+    await login(page)
+    const fixtures = [
+      ['document', '文件', null], ['audio', '音频', '1小时8分30秒'], ['voice', '语音', '2分15秒'],
+      ['animation', '动画', '0秒'], ['video_note', '视频留言', '45秒'], ['video', '视频', '1分'], ['image', '图片', null],
+    ] as const
+    for (const [type, label, durationText] of fixtures) {
+      const response = await page.request.get(`/api/v1/tasks/multi-type-${type}-case`)
+      expect(response.status()).toBe(200)
+      const detail: TaskDetail = await response.json()
+      expect(detail.items.map(item => item.media_type)).toEqual(Array(detail.item_count).fill(type))
+      await page.getByLabel('搜索名称或任务编号').fill(detail.id)
+      await page.getByRole('button', { name: '搜索', exact: true }).click()
+      await expect(page.locator('.task-row')).toHaveCount(1)
+      await expect(page.locator('.task-name')).toContainText(type === 'document' ? '文件组' : '单文件')
+      await page.locator('.task-row .task-name').click()
+      await expect(page.locator('.detail-heading .eyebrow')).toHaveText(type === 'document' ? '文件组' : '单文件')
+      const cards = page.locator('.media-card')
+      await expect(cards).toHaveCount(detail.item_count)
+      for (const [index, item] of detail.items.entries()) {
+        const card = cards.nth(index)
+        await expect(card.locator('.eyebrow')).toHaveText(`${label} · ${index + 1}`)
+        await expect(card.locator('h4')).toHaveText(item.original_name || '自动命名文件')
+        if (durationText) await expect(card).toContainText(`时长 ${durationText}`)
+        else await expect(card).not.toContainText('时长')
+        await expect(card).not.toContainText('视频时长')
+        await card.scrollIntoViewIfNeeded()
+        expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+        const heading = card.locator('.media-heading')
+        expect(await heading.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+        await noOverflow(page)
+      }
+      if (type === 'document') {
+        await expect(cards.nth(0).locator('h4')).toContainText('.APK')
+        await expect(cards.nth(1).locator('h4')).toContainText('.pdf')
+      }
+      await page.screenshot({ path: testInfo.outputPath(`multi-type-${type}-${width}.png`) })
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.el-drawer')).not.toBeVisible()
+    }
+    await settings(page)
+    await page.getByRole('button', { name: '提示与命名', exact: true }).click()
+    const variables = page.getByRole('definition').filter({ hasText: 'video / image' })
+    await expect(variables).toContainText('audio / voice / animation / video_note / document')
+    await variables.scrollIntoViewIfNeeded()
+    expect(await variables.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await noOverflow(page)
+    await page.screenshot({ path: testInfo.outputPath(`multi-type-variables-${width}.png`) })
+  })
+}
 
 for (const width of [1440, 390]) {
   test(`request pacing is informational while real failures stay visible at ${width}px`, async ({ page }, testInfo) => {
@@ -414,7 +467,7 @@ for (const width of [1440, 390]) {
 
     metadataTotal = 1024
     snapshot = { downloaded_bytes: 1024, total_bytes: null, total_kind: 'unknown', speed_bps: null, active: false, completed: true }
-    await expect(panel).toContainText('媒体已下载，等待开始保存')
+    await expect(panel).toContainText('文件已下载，等待开始保存')
     await expect(bar).toHaveAttribute('aria-valuenow', '100')
     state = 'saving'; copyBytes = 0
     await expect(panel).toContainText('保存中')

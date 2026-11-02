@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.file_types import MediaType
 from app.schemas.contracts import UserSettings
 
 TaskStatus = Literal[
@@ -104,7 +105,7 @@ class DownloadProgressResponse(BaseModel):
 class MediaResponse(BaseModel):
     id: str
     job_id: str | None
-    media_type: Literal["video", "image"]
+    media_type: MediaType
     original_name: str | None
     size_bytes: int | None
     duration_seconds: int | None

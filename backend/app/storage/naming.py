@@ -1,11 +1,10 @@
 """Plan safe basenames once, independently of subsequent configuration edits."""
-import re
 import unicodedata
 from datetime import datetime
-from pathlib import PurePosixPath
 from string import Formatter
 from zoneinfo import ZoneInfo
 
+from app.core.file_types import TYPE_LABELS, default_extension, original_extension
 from app.core.templates import render_template
 from app.db.models import MediaItem, MediaRequest
 from app.storage.files import safe_name
@@ -25,8 +24,8 @@ def request_caption(items: list[MediaItem]) -> str:
 def request_summary(request: MediaRequest, items: list[MediaItem]) -> str:
     caption = request_caption(items)
     original = next((item.original_name for item in items if text_summary(item.original_name)), None)
-    fallback = f"媒体组（{len(items)} 个文件）" if request.kind == "group" else (
-        "视频" if items[0].media_type == "video" else "图片")
+    fallback = f"文件组（{len(items)} 个文件）" if request.kind == "group" else (
+        TYPE_LABELS.get(items[0].media_type, "文件"))
     return text_summary(request.name_override or caption or original) or fallback
 
 
@@ -39,19 +38,21 @@ def fit_name(stem: str, extension: str, suffix: str = "") -> str:
 
 def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone: str, index: int,
                  *, caption: str | None = None) -> str:
-    fallback = ".mp4" if item.media_type == "video" else ".jpg"
+    fallback = default_extension(item.media_type, item.mime_type)
     # Extract extension before sanitization/truncation so long Unicode stems cannot lose it.
     original = item.original_name if text_summary(item.original_name) else None
     caption = text_summary(item.caption_snippet if caption is None else caption)
     override = text_summary(request.name_override)
     from_caption = bool(override) or (original is None and bool(caption))
-    original = original or f"{item.media_type}{fallback}"
-    extension = PurePosixPath(original).suffix
-    if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension):
-        extension = fallback
-        stem = original
+    if original is None:
+        stem, extension = item.media_type, fallback
     else:
-        stem = original[:-len(extension)]
+        extension = original_extension(original)
+        stem = original[:-len(extension)] if extension else original
+        # Keep the released image/video fallback; generic and newly supported
+        # named attachments keep their actual extensionless name.
+        if not extension and item.media_type in {"image", "video"}:
+            extension = fallback
     if from_caption:
         # A dotted caption is still title text, never an alleged file extension.
         stem = override or caption
@@ -71,7 +72,7 @@ def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone
         values["name"] = values["name"].encode("utf-8")[:budget].decode("utf-8", errors="ignore").rstrip(" .")
     rendered = render_template(template, values)
     # An explicitly supplied matching extension is not duplicated.
-    if rendered.lower().endswith(extension.lower()) and (not from_caption or template.lower().endswith(extension.lower())):
+    if extension and rendered.lower().endswith(extension.lower()) and (not from_caption or template.lower().endswith(extension.lower())):
         rendered = rendered[:-len(extension)]
     if indexed and len(rendered.encode("utf-8")) + len(extension.encode("utf-8")) > 180:
         # Extremely long template literals can overflow even without a caption.
@@ -81,10 +82,13 @@ def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone
 
 
 def unique_name(name: str, used: set[str]) -> str:
-    path = PurePosixPath(name)
+    # Apply the same safe-suffix rule as planning. An arbitrary document suffix
+    # can consume the entire byte budget, so it must remain part of the stem.
+    extension = original_extension(name)
+    stem = name[:-len(extension)] if extension else name
     result, sequence = name, 2
     while result.casefold() in used:
-        result = fit_name(path.stem, path.suffix, f"_{sequence}")
+        result = fit_name(stem, extension, f"_{sequence}")
         sequence += 1
     used.add(result.casefold())
     return result

@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { attemptResult, bytes, duration, parseUserIds, percent, taskIssueTone } from '../src/api/format'
+import { attemptResult, bytes, duration, mediaTypeLabel, parseUserIds, percent, taskIssueTone } from '../src/api/format'
+
+describe('file type labels', () => {
+  it.each([
+    ['video', '视频'], ['image', '图片'], ['audio', '音频'], ['voice', '语音'],
+    ['animation', '动画'], ['video_note', '视频留言'], ['document', '文件'],
+    ['future_type', '文件'], ['', '文件'], ['constructor', '文件'],
+  ])('labels %s as %s without treating other files as images', (type, label) => {
+    expect(mediaTypeLabel(type)).toBe(label)
+  })
+})
 
 describe('request waits and real task failures', () => {
   it('distinguishes ordinary pacing, protection pauses and failures', () => {

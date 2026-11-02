@@ -125,6 +125,7 @@ class MediaItem(Base):
     file_id: Mapped[str]
     file_unique_id: Mapped[str | None]
     media_type: Mapped[str]
+    mime_type: Mapped[str | None]
     planned_filename: Mapped[str | None]
     original_name: Mapped[str | None]
     caption_snippet: Mapped[str | None] = mapped_column(String(80))

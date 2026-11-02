@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request, errorMessage } from '../api/client'
 import type { TaskDetail } from '../api/types'
-import { attemptResult, bytes, dateTime, duration, taskIssueTone } from '../api/format'
+import { attemptResult, bytes, dateTime, duration, mediaTypeLabel, taskIssueTone } from '../api/format'
 import { mediaState } from '../api/mediaProgress'
 import { localFileLabel } from '../api/localFiles'
 import { usePolling } from '../composables/usePolling'
@@ -34,7 +34,7 @@ async function action(kind: 'cancel' | 'retry') {
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <el-skeleton v-if="!data && loading" :rows="6" animated />
     <template v-if="data">
-      <div class="detail-heading"><div><p class="eyebrow">{{ data.kind === 'group' ? '媒体组' : '单文件' }}</p><h2>{{ data.title || '未命名媒体' }}</h2></div><StatusBadge :status="data.status" /></div>
+      <div class="detail-heading"><div><p class="eyebrow">{{ data.kind === 'group' ? '文件组' : '单文件' }}</p><h2>{{ data.title || '未命名文件' }}</h2></div><StatusBadge :status="data.status" /></div>
       <dl class="detail-meta">
         <div><dt>任务编号</dt><dd class="mono">{{ data.id }}</dd></div>
         <div><dt>创建时间</dt><dd>{{ dateTime(data.created_at) }}</dd></div>
@@ -45,8 +45,8 @@ async function action(kind: 'cancel' | 'retry') {
       <div v-if="data.can_cancel || data.can_retry || data.can_delete" class="detail-actions"><el-button v-if="data.can_retry" type="primary" :loading="busy" :disabled="deleting" @click="action('retry')">重试失败文件</el-button><el-button v-if="data.can_cancel" :loading="busy" :disabled="deleting" @click="action('cancel')">取消下载</el-button><el-button v-if="data.can_delete" type="danger" plain :disabled="busy || deleting" @click="emit('remove', data.id)">删除任务</el-button></div>
       <h3>文件明细 <span class="muted">{{ data.completed_count }} / {{ data.item_count }}</span></h3>
       <article v-for="(item, index) in data.items" :key="item.id" class="media-card">
-        <div class="media-heading"><div><span class="eyebrow">{{ item.media_type === 'video' ? '视频' : '图片' }} · {{ index + 1 }}</span><h4>{{ item.original_name || '自动命名文件' }}</h4></div><StatusBadge :status="mediaState(item)" /></div>
-        <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 视频时长 {{ duration(item.duration_seconds) }}</template><template v-if="item.status === 'succeeded'"> · 下载耗时 {{ duration(item.elapsed_seconds) }}</template></p>
+        <div class="media-heading"><div><span class="eyebrow">{{ mediaTypeLabel(item.media_type) }} · {{ index + 1 }}</span><h4>{{ item.original_name || '自动命名文件' }}</h4></div><StatusBadge :status="mediaState(item)" /></div>
+        <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 时长 {{ duration(item.duration_seconds) }}</template><template v-if="item.status === 'succeeded'"> · 下载耗时 {{ duration(item.elapsed_seconds) }}</template></p>
         <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
         <p v-if="localFileLabel(item.local_file_state)" class="local-file-status" :class="item.local_file_state === 'present' ? 'muted' : 'warning-text'">{{ localFileLabel(item.local_file_state) }}</p>

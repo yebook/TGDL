@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { defaultConfirmationTemplate, defaultFilenameTemplate, renderTemplateExample, templateExamples } from '../src/api/templates'
+import { defaultConfirmationTemplate, defaultFilenameTemplate, filenameVariables, renderTemplateExample, templateExamples } from '../src/api/templates'
 
 const identifierLine = '任务编号：e5f6a7b80123456789abcdef01234567\n'
 
 describe('settings template examples', () => {
+  it.each(['video', 'image', 'audio', 'voice', 'animation', 'video_note', 'document'])('documents and accepts the %s filename type value', type => {
+    expect(filenameVariables.find(([name]) => name === 'type')?.[1].split(' / ')).toContain(type)
+    expect(renderTemplateExample('{type}_{index}', { type, index: '1' }, true)).toBe(`${type}_1`)
+  })
   it('keeps media braces literal and supports escaped braces', () => {
     expect(renderTemplateExample('{{title}}: {title}', { title: '{files}' })).toBe('{title}: {files}')
   })

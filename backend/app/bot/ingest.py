@@ -1,5 +1,4 @@
 import time
-from pathlib import PurePath
 from typing import Any
 
 from sqlalchemy import select
@@ -7,6 +6,7 @@ from sqlalchemy import select
 from app.bot.grouping import GROUP_MAX_SECONDS, GROUP_MIN_SECONDS, GROUP_QUIET_SECONDS
 from app.bot.messages import status_label
 from app.core.errors import AppError
+from app.core.file_types import document_type
 from app.db.models import (
     IngestUpdate,
     MediaItem,
@@ -20,9 +20,6 @@ from app.db.session import Database
 from app.services.settings import SettingsService
 from app.services.tasks import TaskService, task_message
 from app.storage.naming import text_summary
-
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".mpeg", ".mpg"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".tif", ".tiff"}
 
 
 class IngestService:
@@ -67,21 +64,22 @@ class IngestService:
             return
         chat_id = int(chat["id"])
         media: dict[str, Any] | None = None
-        kind = "video"
-        if message.get("animation"):
-            media = None  # Animations also have a document field; do not ingest that duplicate representation.
-        elif message.get("video"):
-            media = message["video"]
-        elif message.get("photo"):
-            media = max(message["photo"], key=lambda p: p.get("width", 0) * p.get("height", 0))
-            kind = "image"
-        elif message.get("document"):
-            document = message["document"]
-            extension = PurePath(document.get("file_name", "")).suffix.lower()
-            if extension in VIDEO_EXTENSIONS:
-                media = document
-            elif extension in IMAGE_EXTENSIONS:
-                media, kind = document, "image"
+        kind = "document"
+        # Telegram animations also expose document; the first native attachment
+        # wins and each message yields at most one normalized item.
+        for field in ("animation", "video", "photo", "audio", "voice", "video_note", "document"):
+            attachment = message.get(field)
+            if not attachment:
+                continue
+            if field == "photo":
+                media = max(attachment, key=lambda p: p.get("width", 0) * p.get("height", 0))
+                kind = "image"
+            else:
+                media = attachment
+                kind = document_type(media.get("file_name"), media.get("mime_type")) if field == "document" else field
+            break
+        if media and (not isinstance(media.get("file_id"), str) or not media["file_id"].strip()):
+            media = None
         with self.db.transaction() as session:
             pending = session.get(PendingMediaName, (bot_id, chat_id, user_id))
             if media:
@@ -116,6 +114,7 @@ class IngestService:
                 session.add(MediaItem(request_id=request.id, bot_id=bot_id, chat_id=chat_id,
                                       message_id=message["message_id"], file_id=media["file_id"],
                                       file_unique_id=media.get("file_unique_id"), media_type=kind,
+                                      mime_type=media.get("mime_type"),
                                       original_name=media.get("file_name"), size_bytes=media.get("file_size"),
                                       caption_snippet=text_summary(message.get("caption") or message.get("text")) or None,
                                       duration_seconds=media.get("duration")))
@@ -143,35 +142,36 @@ class IngestService:
                                                                             MediaRequest.deleted_at.is_(None))
                                                 .order_by(MediaRequest.created_at.desc()).limit(5)))
                     response = "\n\n".join(task_message(f"{status_label(r.status)}\n{r.title}", r.id, limit=750)
-                                             for r in rows) or "📭 暂无下载任务，发送视频或图片即可开始。"
+                                             for r in rows) or "📭 暂无下载任务，发送文件即可开始。"
                 else:
-                    response = ("📥 发送或转发视频、图片或一组媒体，我会先整理文件信息，等你确认后再下载。\n"
+                    response = ("📥 发送或转发文件（如 APK、PDF）、视频、图片、音频、语音、动画或视频留言，"
+                                "我会先整理文件信息，等你确认后再下载。同组文件共用确认提示。\n"
                                 "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n"
                                 "📋 /status 查看最近任务；/help 查看使用说明。\n"
-                                "✏️ 转发时可先附带一条文字，作为下一条媒体或媒体组的名称，仅使用一次。\n"
-                                "暂不支持消息链接、音频、GIF 和其他文档。")
+                                "✏️ 转发时可先附带一条文字，作为下一条文件或文件组的名称，仅使用一次。\n"
+                                "暂不支持消息链接和贴纸。")
                 if not session.scalar(select(Notification).where(Notification.event_key == key)):
                     session.add(Notification(event_key=key, chat_id=chat_id, payload={"text": response, "bot_id": bot_id}))
 
     def callback(self, payload: dict[str, Any]) -> str:
         data = str(payload.get("data", "")).split(":")
         if len(data) != 3 or data[0] not in {"y", "n"} or not data[1] or not data[2]:
-            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送媒体获取确认提示")
+            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送文件获取确认提示")
         user = payload.get("from", payload.get("from_user", {}))
         try:
             user_id = int(user.get("id", 0))
             chat_id = int(payload.get("message", {}).get("chat", {}).get("id", 0))
         except (TypeError, ValueError, AttributeError):
-            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送媒体获取确认提示") from None
+            raise AppError("INVALID_CALLBACK", "⌛ 这个按钮已失效，请重新发送文件获取确认提示") from None
         try:
             state = self.tasks.confirm(data[1], data[2], user_id, chat_id,
                                        "confirm" if data[0] == "y" else "cancel")
         except AppError as exc:
             if exc.code == "FORBIDDEN":
-                raise AppError("FORBIDDEN", "⚠️ 无法操作此请求，请使用获授权的账号重新发送媒体", 403) from None
+                raise AppError("FORBIDDEN", "⚠️ 无法操作此请求，请使用获授权的账号重新发送文件", 403) from None
             raise
         messages = {
-            "deleted": "🗑️ 任务记录已删除，如需下载请重新发送媒体",
+            "deleted": "🗑️ 任务记录已删除，如需下载请重新发送文件",
             "queued": "⏳ 已加入下载队列，请等待下载结果",
             "fetching": "📥 任务正在下载，请等待下载结果",
             "saving": "📥 任务正在下载或正在保存，请稍候",
@@ -183,8 +183,8 @@ class IngestService:
             "already_exists": "✅ 文件已保存，无需重复下载",
             "partial_success": "⚠️ 部分文件已保存，请在 WebUI 查看详情或重试失败项",
             "failed": "❌ 下载失败，请在 WebUI 查看原因并重试",
-            "cancelled": "❌ 该请求已取消，如需下载请重新发送媒体",
-            "expired": "⌛ 确认已过期，未开始下载。请重新发送媒体获取新的确认提示",
+            "cancelled": "❌ 该请求已取消，如需下载请重新发送文件",
+            "expired": "⌛ 确认已过期，未开始下载。请重新发送文件获取新的确认提示",
             "configuration_changed": "🔄 保存配置已变更，正在生成新的确认提示，请使用新提示操作",
             "collecting": "⏳ 正在生成确认提示，请稍候再操作",
             "awaiting_confirmation": "📥 请使用最新的确认提示操作",

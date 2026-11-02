@@ -1,3 +1,12 @@
+import type { MediaType } from './types'
+
+const mediaTypeLabels: Record<MediaType, string> = {
+  video: '视频', image: '图片', audio: '音频', voice: '语音', animation: '动画', video_note: '视频留言', document: '文件',
+}
+export function mediaTypeLabel(type: string): string {
+  return Object.hasOwn(mediaTypeLabels, type) ? mediaTypeLabels[type as MediaType] : '文件'
+}
+
 export function bytes(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '未知'
   if (value === 0) return '0 B'

@@ -8,7 +8,7 @@ export const confirmationVariables = [
 ] as const
 export const filenameVariables = [
   ['name', '原名主体；缺失时用消息标题，再自动命名'], ['date', '日期 YYYYMMDD'], ['time', '时间 HHMMSS'],
-  ['datetime', '日期时间 YYYYMMDD_HHMMSS'], ['type', 'video 或 image'], ['index', '顺序，从 1 开始'], ['id', '短 ID'],
+  ['datetime', '日期时间 YYYYMMDD_HHMMSS'], ['type', 'video / image / audio / voice / animation / video_note / document'], ['index', '顺序，从 1 开始'], ['id', '短 ID'],
 ] as const
 
 // A single scan substitutes only source-template variables, never braces in media values.

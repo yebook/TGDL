@@ -45,8 +45,9 @@ export interface DownloadProgress {
   downloaded_bytes: number; total_bytes: number | null; total_kind: 'exact' | 'estimated' | 'unknown'
   speed_bps: number | null; active: boolean; completed: boolean
 }
+export type MediaType = 'video' | 'image' | 'audio' | 'voice' | 'animation' | 'video_note' | 'document'
 export interface MediaItem {
-  id: string; job_id: string | null; media_type: string; original_name: string | null; size_bytes: number | null
+  id: string; job_id: string | null; media_type: MediaType; original_name: string | null; size_bytes: number | null
   duration_seconds: number | null; status: string; phase: string | null; completed_bytes: number; total_bytes: number | null
   acquisition_mode: 'cloud' | 'local' | null
   download_progress: DownloadProgress | null

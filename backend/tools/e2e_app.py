@@ -139,6 +139,39 @@ def seed(app: FastAPI) -> None:
             ))
 
 
+def seed_multi_type(app: FastAPI) -> None:
+    """Historical pending-card records; render via real list/detail DTOs, no network."""
+    fixtures: list[tuple[str, list[tuple[str | None, int | None, str]]]] = [
+        ("document", [
+            ("应用安装包" * 14 + ".APK", None, "application/vnd.android.package-archive"),
+            ("user-guide-" + "longfilename" * 18 + ".pdf", None, "application/pdf"),
+        ]),
+        ("audio", [("播客录音.mp3", 4110, "audio/mpeg")]),
+        ("voice", [(None, 135, "audio/ogg")]),
+        ("animation", [("动画.gif", 0, "image/gif")]),
+        ("video_note", [(None, 45, "video/mp4")]),
+        ("video", [("原有视频.mp4", 60, "video/mp4")]),
+        ("image", [("原有图片.jpg", None, "image/jpeg")]),
+    ]
+    with app.state.db.transaction() as session:
+        for index, (media_type, files) in enumerate(fixtures):
+            request_id = f"multi-type-{media_type}-case"
+            session.add(MediaRequest(
+                id=request_id, bot_id=98765, chat_id=12345, user_id=12345,
+                kind="group" if len(files) > 1 else "single", title=f"Multi-type fixture {media_type}",
+                status="awaiting_confirmation", collect_until=time.time(), expires_at=time.time() + 1800,
+                created_at=time.time() - 1800 - index, destination=f"2026-11-02/{request_id}",
+            ))
+            session.flush()
+            for offset, (name, duration, mime_type) in enumerate(files):
+                session.add(MediaItem(
+                    id=f"{request_id}-{offset}", request_id=request_id, bot_id=98765, chat_id=12345,
+                    message_id=10000 + index * 10 + offset, file_id=f"offline-{request_id}-{offset}",
+                    media_type=media_type, original_name=name, duration_seconds=duration,
+                    mime_type=mime_type, size_bytes=1024,
+                ))
+
+
 @asynccontextmanager
 async def cache_storage(app: FastAPI) -> AsyncIterator[None]:
     """Real cache REST/service/store; substitute only the private native boundary."""
@@ -330,6 +363,7 @@ def main() -> None:
         async def fixture_lifespan(application: FastAPI) -> AsyncIterator[None]:
             async with original_lifespan(application):
                 seed(application)
+                seed_multi_type(application)
                 if os.getenv("E2E_TASK_FILES") == "1":
                     from tools.task_files_fixture import seed_task_files
 

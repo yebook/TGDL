@@ -165,9 +165,9 @@ async def test_callback_transport_uses_visible_alert() -> None:
     telegram.safety = None
     telegram.bot = Mock()
     telegram.bot.answer_callback_query = AsyncMock()
-    await telegram.answer("query", "确认已过期，请重新发送媒体")
+    await telegram.answer("query", "确认已过期，请重新发送文件")
     telegram.bot.answer_callback_query.assert_awaited_once_with(
-        "query", text="确认已过期，请重新发送媒体", show_alert=True, request_timeout=15)
+        "query", text="确认已过期，请重新发送文件", show_alert=True, request_timeout=15)
 
 
 @pytest.mark.parametrize("data", ["expired", "malformed", "unauthorized"])

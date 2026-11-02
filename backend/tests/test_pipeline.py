@@ -269,14 +269,13 @@ def test_acquisition_recovery_blocks_until_api_generation_changed(client: TestCl
     assert state.tasks.detail(request_id)["status"] == "queued"
 
 
-def test_links_unauthorized_and_unsupported_documents_create_no_media(client: TestClient) -> None:
+def test_links_unauthorized_and_stickers_create_no_media(client: TestClient) -> None:
     state, ingest = setup_pipeline(client)
     wrong = message()
     wrong["from"]["id"] = 43
     ingest.message(7, wrong, "in1")
     ingest.message(7, {"message_id": 2, "from": {"id": 42}, "chat": {"id": 42, "type": "private"}, "text": "https://t.me/channel/1"}, "in2")
-    wrong = message(3, kind="document")
-    wrong["document"]["file_name"] = "x.exe"
+    wrong = message(3, kind="sticker")
     ingest.message(7, wrong, "in3")
     with state.db.sessions() as session:
         assert session.scalar(select(func.count()).select_from(MediaItem)) == 0

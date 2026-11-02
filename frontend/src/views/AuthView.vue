@@ -37,7 +37,7 @@ async function submit() {
   <main class="auth-layout">
     <section class="auth-story">
       <div class="brand"><span class="brand-mark"><AppIcon name="download" /></span><strong>TGD</strong></div>
-      <div><h1>看到喜欢的，<br>留在自己的空间。</h1><p>转发视频与图片给专属 Bot，确认后自动保存到本地或 NAS。</p></div>
+      <div><h1>看到喜欢的，<br>留在自己的空间。</h1><p>转发视频、图片、音频或 APK、PDF 等文件给专属 Bot，确认后自动保存到本地或 NAS。</p></div>
       <p class="auth-footer">简洁管理 · 自主存储</p>
     </section>
     <section class="auth-panel" aria-labelledby="auth-title">
@@ -59,7 +59,7 @@ async function submit() {
           <el-button class="auth-submit" type="primary" native-type="submit" :loading="busy">{{ isSetup ? '创建管理员并进入' : '登录' }}</el-button>
         </el-form>
       </div>
-      <p class="auth-caption">TGD / Telegram 媒体下载助手</p>
+      <p class="auth-caption">TGD / Telegram 文件下载助手</p>
     </section>
   </main>
 </template>

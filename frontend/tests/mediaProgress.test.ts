@@ -76,11 +76,11 @@ describe('measured transfer progress and honest unknown download progress', () =
   it('keeps cache completion separate from final saving and file success', () => {
     const cached = { ...snapshot, downloaded_bytes: 1024, completed: true, active: false }
     expect(mediaProgress({ ...transfer, download_progress: cached })).toMatchObject({
-      label: '下载中', percentage: 100, explanation: '媒体已下载，等待开始保存',
+      label: '下载中', percentage: 100, explanation: '文件已下载，等待开始保存',
     })
     expect(mediaState({ ...transfer, download_progress: cached })).toBe('fetching')
     expect(mediaProgress({ ...transfer, download_progress: { ...cached, total_kind: 'unknown', total_bytes: null } })).toMatchObject({
-      label: '下载中', percentage: 100, totalBytes: 1024, explanation: '媒体已下载，等待开始保存',
+      label: '下载中', percentage: 100, totalBytes: 1024, explanation: '文件已下载，等待开始保存',
     })
     expect(mediaProgress({ ...transfer, status: 'saving', phase: 'saving', download_progress: cached, completed_bytes: 0 })).toMatchObject({
       label: '保存中', verb: '已保存', percentage: 0, completedBytes: 0,

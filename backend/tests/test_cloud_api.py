@@ -118,9 +118,12 @@ async def test_unknown_size_cumulative_cap_cleans_part(client: TestClient, confi
 
 
 @pytest.mark.parametrize("stage", ["fetching", "saving"])
-async def test_cloud_cancel_joins_transport_without_uncertain_slot(client: TestClient, config: Config, stage):
+@pytest.mark.parametrize("kind", ["video", "document", "audio"])
+async def test_cloud_cancel_joins_transport_without_uncertain_slot(client: TestClient, config: Config, stage, kind):
     state, ingest = cloud_pipeline(client)
-    ingest.message(7, message(), "in")
+    payload = message(kind=kind)
+    payload[kind]["file_name"] = {"video": "video.mp4", "document": "report.pdf", "audio": "music.mp3"}[kind]
+    ingest.message(7, payload, "in")
     request_id = confirm_all(state)
     entered, closed = asyncio.Event(), asyncio.Event()
 

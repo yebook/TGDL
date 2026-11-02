@@ -36,7 +36,7 @@ export function mediaProgress(item: Transfer) {
     ? percent(native.downloaded_bytes, total) : undefined
   const measured = streaming || native != null
   const explanation = native?.completed
-    ? '媒体已下载，等待开始保存'
+    ? '文件已下载，等待开始保存'
     : native && !native.active ? '等待下载继续，任务尚未完成' : ''
   return {
     label: item.status === 'cancelling' ? stateLabel('cancelling') : streaming ? (download ? '下载中' : '保存中') : stateLabel(item.phase || item.status),

@@ -1,7 +1,7 @@
 """Plain-text Bot presentation; never use these labels as persisted states."""
 
 STATUS_LABELS = {
-    "collecting": "⏳ 正在整理媒体",
+    "collecting": "⏳ 正在整理文件",
     "awaiting_confirmation": "📥 等待确认",
     "queued": "⏳ 等待下载",
     "fetching": "📥 下载中",

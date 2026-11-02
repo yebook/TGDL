@@ -225,7 +225,7 @@ onMounted(load)
           <div class="section-heading"><div><h2>连接 Telegram</h2><p class="muted">选择 API 服务，设置 Bot 与允许使用的人。</p></div></div>
           <el-alert v-if="connectionBlocked" class="connection-application-notice" :title="connectionBlocked" type="info" :closable="false" show-icon role="status" />
           <div v-if="connectionBlocked || conflict" class="connection-resync-row"><button type="button" class="connection-resync" :disabled="syncing || writing || backupBusy" :aria-busy="syncing" @click="resyncConnection">{{ syncing ? '正在同步状态…' : '重新同步状态' }}</button><span>保留当前输入，不重复保存，也不会跳过后台的安全等待。</span></div>
-          <p v-if="liveSystem?.bot.username" class="field-hint">当前 Bot：@{{ liveSystem.bot.username }}{{ statusError ? '（上次结果，等待更新）' : '' }}，请向此 Bot 发送媒体。</p>
+          <p v-if="liveSystem?.bot.username" class="field-hint">当前 Bot：@{{ liveSystem.bot.username }}{{ statusError ? '（上次结果，等待更新）' : '' }}，请向此 Bot 发送文件。</p>
           <el-form-item label="Bot API 服务" label-for="bot-api-mode">
             <template #label><span class="setting-label">Bot API 服务<SettingsSource :source="settings.sources.bot_api_mode" :editable="editable('bot_api_mode')" /></span></template>
             <el-select id="bot-api-mode" aria-label="Bot API 服务" v-model="form.bot_api_mode" :disabled="connectionLocked || !editable('bot_api_mode')"><el-option label="Telegram 官方云端" value="cloud" /><el-option label="本地 Bot API" value="local" /></el-select>
@@ -289,7 +289,7 @@ onMounted(load)
             </el-form-item>
             <el-form-item label="同时下载的文件数" label-for="download-concurrency">
               <template #label><span class="setting-label">同时下载的文件数<SettingsSource :source="settings.sources.download_concurrency" :editable="editable('download_concurrency')" /></span></template>
-              <el-input-number id="download-concurrency" aria-label="同时下载的文件数" v-model="form.download_concurrency" :min="1" :max="16" :disabled="!editable('download_concurrency')" /><p class="field-hint">默认 3 个，媒体组共用额度；调低不会中断当前下载。</p>
+              <el-input-number id="download-concurrency" aria-label="同时下载的文件数" v-model="form.download_concurrency" :min="1" :max="16" :disabled="!editable('download_concurrency')" /><p class="field-hint">默认 3 个，文件组共用额度；调低不会中断当前下载。</p>
             </el-form-item>
             <el-form-item label="失败自动重试次数" label-for="max-retries">
               <template #label><span class="setting-label">失败自动重试次数<SettingsSource :source="settings.sources.max_auto_retries" :editable="editable('max_auto_retries')" /></span></template>
@@ -298,7 +298,7 @@ onMounted(load)
           </div>
           <div class="storage-overview"><h3>存储空间</h3><div v-for="root in roots" :key="root.id" class="storage-row"><div><strong>{{ root.label }}</strong><p :class="root.available ? 'muted' : 'warning-text'">{{ root.message || (root.available ? '可用' : '不可用，请检查挂载和权限') }}</p></div><p>剩余 {{ bytes(root.free_bytes) }} / {{ bytes(root.total_bytes) }}</p></div></div>
           <CacheStoragePanel :status="liveSystem?.storage.cache" :active="section === 'download'" :available="liveSystem?.local_api.applied_mode === 'local' && liveSystem?.local_api.state === 'running' && liveSystem?.local_api.phase === 'idle'" :stale="!!statusError" :draft="dirty" :disabled="busy || syncing || backupBusy || writeOutcomeUnknown" @changed="cacheChanged" @sync="refreshStatus" />
-          <details class="settings-details"><summary>文件归档规则</summary><div class="details-content"><p>单文件直接保存在日期目录（年-月-日）；同一媒体组另建文字摘要或媒体名称目录，图片和视频放在一起。同名目录用数字区分，不附加任务编号。同名文件不会覆盖。</p></div></details>
+          <details class="settings-details"><summary>文件归档规则</summary><div class="details-content"><p>单文件直接保存在日期目录（年-月-日）；Telegram 同一文件组另建文字摘要或文件名称目录，组内文件保存在一起。同名目录用数字区分，不附加任务编号。同名文件不会覆盖。</p></div></details>
         </section>
         <section v-show="section === 'templates'" class="panel settings-section">
           <div class="section-heading"><div><h2>提示与命名</h2><p class="muted">仅新生成的确认卡生效，已有卡片、任务和重试保留原计划。</p></div></div>
@@ -328,7 +328,7 @@ onMounted(load)
             </div>
             <dl class="template-variables" aria-label="文件名变量"><div v-for="[key, description] in filenameVariables" :key="key"><dt><code>{{ '{' + key + '}' }}</code></dt><dd>{{ description }}</dd></div></dl>
           </div>
-          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：指定名称优先，否则用原文件名，缺失时用消息标题。</li><li><code v-text="'{date}_{name}'" />：收件日期与文件名称。</li><li><code v-text="'{date}_{type}_{index}'" />：主动使用日期、类型与顺序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。转发前暂存的指定名称优先；未指定时使用原名，缺失时使用消息标题，再无标题则按视频或图片类型自动命名。同组共用消息标题；完整文件名重名时才加 _2、_3 等数字，不重名的图片和视频无需序号。默认不附加编号，主动加入 ID 或顺序变量的模板仍按配置执行。文件名会清理不支持的字符，过长时缩短；重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置；已保存带编号的模板可通过恢复默认文件名后保存来替换。</p></div></details>
+          <details class="settings-details"><summary>命名示例与模板规则</summary><div class="details-content"><ul><li><code v-text="'{name}'" />：指定名称优先，否则用原文件名，缺失时用消息标题。</li><li><code v-text="'{date}_{name}'" />：收件日期与文件名称。</li><li><code v-text="'{date}_{type}_{index}'" />：主动使用日期、类型与顺序号。</li></ul><p>日期和时间采用请求创建时间与归档时区，并非拍摄时间。转发前暂存的指定名称优先；未指定时使用原名，缺失时使用消息标题，再无标题则按文件类型自动命名。同组共用消息标题；完整文件名重名时才加 _2、_3 等数字，不重名的文件无需序号。默认不附加编号，主动加入 ID 或顺序变量的模板仍按配置执行。文件名会保留安全后缀，普通附件的无后缀原名保持无后缀；清理不支持的字符，过长时缩短，重名不会覆盖。</p><p>使用双花括号显示文字花括号，如 <code v-text="'{{name}}'" /> 显示为 <code v-text="'{name}'" />。恢复默认只修改表单，仍需保存设置；已保存带编号的模板可通过恢复默认文件名后保存来替换。</p></div></details>
         </section>
 
         <section v-show="section === 'maintenance'" class="panel settings-section">
