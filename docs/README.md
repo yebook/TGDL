@@ -21,6 +21,6 @@
 
 ## 参与项目
 
-[贡献与许可](project.md) · [开发指南](development.md) · [部署后验收](acceptance.md) · [Docker 隔离验收](docker-acceptance.md) · [验证范围](verification.md) · [文档站与 Pages](pages.md)
+[贡献与许可](project.md) · [开发指南](development.md)
 
-Markdown 可直接在仓库阅读；静态站使用同一批公开指南，更新日志复用根目录文件。开发讨论和会话记录不进入站点。
+你可以直接在仓库阅读 Markdown，也可以在在线文档中使用搜索和页面目录。

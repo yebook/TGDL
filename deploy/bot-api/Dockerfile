@@ -81,7 +81,7 @@ RUN --mount=type=bind,from=native-inputs,target=/tgd-source --mount=type=bind,fr
 FROM ${TGD_NATIVE_IMAGE} AS runtime
 RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
     python3 /tgd-source/deploy/bot-api/native_identity.py verify --root /tgd-source --manifest /usr/local/share/tgdl-native.json
-LABEL org.opencontainers.image.version="0.1.1"
+LABEL org.opencontainers.image.version="0.2.0"
 COPY --chmod=0755 deploy/bot-api/entrypoint.sh /entrypoint.sh
 COPY --chmod=0644 deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
 COPY --chmod=0644 backend/app/services/protocol_probe.py /usr/local/lib/protocol_probe.py

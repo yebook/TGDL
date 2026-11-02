@@ -17,7 +17,7 @@ features:
   - title: WebUI 管理
     details: 顶部查看连接与队列，按使用流程设置 Bot、保存方式、提示及备份；调试详情默认隐藏。
   - title: 简单自托管
-    details: Docker 部署，数据与媒体分开持久化；保留源码构建，配套镜像待首次发布。
+    details: 使用 Docker 从源码部署，数据与媒体分开保存；附带本地 API 预编译组件，无需自行编译 TDLib。
 ---
 
 ::: danger 使用前请了解账号风险
@@ -26,4 +26,4 @@ features:
 
 云端下载上限 **20 MB**；大文件可在同一 WebUI 切换到本地 Bot API。先完成 [第一次下载](quick-start.md)，再按需调整 [日常设置](settings.md)、查看 [任务与进度](usage.md) 或 [备份配置](configuration-backup.md)。
 
-当前处于开发阶段，版本与本轮变更见 [更新日志](changelog.md)。真实 Telegram、Docker 宿主机与代理链路的验收范围见 [验证说明](verification.md)。仅处理实际发送或转发给 Bot 的媒体，不处理消息链接，不登录个人账号。
+v0.2.0 是首个正式版本，功能与升级说明见 [更新日志](changelog.md)。支持 `linux/amd64` Docker 部署，仅处理实际发送或转发给 Bot 的媒体，不处理消息链接，不登录个人账号。

@@ -1,4 +1,10 @@
+---
+search: false
+---
+
 # Docker 隔离验收
+
+本文面向开发者和维护者，所有写操作都应限制在专用临时环境。实际部署请使用 [Docker 部署指南](deployment.md)。
 
 无需 Telegram API 凭据，可以先检查生产应用镜像的初始化、管理功能与数据保留。
 此工具会启动临时容器、创建临时管理员并修改临时配置；与只读的
@@ -9,7 +15,7 @@
 先启动 Docker Engine，并构建当前源码的应用镜像：
 
 ```text
-docker build -t tgd-app-source:0.1.1 .
+docker build -t tgd-app-source:0.2.0 .
 python scripts/docker_acceptance.py --run
 ```
 

@@ -46,14 +46,11 @@ export default defineConfig({
         { text: '日志与故障处理', link: '/operations' },
         { text: '常见问题', link: '/faq' },
         { text: '更新日志', link: '/changelog' },
-      ] },
-      { text: '开发与项目', collapsed: true, items: [
-        { text: '开发指南', link: '/development' },
-        { text: '部署后验收', link: '/acceptance' },
-        { text: 'Docker 隔离验收', link: '/docker-acceptance' },
-        { text: '验证范围', link: '/verification' },
-        { text: '文档站与 Pages', link: '/pages' },
         { text: '参与贡献与许可', link: '/project' },
+      ] },
+      { text: '开发文档', collapsed: true, items: [
+        { text: '开发指南', link: '/development' },
+        { text: '文档站与 Pages', link: '/pages' },
       ] },
     ],
     search: { provider: 'local', options: { locales: { root: { translations: {
@@ -66,7 +63,7 @@ export default defineConfig({
     sidebarMenuLabel: '目录',
     returnToTopLabel: '返回顶部',
     socialLinks: [{ icon: 'github', link: 'https://github.com/yebook/TGDL' }],
-    footer: { message: `${release.version} · MIT 许可 · 文档对应当前源码`,
+    footer: { message: `${release.version} · MIT 许可`,
       copyright: 'Copyright © 2026 TGDL contributors' },
   },
 })

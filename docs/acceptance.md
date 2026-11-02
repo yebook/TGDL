@@ -1,4 +1,10 @@
+---
+search: false
+---
+
 # 部署后验收
+
+本文面向开发者和维护者，用于检查服务接口及记录验收结果。安装和日常使用请阅读 [Docker 部署](deployment.md) 与 [第一次下载](quick-start.md)。
 
 `scripts/acceptance.py` 用于检查已经运行的服务，支持 Python 3.10 及以上，仅使用标准库。可从 Windows 电脑或 NAS/Linux 运行，不需要安装后端依赖。它不启动容器，不初始化管理员，不修改设置，不操作下载任务，也不发送 Telegram 消息。
 

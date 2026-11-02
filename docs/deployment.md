@@ -39,14 +39,14 @@ cd TGDL
 | `.github` | GitHub 仓库自动化配置，不影响本机运行 |
 | `docs/` | 文档站源码，可直接阅读在线文档 |
 | `scripts/` | 仓库开发与检查工具；不要误删 `deploy/` 内的运行脚本 |
-| 本机生成的 `node_modules`、`.venv`、`__pycache__`、测试报告与构建缓存 | 镜像会自行安装依赖和构建；不要连同源码、依赖清单或锁文件一起删 |
+| 本机生成的 `node_modules`、`.venv`、`__pycache__` 与构建缓存 | 镜像会自行安装依赖和构建；不要连同源码、依赖清单或锁文件一起删 |
 | `.git` | 可以运行，但失去 `git pull` 等更新能力，之后需重新下载源码；建议 Git 部署保留 |
 
 这些是精简源码副本的建议，不是启动前必须执行的清理步骤。最省事的方式是保留下载的源码原样。**已运行实例的 `.env`、数据目录、API 缓存、下载文件和私有 Docker 卷都不是开发垃圾**；不要为了精简部署而删除，也不要分享其中的密钥和私人数据。重新下载 ZIP 更新源码时保留现有 `.env`、数据和挂载位置，先按 [维护指南](operations.md) 备份，不能用新的源码目录覆盖或清空业务数据。
 
 ### 2. Docker 与存储环境
 
-- 安装 Docker Engine 和 **Docker Compose v2**，使用 `linux/amd64` 容器（主机 `x86_64`）。当前源码构建与预编译镜像均仅支持此架构；ARM 主机暂不支持。运行 `docker version` 和 `docker compose version` 确认引擎可访问；Windows 使用 Docker Desktop，见 [本地运行](local-run.md)。
+- 安装 Docker Engine 和 **Docker Compose v2**，使用 `linux/amd64` 容器（主机 `x86_64`）。当前仅支持此架构，ARM 主机暂不支持。运行 `docker version` 和 `docker compose version` 确认引擎可访问；Windows 使用 Docker Desktop，见 [本地运行](local-run.md)。
 - 首次源码构建需要访问 Docker Hub、Debian、PyPI 和 npm。源码已附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，**默认无需下载原生源码或编译 TDLib**；应用依赖安装与前端构建仍会执行。只有主动选择完整原生编译时，才需要访问 GitHub 下载上游源码并承担 C++ 编译的时间与内存开销。运行时尚未填写本地凭据也可先用云端。
 - Compose 固定使用附带的 Bot API／TDLib 预编译包，无需额外选择原生镜像或修改编译模式。
 - 准备应用数据、下载、API 缓存三个目录，并允许所选 UID/GID 写入。数据库使用可靠本地文件系统，不放在 SMB/NFS 上；媒体共享应先挂载。本地下载保存期间，API 缓存与目标文件会暂时各占一份空间；最终文件安全保存后自动清理对应媒体缓存，API 运行数据保留。仍需预留两份大文件及并发临时空间，详见 [缓存维护](operations.md#api-缓存维护)。
@@ -75,7 +75,7 @@ chmod 600 .env
 
 这些命令只设置项目顶层目录，不递归修改已有媒体库。已有 NAS 共享的 ACL 也必须允许该 UID/GID 写入。API 控制信息使用私有 Docker 卷，初始化服务负责准备权限，不需要另建控制目录。
 
-编辑刚复制的 `.env`：将 `TGD_UID` / `TGD_GID` 与实际授权的用户对应；默认路径和端口可直接用于测试，端口冲突时修改 `TGD_WEB_PORT`。若修改了三个宿主目录路径，也要为对应路径创建目录并授予权限，不能只给默认目录授权。完整配置见下方 [参数设置](#参数设置)。
+编辑刚复制的 `.env`：将 `TGD_UID` / `TGD_GID` 与实际授权的用户对应；默认路径和端口可直接使用，端口冲突时修改 `TGD_WEB_PORT`。若修改了三个宿主目录路径，也要为对应路径创建目录并授予权限，不能只给默认目录授权。完整配置见下方 [参数设置](#参数设置)。
 
 确认媒体共享已挂载后，使用源码构建并启动：
 
@@ -147,7 +147,7 @@ services:
 # 三个服务：WebUI/下载应用、本地 API 管理服务、一次性权限初始化。
   app:
   # 应用服务，承载 WebUI、Bot 消息处理和下载任务。
-    image: tgd-app-source:0.1.1
+    image: tgd-app-source:0.2.0
     # 本机源码构建标签，与旧运行标签区分；不从仓库拉取。
     pull_policy: build
     # 默认启动时构建源码；有效构建缓存仍可复用。
@@ -221,7 +221,7 @@ services:
       # 每个容器日志文件最多 10 MiB、最多 3 个；按需调整容量。
   bot-api:
   # 常驻本地 API 管理服务；初次使用云端也会启动，但无需填写本地凭据。
-    image: tgd-bot-api-source:0.1.1
+    image: tgd-bot-api-source:0.2.0
     # 配套 API 镜像引用，必须与初始化服务完全相同；不可换成普通第三方镜像。
     pull_policy: build
     # 与应用采用相同构建策略，不从 GHCR 拉取运行镜像。
@@ -275,7 +275,7 @@ services:
     # 复用 app 中定义的 Docker 日志轮转策略。
   init-volumes:
   # 只准备私有控制卷权限，成功退出是正常现象。
-    image: tgd-bot-api-source:0.1.1
+    image: tgd-bot-api-source:0.2.0
     # 与 bot-api 使用同一镜像引用；不独立选择版本。
     pull_policy: never
     # 使用 bot-api 在服务创建前构建好的镜像，不重复构建或远程拉取。
@@ -317,7 +317,7 @@ networks:
 
 ## 源码镜像与构建缓存
 
-本机使用 `tgd-app-source:0.1.1` 与 `tgd-bot-api-source:0.1.1`。默认 `pull_policy: build` 会在启动时构建源码，Docker 仍会复用有效构建缓存。基础镜像与应用依赖仍需联网下载，Bot API／TDLib 使用仓库附带的预编译包。
+本机使用 `tgd-app-source:0.2.0` 与 `tgd-bot-api-source:0.2.0`。默认 `pull_policy: build` 会在启动时构建源码，Docker 仍会复用有效构建缓存。基础镜像与应用依赖仍需联网下载，Bot API／TDLib 使用仓库附带的预编译包。
 
 ## 修改配置时不用构建
 
@@ -338,7 +338,7 @@ docker compose up -d --no-build
 1. 按 [申请步骤](telegram-api.md#获取-api-id-api-hash) 获取 API ID / Hash。
 2. 在 WebUI 填写凭据，选择本地模式并保存；如需代理，在同一设置页配置。
 3. 后台先准备切换，有活动下载时等待安全结束，并协调在途请求；随后退出云端，按目标代理配置启动本地进程并验证 Bot。没有活动下载时不会提示等待下载。
-4. 查看已保存模式、实际模式、切换步骤和 Bot 连接；实际连接成功后再测试超过 20 MB 的视频。
+4. 查看切换进度，Bot 连接成功后即可下载超过 20 MB 的视频。
 
 日常无需停止应用、重启容器或手动执行 `logOut`。修改凭据可重启容器内 API 进程；WebUI 的“重启 API 进程”不代表重建容器。管理组件失联、宿主网络能力缺失或容器自身停止时仍需 Docker 排查。
 

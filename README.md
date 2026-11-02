@@ -20,7 +20,7 @@
 
 ## 功能清单
 
-已勾选为已实现，未勾选为待实现；真实 Telegram 与部署主机的验收边界见 [验证说明](https://yebook.github.io/TGDL/verification.html)。
+v0.2.0 是首个正式版本。已勾选为当前支持的功能，未勾选为后续计划。
 
 - [x] 视频、图片及混合媒体组，确认后下载到本地或 NAS。
 - [x] 日期与媒体组归档、文件名模板、去重及重名保护。
@@ -51,7 +51,7 @@
 
 ## 快速部署
 
-需要完整项目源码、Docker Compose v2、`linux/amd64` 容器环境、专属 Bot Token 和自己的数字 Telegram 用户 ID。当前源码构建与预编译镜像均仅支持 amd64（x86_64）。源码获取与 Bot 准备方法见 [部署前准备](https://yebook.github.io/TGDL/deployment.html#部署前准备)。数据库使用可靠本地存储，媒体共享先挂载。
+需要完整项目源码、Docker Compose v2、`linux/amd64` 容器环境、专属 Bot Token 和自己的数字 Telegram 用户 ID。当前仅支持 amd64（x86_64）。源码获取与 Bot 准备方法见 [部署前准备](https://yebook.github.io/TGDL/deployment.html#部署前准备)。数据库使用可靠本地存储，媒体共享先挂载。
 
 ### 1. 准备配置与目录
 
@@ -82,7 +82,7 @@ docker compose ps
 
 源码附带 `linux/amd64` 的 Bot API／TDLib 预编译压缩包，默认直接校验并使用，不在 NAS 编译 TDLib；仍需下载基础镜像、应用依赖并构建前端。之后只修改 `.env` 时，执行 `docker compose up -d --no-build` 即可重建容器，无需再次构建。`init-volumes` 初始化成功后退出是正常现象。默认启动会从源码构建，本机旧标签不会直接复用。预编译产物更新与手动编译入口见 [构建指南](https://yebook.github.io/TGDL/development.html#原生组件单独预编译)。
 
-### 3. 初始化并验证
+### 3. 初始化并开始下载
 
 打开 WebUI，从应用数据目录读取 `bootstrap.key`（默认 `data/bootstrap.key`），创建管理员账号和 **6–20 位密码**。初始化密钥仅用于首次设置，不要分享。
 

@@ -4,15 +4,15 @@
 
 ## 工具与依赖
 
-当前首版尚未正式发布，不为未发布版本保留兼容分支；功能修改同步更新当前契约、测试与文档。不兼容的旧测试数据可以清理，优先保持当前设计简洁；清理前明确范围，媒体文件不随测试数据清理，正常运行中的下载所有权与 Telegram 安全保护不能绕过。正式发布后再制定版本兼容和迁移策略。
+v0.2.0 是首个正式版本。后续修改应考虑已发布版本的数据与配置，涉及结构变化时提供迁移、备份和回退说明，并同步测试与文档。清理隔离测试数据前明确范围，不操作用户媒体，也不能绕过活动下载所有权与 Telegram 请求保护。
 
-数据库当前使用单一 `initial` 初始结构，不提供早期开发修订的自动升级。遇到不支持的开发数据库时，先停服、备份并明确要保留的配置及文件，再重建测试数据库；不要只修改版本号强行启动，也不要通过清理运行状态绕过不确定获取或 Telegram 冷却。配置导入只恢复设置，不恢复这些安全状态。
+数据库以 `initial` 结构为基础，通过后续迁移增量更新；不提供所有早期开发修订的自动升级。遇到不支持的旧开发数据库时，先停服备份并确认迁移方式，不能只改结构版本强行启动或清除运行保护状态。配置导入只恢复设置，不替代数据库迁移。
 
 安装 Python 3.12、uv、Node.js 24 和 pnpm 11.23.0。使用提交的锁文件，不手动修改锁定版本。文档有独立依赖包，不加入应用镜像或前端依赖。
 
 ## 版本与更新日志
 
-版本唯一来源是 `backend/app/version.json`，仅保存数字版本，当前版本显示在站点导航，变更见 [更新日志](changelog.md)。不添加阶段标签或英文预发布后缀；修复递增修订号，新功能递增次版本，首次正式版使用 `1.0.0`。
+版本唯一来源是 `backend/app/version.json`，仅保存数字版本，当前版本显示在站点导航，变更见 [更新日志](changelog.md)。不添加阶段标签或英文预发布后缀；修复递增修订号，新功能递增次版本。首个正式版本为 `0.2.0`，正式发布不要求版本号从 `1.0.0` 开始。
 
 修改版本源后，在项目根目录执行：
 
@@ -93,9 +93,9 @@ docker compose up -d --no-build --no-deps app
 | API 监督进程、启动或初始化脚本 | 仅轻量 API 打包，复用原生基础镜像 |
 | 官方 Bot API / TDLib 版本、项目原生补丁或头文件、编译工具链及原生依赖 | 重新编译原生基础镜像，再打包 API |
 
-普通用户始终只拉取应用与最终 API 两个运行镜像，不需要单独部署原生基础镜像，不需要安装编译器。原生产物包含项目定制的代理、进度和缓存清理功能，不能替换为普通第三方或未修改的官方 Bot API 二进制。
+普通部署从源码构建应用与最终 API 两个运行镜像，不需要单独部署原生基础镜像，也无需在宿主机安装编译器。原生产物包含项目定制的代理、进度和缓存清理功能，不能替换为普通第三方或未修改的官方 Bot API 二进制。
 
-源码构建默认 `TGD_NATIVE_IMAGE=bundled-native`，使用 `deploy/bot-api/prebuilt/linux-amd64.tar.gz` 及配套 `manifest.json`。无需改配置，也无需等待镜像首次发布。维护者通常只需更新附带的预编译包；项目不再发布独立原生基础镜像，不能用普通 Bot API 或任意最终 API 镜像代替该产物。
+源码构建默认 `TGD_NATIVE_IMAGE=bundled-native`，使用 `deploy/bot-api/prebuilt/linux-amd64.tar.gz` 及配套 `manifest.json`，无需改配置。维护者通常只需更新附带的预编译包；不能用普通 Bot API 或任意最终 API 镜像代替该产物。
 
 只有需要修改原生代码时，才在项目根目录单独构建 `native` 目标并更新预编译包；普通 Compose 部署固定使用附带产物：
 
@@ -121,7 +121,7 @@ Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓�
 修改本地 API 源码补丁时，先编译实际镜像，再运行专用传输检查。以下命令在项目根目录执行，不挂载应用数据，不填写真实凭据；专用检查镜像安装 `strace`，只在断网容器中验证。
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.1.1 .
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.2.0 .
 docker build -f deploy/bot-api/Dockerfile.verify-native -t tgd-native-transport-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-transport-acceptance
 ```
@@ -150,7 +150,7 @@ docker run --rm --network none tgd-native-http-download-wait-acceptance
 进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.1.1 -t tgd-native-progress-acceptance .
+docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.2.0 -t tgd-native-progress-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-progress-acceptance
 ```
 

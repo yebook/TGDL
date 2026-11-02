@@ -61,7 +61,8 @@ def test_bump_plans_all_mirrors_without_touching_dependencies(tmp_path: Path) ->
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)
     metadata = tmp_path / "backend/app/version.json"
-    metadata.write_text(json.dumps({"version": "0.2.0"}), encoding="utf-8")
+    next_version = "99.2.3"
+    metadata.write_text(json.dumps({"version": next_version}), encoding="utf-8")
     changes = version_tool["planned_updates"](tmp_path)
     assert len(changes) == 12
     for path, content in changes.items():
@@ -69,7 +70,7 @@ def test_bump_plans_all_mirrors_without_touching_dependencies(tmp_path: Path) ->
     assert version_tool["planned_updates"](tmp_path) == {}
     original_lock = (ROOT / "backend/uv.lock").read_text(encoding="utf-8")
     lock = (tmp_path / "backend/uv.lock").read_text(encoding="utf-8")
-    assert lock.replace('name = "tgd-backend"\nversion = "0.2.0"',
+    assert lock.replace(f'name = "tgd-backend"\nversion = "{next_version}"',
                         f'name = "tgd-backend"\nversion = "{VERSION}"') == original_lock
     malformed = tmp_path / "Dockerfile"
     malformed.write_text("FROM scratch\n", encoding="utf-8")
