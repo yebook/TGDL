@@ -20,7 +20,7 @@ from app.db.models import Job, LocalApiRuntime, Settings, uid
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.cache_maintenance import maintenance_values, require_no_maintenance
-from app.services.diagnostics import classify_error
+from app.services.diagnostics import classify_error, classify_exception_type
 from app.services.local_api_errors import START_FAILURE_MESSAGES
 from app.services.network_errors import classify_network_failure
 from app.services.request_safety import SafetyDeferred
@@ -205,6 +205,7 @@ class LocalApiService:
             self.diagnostics.emit("local_api_transition", dedupe=True, level="info",
                                   outcome=updates["phase"], mode=values.get("target_mode"),
                                   error_code=code, reason=reason,
+                                  exception_type=classify_exception_type(diagnostic_error) if diagnostic_error is not None else None,
                                   stage=prior.get("phase") if updates["phase"] in {"failed", "blocked", "logout_uncertain"} else updates["phase"],
                                   action=values.get("action") or prior.get("action"),
                                   operation_id=values.get("operation_id") or prior.get("operation_id"))

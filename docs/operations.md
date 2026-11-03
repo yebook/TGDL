@@ -31,6 +31,20 @@ docker compose logs --tail 100 app bot-api init-volumes
 
 排障时记录当地时区和大致发生时间。日志时间使用 UTC，例如 `09:06:21Z` 对应北京时间 `17:06:21`。重复异常会合并，日志行数不等于请求次数；日志无法补回启用前或已被清理的事件。
 
+连接问题可按以下事件定位。`stage` 表示失败阶段，`exception_type` 是固定的异常类型分类；网络请求还会保留可确定的 DNS、TCP、TLS、代理或超时原因，以及已收到的 HTTP 错误状态。
+
+| 日志线索 | 含义 |
+| --- | --- |
+| `telegram_request` / `telegram_recovered` | API 请求或文件传输的失败与恢复；成功只说明这一请求已返回 |
+| `runtime_failure`，`client_create` / `identity_request` / `identity_publish` | 客户端创建、身份请求或身份结果处理失败；包含自动连接、手动校验及恢复 Bot 连接 |
+| `runtime_failure`，`updates_serialize` | API 已返回消息，应用转换消息时失败；例如链接预览消息的序列化异常 |
+| `runtime_failure`，`message_process` / `callback_process` / `updates_persist` | 消息处理、按钮业务处理或消息入库失败；结合 `DATABASE_ERROR`、`SERIALIZATION_ERROR` 等错误码判断 |
+| `runtime_failure`，`callback_answer` / `notification_send` / `notification_commit` | 按钮应答、通知发送或发送结果入库失败；已完成的业务操作不会因应答失败而撤销 |
+| `runtime_failure`，`status_snapshot` | 状态接口在读取或汇总数据时失败；页面上的“请求异常”可能来自这里 |
+| `event_summary` / `runtime_recovered` | 重复异常次数汇总 / 对应应用处理流程恢复；恢复事件保留此前的失败阶段 |
+
+例如同一时段先出现 `getUpdates` 成功，随后出现 `runtime_failure`、`stage=updates_serialize`、`exception_type=pydantic_serialization`，说明失败发生在应用处理返回消息时。此时握手或网络连通测试仍可能正常。导出这两类事件及前后的失败、汇总和恢复记录，才能保留完整线索。正常空轮询不会持续写入成功日志。
+
 日志不记录 Token、API Hash、密码、原始请求地址、媒体内容或个人聊天资料。反馈前仍请检查导出内容，只提供版本、任务编号、错误码和相关脱敏事件，不要上传 `.env`、数据库、密钥或 API 缓存。
 
 日志写入失败时，先检查应用数据目录的剩余空间、挂载和 UID/GID 权限。日志故障不会将已保存的媒体改判为失败，不要通过删除数据库或媒体解决日志问题。

@@ -308,16 +308,23 @@ def create_app(config: Config | None = None) -> FastAPI:
     async def validate_bot(candidate: UserSettings) -> dict[str, Any] | None:
         if not candidate.bot_token:
             return None
+        stage = "client_create"
+        scope = "validation:" + settings.client_signature(candidate)
         try:
             client = TelegramClient(candidate.bot_token, cfg, candidate)
             client.safety = runtime.safety
             try:
+                stage = "identity_request"
                 identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
             finally:
                 await waits.close_candidate(client)
-        except AppError:
+        except AppError as exc:
+            await runtime.record_runtime("connection", stage, error=exc, mode=candidate.bot_api_mode,
+                                         method="getMe" if stage == "identity_request" else None, scope=scope)
             raise
         except Exception as exc:
+            await runtime.record_runtime("connection", stage, error=exc, mode=candidate.bot_api_mode,
+                                         method="getMe" if stage == "identity_request" else None, scope=scope)
             raise AppError("BOT_VALIDATION_FAILED", "无法验证 Bot，请检查 Token、所选 API 或代理连接", 422) from exc
         def check_identity() -> None:
             with db.sessions() as session:
@@ -325,7 +332,12 @@ def create_app(config: Config | None = None) -> FastAPI:
                                                                        MediaRequest.bot_id != identity["id"]).limit(1))
                 if active:
                     raise AppError("BOT_BUSY", "存在原 Bot 的活动或待确认请求，不能更换 Bot 身份", 409)
-        await asyncio.to_thread(check_identity)
+        try:
+            await asyncio.to_thread(check_identity)
+        except Exception as exc:
+            await runtime.record_runtime("connection", "identity_publish", error=exc, mode=candidate.bot_api_mode, scope=scope)
+            raise
+        await runtime.record_runtime("connection", "identity_publish", mode=candidate.bot_api_mode, scope=scope)
         return identity
 
     @application.post("/api/v1/settings/validate", dependencies=[Depends(auth)], response_model=ValidationResponse)
@@ -395,8 +407,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     def clear_logs() -> dict[str, Any]:
         return runtime.diagnostics.clear()
 
-    @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
-    def system_status() -> dict[str, Any]:
+    def read_system_status() -> dict[str, Any]:
         values, bot, api, proxy = runtime.connection_snapshot()
         roots = []
         for root_id, root in storage.roots.items():
@@ -425,6 +436,16 @@ def create_app(config: Config | None = None) -> FastAPI:
                 "proxy": proxy,
                 "queue": {"active": active, "pending": pending, "concurrency": values.download_concurrency},
                 "recovery": {"blocked_jobs": blocked, "message": recovery_message}}
+
+    @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
+    def system_status() -> dict[str, Any]:
+        try:
+            result = read_system_status()
+        except Exception as exc:
+            runtime.record_runtime_sync("status", "status_snapshot", error=exc, scope="system-status")
+            raise
+        runtime.record_runtime_sync("status", "status_snapshot", scope="system-status")
+        return result
 
     async def cache_action(request: Request, *, clean: bool) -> dict[str, Any]:
         if request.query_params:
@@ -463,25 +484,38 @@ def create_app(config: Config | None = None) -> FastAPI:
             operation_id = uid()
             await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="info", outcome="queued",
                                     action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
-            client = TelegramClient(candidate.bot_token, cfg, candidate)
-            client.safety = runtime.safety
-            client.diagnostic_action = "bot_retry"
-            client.diagnostic_operation_id = operation_id
+            client = None
+            stage = "client_create"
+            scope = "bot_retry:" + settings.client_signature(candidate)
             try:
+                client = TelegramClient(candidate.bot_token, cfg, candidate)
+                client.safety = runtime.safety
+                client.diagnostic_action = "bot_retry"
+                client.diagnostic_operation_id = operation_id
+                stage = "identity_request"
                 identity = await waits.network(client.identity(probe=True), waits.IDENTITY_TIMEOUT)
+                stage = "identity_publish"
                 await asyncio.to_thread(runtime.remember_identity, identity)
+                await runtime.record_runtime("connection", stage, client=client, scope=scope)
                 await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="info", outcome="success",
                                         action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
-            except AppError:
+            except AppError as exc:
+                await runtime.record_runtime("connection", stage, error=exc, mode=candidate.bot_api_mode,
+                                             scope=scope, method="getMe" if stage == "identity_request" else None)
                 await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="warning", outcome="failed",
                                         action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
                 raise
             except Exception as exc:
+                await runtime.record_runtime("connection", stage, error=exc, mode=candidate.bot_api_mode,
+                                             scope=scope, method="getMe" if stage == "identity_request" else None)
                 await asyncio.to_thread(runtime.diagnostics.emit, "bot_recovery", level="warning", outcome="failed",
                                         action="bot_retry", operation_id=operation_id, mode=candidate.bot_api_mode)
+                if stage == "client_create":
+                    raise  # Preserve constructor failure semantics while recording the stage.
                 raise AppError("BOT_VALIDATION_FAILED", "Bot 验证未成功，请检查凭据和连接后重试", 422) from exc
             finally:
-                await waits.close_candidate(client)
+                if client is not None:
+                    await waits.close_candidate(client)
         return await asyncio.to_thread(runtime.safety.status, candidate.bot_token)
 
     @application.get("/{path:path}", include_in_schema=False)

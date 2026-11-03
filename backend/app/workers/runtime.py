@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
@@ -250,18 +251,26 @@ class Runtime:
                            "message": "正在连接云端 Bot API" if settings.bot_api_mode == "cloud" else "正在连接本地 Bot API"}
         self.bot_status_signature = signature
         self.bot_status_generation = generation
-        client = TelegramClient(settings.bot_token, self.config, settings)
-        client.safety = self.safety
+        client = None
+        stage = "client_create"
         try:
+            client = TelegramClient(settings.bot_token, self.config, settings)
+            client.safety = self.safety
+            stage = "identity_request"
             identity = await waits.network(client.identity(), waits.IDENTITY_TIMEOUT)
+            stage = "identity_publish"
             if not await asyncio.to_thread(self.publish_client, client, identity, settings, generation, transition):
                 await waits.close_candidate(client)
                 return False
+            await self.record_runtime("connection", stage, client=client, scope=signature)
             return True
         except Exception as exc:
+            await self.record_runtime("connection", stage, client=client, mode=settings.bot_api_mode,
+                                      scope=signature, method="getMe" if stage == "identity_request" else None, error=exc)
             await asyncio.to_thread(self.candidate_failure, signature, generation, transition, exc.message if isinstance(exc, AppError)
                                     else "Telegram 连接失败，请检查所选 API、凭据、网络或代理")
-            await waits.close_candidate(client)
+            if client is not None:
+                await waits.close_candidate(client)
             raise
 
     def candidate_failure(self, signature: str, generation: str, transition: dict[str, Any], message: str) -> None:
@@ -360,9 +369,39 @@ class Runtime:
             if not session.get(BotIdentity, identity["id"]):
                 session.add(BotIdentity(id=identity["id"], username=identity["username"]))
 
+    async def record_runtime(self, component: str, stage: str, *, error: BaseException | None = None,
+                             client: TelegramClient | None = None, mode: str | None = None,
+                             method: str | None = None, scope: str | None = None,
+                             retry_at: float | None = None, task_id: str | None = None,
+                             completed_stages: tuple[str, ...] | None = None) -> None:
+        if error is None and not self.diagnostics.runtime_failures:
+            return  # Keep healthy idle loops free of extra thread submissions.
+        await asyncio.to_thread(self.record_runtime_sync, component, stage, error=error, client=client,
+                                mode=mode, method=method, scope=scope, retry_at=retry_at, task_id=task_id,
+                                completed_stages=completed_stages)
+
+    def record_runtime_sync(self, component: str, stage: str, *, error: BaseException | None = None,
+                            client: TelegramClient | None = None, mode: str | None = None,
+                            method: str | None = None, scope: str | None = None,
+                            retry_at: float | None = None, task_id: str | None = None,
+                            completed_stages: tuple[str, ...] | None = None) -> None:
+        if isinstance(error, SafetyDeferred):
+            return  # Request diagnostics already record actual protection/pacing evidence.
+        try:
+            self.diagnostics.runtime_result(component, stage=stage, error=error,
+                                            mode=client.mode if client is not None else mode, method=method,
+                                            scope=self.client_signature if scope is None else scope,
+                                            retry_at=datetime.fromtimestamp(retry_at, UTC).isoformat() if retry_at is not None else None,
+                                            task_id=task_id, completed_stages=completed_stages)
+        except Exception:
+            self.diagnostics.error = True  # Logging cannot replace a business result or exception.
+
     async def poll_loop(self) -> None:
         while not self.stopping:
             polling_client = self.client
+            scope = self.client_signature
+            completed: set[str] = set()
+            stage = "connection_prepare"
             try:
                 async with self.poll_lock:
                     transition = await asyncio.to_thread(self.local_api.read)
@@ -371,6 +410,7 @@ class Runtime:
                         continue
                     eligible = await self.ensure_client()
                     polling_client = self.client
+                    scope = self.client_signature
                     if self.config.managed_local_api and not eligible:
                         await asyncio.sleep(0.5)
                         continue
@@ -382,10 +422,16 @@ class Runtime:
                         # Keep an old client only for its running file owners, not new intake.
                         await asyncio.sleep(1)
                         continue
-                    for inbox_id, update in await asyncio.to_thread(self.ingest.pending, self.bot_id):
+                    stage = "pending_read"
+                    pending = await asyncio.to_thread(self.ingest.pending, self.bot_id)
+                    completed.update(("connection_prepare", "pending_read"))
+                    for inbox_id, update in pending:
                         if update.get("message"):
+                            stage = "message_process"
                             await asyncio.to_thread(self.ingest.message, self.bot_id, update["message"], inbox_id)
+                            completed.add(stage)
                         elif update.get("callback_query"):
+                            stage = "callback_process"
                             if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
                                 break  # Keep durable callback pending until maintenance releases it.
                             callback = update["callback_query"]
@@ -395,25 +441,48 @@ class Runtime:
                                 if exc.code == "CACHE_MAINTENANCE_BUSY":
                                     break  # Admission may have committed after the snapshot above.
                                 state = exc.message
+                            completed.add(stage)
                             # Business operation is durable even if answering the callback times out.
+                            stage = "callback_answer"
                             try:
                                 await self.client.answer(callback["id"], state)
-                            except Exception:
-                                pass
+                                await self.record_runtime("polling", stage, client=polling_client,
+                                                          scope=scope + ":callback", method="answerCallbackQuery")
+                            except Exception as exc:
+                                await self.record_runtime("polling", stage, client=polling_client, error=exc,
+                                                          scope=scope + ":callback", method="answerCallbackQuery")
+                        stage = "inbox_mark"
                         await asyncio.to_thread(self.ingest.mark_processed, inbox_id)
+                        completed.add(stage)
+                    stage = "cursor_read"
                     offset = await asyncio.to_thread(self.ingest.offset, self.bot_id)
+                    completed.add(stage)
+                    stage = "updates_receive"
                     updates = await self.client.updates(offset)
+                    completed.add(stage)
+                    stage = "updates_persist"
                     await asyncio.to_thread(self.ingest.persist_batch, self.bot_id, updates)
+                    completed.add(stage)
+                    stage = "poll_status"
                     await asyncio.to_thread(self.poll_result, polling_client)
+                    completed.add(stage)
+                    await self.record_runtime("polling", stage, client=polling_client, scope=scope,
+                                              completed_stages=tuple(completed))
             except asyncio.CancelledError:
                 raise
             except AppError as exc:
+                await self.record_runtime("polling", stage, client=polling_client, error=exc, scope=scope,
+                                          method="getUpdates" if stage == "updates_receive" else None,
+                                          retry_at=time.time() + 5)
                 # Unsent pacing supplies no new evidence about the connection.
                 # Preserve both verified readiness and any earlier real error.
                 if not (isinstance(exc, SafetyDeferred) and exc.is_pacing):
                     await asyncio.to_thread(self.poll_result, polling_client, error=exc.message)
                 await asyncio.sleep(5)
-            except Exception:
+            except Exception as exc:
+                await self.record_runtime("polling", stage, client=polling_client, error=exc, scope=scope,
+                                          method="getUpdates" if stage == "updates_receive" else None,
+                                          retry_at=time.time() + 5)
                 await asyncio.to_thread(self.poll_result, polling_client, error="Telegram 连接失败，请检查所选 API、凭据、网络或代理")
                 await asyncio.sleep(5)
 
@@ -494,6 +563,9 @@ class Runtime:
 
     async def tick_loop(self) -> None:
         while not self.stopping:
+            stage = "dispatch_prepare"
+            client = self.client
+            scope = self.client_signature
             try:
                 await self.reconcile_acquisition_cancellations()
                 await self.cache_maintenance.resume()
@@ -506,6 +578,7 @@ class Runtime:
                 await asyncio.to_thread(self.recover_generation)
                 self.running = {key: task for key, task in self.running.items() if not task.done()}
                 client, bot_id = self.client, self.bot_id
+                scope = self.client_signature
                 # Reconciliation, grouping and generation checks above always run.
                 # No verified consumer means there is no dispatch decision to make.
                 if client is None or bot_id is None:
@@ -527,6 +600,7 @@ class Runtime:
                 if await self.cleanup_cache():
                     can_dispatch = False
                 if can_dispatch:
+                    stage = "dispatch_run"
                     for _ in range(max(0, settings.download_concurrency - active)):
                         job_id = await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)
                         if not job_id:
@@ -535,9 +609,13 @@ class Runtime:
                             self.cache_maintenance.invalidate()
                         assert client
                         self.running[job_id] = asyncio.create_task(self.worker.run(client, job_id))
+                await self.record_runtime("dispatch", stage, client=client, scope=scope,
+                                          completed_stages=("dispatch_prepare", stage))
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                await self.record_runtime("dispatch", stage, client=client, error=exc, scope=scope,
+                                          retry_at=time.time() + 0.5)
                 # No raw exceptions: Telegram exception representations contain credential-bearing URLs.
                 self.bot_status["message"] = "调度暂停，请检查存储、配置和系统诊断"
             await asyncio.sleep(0.5)
@@ -608,6 +686,10 @@ class Runtime:
 
     async def notify_loop(self) -> None:
         while not self.stopping:
+            stage = "notification_prepare"
+            client = self.client
+            scope = self.client_signature
+            request_id = None
             try:
                 async with self.notify_lock:
                     transition = await asyncio.to_thread(self.local_api.read)
@@ -615,10 +697,13 @@ class Runtime:
                         await asyncio.sleep(0.2)
                         continue
                     client, bot_id = self.client, self.bot_id
+                    scope = self.client_signature
                     if not client or bot_id is None:
                         await asyncio.sleep(1)
                         continue
                     if not await asyncio.to_thread(self.notification_due):
+                        await self.record_runtime("notification", stage, client=client, scope=scope,
+                                                  completed_stages=("notification_prepare",))
                         await asyncio.sleep(0.5)
                         continue
                     revision, configured, _ = await asyncio.to_thread(self.settings.read)
@@ -638,30 +723,42 @@ class Runtime:
                                 applied.get("generation") != self.client_generation)):
                             await asyncio.sleep(0.5)
                             continue
+                    stage = "notification_claim"
                     pending = await asyncio.to_thread(self.next_notification, bot_id)
+                    await self.record_runtime("notification", stage, client=client, scope=scope,
+                                              completed_stages=("notification_prepare", "notification_claim"))
                     if not pending:
                         await asyncio.sleep(0.5)
                         continue
                     row_id, chat_id, payload, request_id = pending
                     callback = (request_id, payload["nonce"]) if payload.get("confirmation") and request_id else None
+                    stage = "notification_send"
                     try:
                         message_id = await client.send(chat_id, payload["text"], callback)
+                        stage = "notification_commit"
                         await asyncio.to_thread(self.notification_result, row_id, message_id, False)
-                    except SafetyDeferred as exc:
-                        delay = max(1, (exc.retry_at or time.time() + 5) - time.time())
-                        await asyncio.to_thread(self.notification_result, row_id, None, False, delay, True)
-                    except TelegramRetryAfter as exc:
-                        await asyncio.to_thread(self.notification_result, row_id, None, False, exc.retry_after, True)
-                    except TelegramUnauthorizedError:
-                        await asyncio.to_thread(self.notification_result, row_id, None, False, 5, True)
-                    except (TelegramForbiddenError, TelegramBadRequest):
-                        await asyncio.to_thread(self.notification_result, row_id, None, True)
-                    except AppError as exc:
-                        await asyncio.to_thread(self.notification_result, row_id, None, False, 5,
-                                                exc.code == "CACHE_CLEANUP_BUSY")
-                    except Exception:
-                        await asyncio.to_thread(self.notification_result, row_id, None, False)
+                        await self.record_runtime("notification", stage, client=client, task_id=request_id, scope=scope)
+                    except Exception as exc:
+                        await self.record_runtime("notification", stage, client=client, error=exc, scope=scope,
+                                                  task_id=request_id, method="sendMessage" if stage == "notification_send" else None)
+                        stage = "notification_commit"
+                        if isinstance(exc, SafetyDeferred):
+                            delay = max(1, (exc.retry_at or time.time() + 5) - time.time())
+                            await asyncio.to_thread(self.notification_result, row_id, None, False, delay, True)
+                        elif isinstance(exc, TelegramRetryAfter):
+                            await asyncio.to_thread(self.notification_result, row_id, None, False, exc.retry_after, True)
+                        elif isinstance(exc, TelegramUnauthorizedError):
+                            await asyncio.to_thread(self.notification_result, row_id, None, False, 5, True)
+                        elif isinstance(exc, (TelegramForbiddenError, TelegramBadRequest)):
+                            await asyncio.to_thread(self.notification_result, row_id, None, True)
+                        elif isinstance(exc, AppError):
+                            await asyncio.to_thread(self.notification_result, row_id, None, False, 5,
+                                                    exc.code == "CACHE_CLEANUP_BUSY")
+                        else:
+                            await asyncio.to_thread(self.notification_result, row_id, None, False)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                await self.record_runtime("notification", stage, client=client, error=exc, scope=scope,
+                                          task_id=request_id, retry_at=time.time() + 2)
                 await asyncio.sleep(2)

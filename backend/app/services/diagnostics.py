@@ -4,6 +4,9 @@ import errno
 import json
 import os
 import re
+import socket
+import sqlite3
+import ssl
 import stat
 import threading
 import time
@@ -15,6 +18,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import (
+    TelegramAPIError,
     TelegramBadRequest,
     TelegramConflictError,
     TelegramForbiddenError,
@@ -25,6 +29,9 @@ from aiogram.exceptions import (
 )
 from aiohttp import ClientError
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
+from pydantic import ValidationError
+from pydantic_core import PydanticSerializationError
+from sqlalchemy import exc as database_errors
 
 from app.core.errors import AppError
 from app.services.local_api_errors import START_FAILURE_MESSAGES
@@ -32,7 +39,7 @@ from app.services.network_errors import classify_network_failure
 
 EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
           "request_deferred", "task_result", "local_api_transition", "local_api_action", "bot_recovery",
-          "event_summary", "request_protection", "cache_cleanup"}
+          "event_summary", "request_protection", "cache_cleanup", "runtime_failure", "runtime_recovered"}
 METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut"}
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
@@ -46,7 +53,7 @@ ERRORS = {"UNAUTHORIZED", "FORBIDDEN", "CONFLICT", "RATE_LIMITED", "BAD_REQUEST"
           "CLOUD_DOWNLOAD_REJECTED", "INVALID_API_PATH", "PUBLISH_COLLISION", "PUBLISH_UNCERTAIN",
           "NO_SPACE", "PERMISSION_DENIED", "STORAGE_ERROR", "RECOVERY_FAILED", "TELEGRAM_REJECTED",
           "BOT_UNAUTHORIZED", "CACHE_CLEANUP_UNAVAILABLE", "CACHE_FINAL_UNAVAILABLE", "CACHE_CLEANUP_BUSY",
-          "LOCAL_API_START_FAILED"}
+          "LOCAL_API_START_FAILED", "SERIALIZATION_ERROR", "VALIDATION_ERROR", "DATABASE_ERROR", "PROCESSING_ERROR"}
 # Fixed getFile descriptions from the pinned Bot API Client. The combined
 # rejection cannot distinguish a bad ID from an interrupted/unavailable file.
 _GETFILE_BAD_REQUEST_REASONS = {
@@ -65,6 +72,21 @@ REASONS = {"pacing", "cooldown", "backoff", "auth_paused", "protection_unavailab
            "getfile_bad_request_unknown"} | set(_GETFILE_BAD_REQUEST_REASONS.values()) | START_FAILURE_MESSAGES.keys()
 STAGES = {"before_send", "dns", "proxy", "connect", "tls", "response", "unknown",
           "idle", "draining", "logging_out", "starting", "verifying", "cooldown", "blocked", "logout_uncertain"}
+RUNTIME_COMPONENTS = {"connection", "polling", "updates", "notification", "dispatch", "status"}
+RUNTIME_STAGES = {
+    "connection_prepare", "client_create", "identity_request", "identity_publish", "pending_read",
+    "message_process", "callback_process", "callback_answer", "inbox_mark", "cursor_read",
+    "updates_receive", "updates_serialize", "updates_persist", "poll_status", "notification_prepare",
+    "notification_claim", "notification_send", "notification_commit", "dispatch_prepare", "dispatch_run", "status_snapshot",
+}
+STAGES |= RUNTIME_STAGES
+EXCEPTION_TYPES = {
+    "cancelled", "pydantic_serialization", "pydantic_validation", "json_decode", "database_operational",
+    "database_integrity", "database_timeout", "database", "python_lookup", "python_type", "python_value",
+    "python_runtime", "filesystem_permission", "filesystem_missing", "filesystem", "timeout", "network",
+    "telegram_unauthorized", "telegram_forbidden", "telegram_conflict", "telegram_retry_after",
+    "telegram_bad_request", "telegram_server", "telegram_network", "telegram", "app_error", "unknown",
+}
 ACTIONS = {"switch", "restart", "recover_restart", "cloud_reconnect", "retry", "acknowledge_retry", "bot_retry"}
 Scalar = str | int | float | bool | None
 
@@ -76,7 +98,8 @@ def project_event(value: Any) -> dict[str, Scalar]:
     output: dict[str, Scalar] = {"event": value["event"]}
     for key, allowed in (("level", {"info", "warning", "error"}), ("mode", {"cloud", "local"}),
                          ("method", METHODS), ("outcome", OUTCOMES), ("error_code", ERRORS),
-                         ("reason", REASONS), ("stage", STAGES), ("action", ACTIONS)):
+                         ("reason", REASONS), ("stage", STAGES), ("action", ACTIONS),
+                         ("component", RUNTIME_COMPONENTS), ("exception_type", EXCEPTION_TYPES)):
         if isinstance(value.get(key), str) and value[key] in allowed:
             output[key] = value[key]
     for key in ("timestamp", "retry_at"):
@@ -119,6 +142,59 @@ def classify_error(error: BaseException) -> tuple[str, int | None]:
     return "UNKNOWN_ERROR", None
 
 
+def classify_exception_type(error: BaseException) -> str:
+    """Only type evidence, never class names supplied by extensions or exception text."""
+    if isinstance(error, OSError) and error.errno in {
+        errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ECONNRESET, errno.EPIPE,
+    }:
+        return "network"
+    for category, name in (
+        ((asyncio.CancelledError, GeneratorExit), "cancelled"),
+        (PydanticSerializationError, "pydantic_serialization"), (ValidationError, "pydantic_validation"),
+        (json.JSONDecodeError, "json_decode"),
+        ((database_errors.OperationalError, sqlite3.OperationalError), "database_operational"),
+        ((database_errors.IntegrityError, sqlite3.IntegrityError), "database_integrity"),
+        (database_errors.TimeoutError, "database_timeout"),
+        ((database_errors.SQLAlchemyError, sqlite3.Error), "database"),
+        (TelegramUnauthorizedError, "telegram_unauthorized"), (TelegramForbiddenError, "telegram_forbidden"),
+        (TelegramConflictError, "telegram_conflict"), (TelegramRetryAfter, "telegram_retry_after"),
+        (TelegramBadRequest, "telegram_bad_request"), (TelegramServerError, "telegram_server"),
+        (TelegramNetworkError, "telegram_network"), (TelegramAPIError, "telegram"),
+        (TimeoutError, "timeout"),
+        ((ClientError, ProxyConnectionError, ProxyTimeoutError, ProxyError,
+          ConnectionError, socket.gaierror, socket.herror, ssl.SSLError), "network"),
+        (PermissionError, "filesystem_permission"), (FileNotFoundError, "filesystem_missing"),
+        (OSError, "filesystem"), (LookupError, "python_lookup"), (AttributeError, "python_lookup"),
+        (TypeError, "python_type"), (ValueError, "python_value"), (RuntimeError, "python_runtime"),
+        (AppError, "app_error"),
+    ):
+        if isinstance(error, category):
+            return name
+    return "unknown"
+
+
+def classify_runtime_error(error: BaseException, stage: str) -> tuple[str, int | None]:
+    if isinstance(error, AppError) and error.code == "LOCAL_API_OPERATION_TIMEOUT" and stage == "identity_request":
+        return "NETWORK_ERROR", None
+    kind = classify_exception_type(error)
+    if kind == "pydantic_serialization":
+        return "SERIALIZATION_ERROR", None
+    if kind in {"pydantic_validation", "json_decode"}:
+        return "VALIDATION_ERROR", None
+    if kind.startswith("database"):
+        return "DATABASE_ERROR", None
+    if kind.startswith("filesystem"):
+        return ("PERMISSION_DENIED" if isinstance(error, PermissionError) else
+                "NO_SPACE" if isinstance(error, OSError) and error.errno == errno.ENOSPC else "STORAGE_ERROR"), None
+    # A bare timeout from a database/processing stage is not transport evidence.
+    if kind == "timeout" and stage not in {"identity_request", "updates_receive", "callback_answer", "notification_send"}:
+        return "PROCESSING_ERROR", None
+    if kind == "network":
+        return "NETWORK_ERROR", None
+    code, status = classify_error(error)
+    return ("PROCESSING_ERROR", None) if code == "UNKNOWN_ERROR" else (code, status)
+
+
 class DiagnosticLog:
     def __init__(self, data_dir: Path, *, max_file_bytes: int = 10 * 1024 * 1024,
                  backup_count: int = 3, clock: Callable[[], float] = time.time,
@@ -127,6 +203,7 @@ class DiagnosticLog:
         self.max_file_bytes, self.backup_count, self.clock = max_file_bytes, backup_count, clock
         self.lock = threading.RLock()
         self.failures: dict[tuple[str, str, str], float] = {}
+        self.runtime_failures: dict[tuple[str, str, str], tuple[float, dict[str, Scalar]]] = {}
         self.error = False
         self.repeated: dict[tuple[str, ...], tuple[float, int, dict[str, Scalar]]] = {}
         self.retention_days = retention_days
@@ -174,8 +251,9 @@ class DiagnosticLog:
                         self.failures.clear()
                     self.failures[key] = self.clock()
                 self.emit("request_deferred" if code == "BOT_REQUEST_PAUSED" else "telegram_request",
-                          dedupe=True, mode=mode, method=method, outcome="deferred" if code == "BOT_REQUEST_PAUSED" else "cancelled" if code == "CANCELLED" else "failed",
+                          dedupe=True, dedupe_scope=scope, mode=mode, method=method, outcome="deferred" if code == "BOT_REQUEST_PAUSED" else "cancelled" if code == "CANCELLED" else "failed",
                           error_code=code, http_status=status,
+                          exception_type=classify_exception_type(error),
                           level="info" if code == "BOT_REQUEST_PAUSED" and reason == "pacing" and stage == "before_send" else "warning",
                           duration_ms=duration_ms,
                           reason=reason, stage=stage, action=action, operation_id=operation_id)
@@ -188,6 +266,50 @@ class DiagnosticLog:
                     self.emit("telegram_recovered" if recovered else "telegram_request", mode=mode, method=method,
                               outcome="success", level="info", duration_ms=duration_ms,
                               action=action, operation_id=operation_id)
+
+    def runtime_result(self, component: str, *, stage: str, error: BaseException | None = None,
+                       mode: str | None = None, method: str | None = None, scope: str = "",
+                       retry_at: str | None = None, task_id: str | None = None,
+                       completed_stages: tuple[str, ...] | None = None) -> None:
+        """Track application failures independently of successful Telegram transport."""
+        try:
+            if component not in RUNTIME_COMPONENTS or stage not in RUNTIME_STAGES:
+                return
+            if isinstance(error, (asyncio.CancelledError, GeneratorExit)):
+                return
+            # Request diagnostics already retain sent/unsent protection evidence.
+            if isinstance(error, AppError) and error.code == "BOT_REQUEST_PAUSED":
+                return
+            key = (component, mode if mode in {"cloud", "local"} else "", scope[:128])
+            with self.lock:
+                if error is None:
+                    pending = self.runtime_failures.get(key)
+                    if pending is not None and completed_stages is not None and pending[1].get("stage") not in completed_stages:
+                        return  # A skipped operation supplies no evidence of recovery.
+                    prior = self.runtime_failures.pop(key, None)
+                    if prior is None or self.retention_days and prior[0] < self.clock() - self.retention_days * 86400:
+                        return
+                    self.flush()
+                    self.emit("runtime_recovered", component=component, mode=mode,
+                              stage=prior[1].get("stage"), method=prior[1].get("method"),
+                              task_id=prior[1].get("task_id"), outcome="success", level="info")
+                    return
+                code, status = classify_runtime_error(error, stage)
+                fields: dict[str, Any] = {"component": component, "stage": stage, "mode": mode, "method": method,
+                          "error_code": code, "exception_type": classify_exception_type(error),
+                          "http_status": status, "retry_at": retry_at, "task_id": task_id,
+                          "outcome": "failed", "level": "error"}
+                if code == "NETWORK_ERROR":
+                    fields["reason"] = ("timeout" if isinstance(error, AppError) and error.code == "LOCAL_API_OPERATION_TIMEOUT"
+                                        else classify_network_failure(error)[0])
+                payload = project_event(fields | {"event": "runtime_failure",
+                                        "timestamp": datetime.fromtimestamp(self.clock(), UTC).isoformat()})
+                if len(self.runtime_failures) >= 256 and key not in self.runtime_failures:
+                    self.runtime_failures.pop(next(iter(self.runtime_failures)))
+                self.runtime_failures[key] = (self.clock(), payload)
+                self.emit("runtime_failure", dedupe=True, dedupe_scope=scope, **fields)
+        except Exception:
+            self.error = True
 
     def _path(self, index: int = 0) -> Path:
         return self.directory / ("events.jsonl" + (f".{index}" if index else ""))
@@ -245,16 +367,16 @@ class DiagnosticLog:
             stream.flush()
         self.error = False
 
-    def emit(self, event: str, *, dedupe: bool = False, **fields: Any) -> None:
+    def emit(self, event: str, *, dedupe: bool = False, dedupe_scope: str = "", **fields: Any) -> None:
         try:
             payload = project_event(fields | {"event": event, "timestamp": datetime.fromtimestamp(self.clock(), UTC).isoformat()})
             if not payload:
                 return
             with self.lock:
                 if dedupe:
-                    key = tuple(str(payload.get(name, "")) for name in (
+                    key = (dedupe_scope[:128],) + tuple(str(payload.get(name, "")) for name in (
                         "event", "mode", "method", "outcome", "error_code", "task_id", "job_id",
-                        "reason", "stage", "action", "operation_id"))
+                        "reason", "stage", "action", "operation_id", "component", "exception_type"))
                     prior = self.repeated.get(key)
                     if prior and self.clock() - prior[0] < 60:
                         self.repeated[key] = (prior[0], min(prior[1] + 1, 1_000_000_000), payload)
@@ -343,6 +465,7 @@ class DiagnosticLog:
                 # Pending aggregates must not resurrect old observations with a new timestamp.
                 self.repeated = {key: prior for key, prior in self.repeated.items() if prior[0] >= cutoff}
                 self.failures = {key: observed for key, observed in self.failures.items() if observed >= cutoff}
+                self.runtime_failures = {key: prior for key, prior in self.runtime_failures.items() if prior[0] >= cutoff}
                 for index in range(self.backup_count + 1):
                     path = self._path(index)
                     if not path.exists():
@@ -411,6 +534,7 @@ class DiagnosticLog:
                 self._check()  # Validate every target before the first mutation.
                 self.repeated.clear()
                 self.failures.clear()
+                self.runtime_failures.clear()
                 for index in range(self.backup_count + 1):
                     self._path(index).unlink(missing_ok=True)
                 (self.directory / "events.jsonl.cleanup").unlink(missing_ok=True)

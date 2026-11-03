@@ -319,10 +319,26 @@ class TelegramClient:
         me = await self.request(lambda: self.bot.get_me(request_timeout=20), probe=probe)
         return {"id": me.id, "username": me.username or ""}
 
+    async def record_updates(self, error: BaseException | None = None) -> None:
+        diagnostic = getattr(self.safety, "diagnostics", None)
+        if diagnostic:
+            try:
+                await asyncio.to_thread(diagnostic.runtime_result, "updates", stage="updates_serialize",
+                                        mode=self.mode, method="getUpdates", error=error, scope=digest(self.bot.token))
+            except Exception:
+                diagnostic.error = True
+
     async def updates(self, offset: int) -> list[dict[str, Any]]:
         result = await self.request(lambda: self.bot(GetUpdates(offset=offset, timeout=25, allowed_updates=["message", "callback_query"]),
                                 request_timeout=35), method="getUpdates")
-        return [item.model_dump(mode="json", exclude_none=True) for item in result]
+        try:
+            # Omit SDK-only defaults (e.g. LinkPreviewOptions Default sentinels).
+            updates = [item.model_dump(mode="json", exclude_none=True, exclude_unset=True) for item in result]
+        except Exception as exc:
+            await self.record_updates(exc)
+            raise
+        await self.record_updates()
+        return updates
 
     async def get_file(self, file_id: str, *, generation: str | None = None,
                        acquisition_id: str | None = None) -> str:
