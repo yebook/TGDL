@@ -65,7 +65,7 @@ async function confirm() {
     <el-alert v-if="error" :title="error" :type="uncertain ? 'warning' : 'error'" :closable="false" show-icon role="alert" />
     <template #footer>
       <el-button v-if="uncertain" :disabled="busy" @click="emit('defer')">稍后确认</el-button>
-      <el-button v-else :disabled="busy" @click="emit('close')">保留任务</el-button>
+      <el-button v-else :disabled="busy" @click="emit('close')">取消</el-button>
       <el-button type="danger" :loading="busy" @click="confirm">{{ uncertain ? '重试确认结果' : '确认删除' }}</el-button>
     </template>
   </el-dialog>
