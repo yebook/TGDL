@@ -97,7 +97,7 @@ class Storage:
             raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
         usage = shutil.disk_usage(self.root)
         if check_space and usage.free < self.minimum_free + required:
-            raise AppError("NO_SPACE", "可用空间不足，下载已暂停")
+            raise AppError("NO_SPACE", "可用空间不足，请释放对应磁盘空间后手动重试")
         return {"id": self.root_id, "label": self.root_id, "available": True,
                 "free_bytes": usage.free, "total_bytes": usage.total, "message": ""}
 

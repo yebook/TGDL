@@ -1,13 +1,17 @@
+import re
 import time
 from typing import Any
 
 from sqlalchemy import select
 
+from app.bot.commands import CACHE_NOTICE, help_text, parse_command
 from app.bot.grouping import GROUP_MAX_SECONDS, GROUP_MIN_SECONDS, GROUP_QUIET_SECONDS
 from app.bot.messages import status_label
 from app.core.errors import AppError
 from app.core.file_types import document_type
 from app.db.models import (
+    BotIdentity,
+    CancelCleanup,
     IngestUpdate,
     MediaItem,
     MediaRequest,
@@ -18,7 +22,7 @@ from app.db.models import (
 )
 from app.db.session import Database
 from app.services.settings import SettingsService
-from app.services.tasks import TaskService, task_message
+from app.services.tasks import ACTIVE, TaskService, task_message
 from app.storage.naming import text_summary
 
 
@@ -136,23 +140,55 @@ class IngestService:
                 pending.name = summary if is_name else None
                 if is_name:
                     return  # The media confirmation shows the name; do not send an extra acknowledgement.
-                if text.startswith("/status"):
+                identity = session.get(BotIdentity, bot_id)
+                command = parse_command(text, identity.username if identity else "")
+                forwarded = any(message.get(field) for field in (
+                    "forward_origin", "forward_date", "forward_from", "forward_from_chat"))
+                if command and command.name in {"cancel", "cancel_all"}:
+                    if forwarded:
+                        response = "⚠️ 转发的取消命令不会执行，请亲自发送 /cancel 任务编号 或 /cancel_all。"
+                    elif command.name == "cancel" and (len(command.arguments) != 1
+                            or not re.fullmatch(r"[0-9a-f]{20}", command.arguments[0])):
+                        response = "用法：/cancel 完整任务编号。请先发送 /status 查看任务编号。"
+                    elif command.name == "cancel_all" and command.arguments:
+                        response = "用法：/cancel_all（无需参数），取消当前私聊中你的全部未完成任务。"
+                    else:
+                        query = select(MediaRequest).where(
+                            MediaRequest.bot_id == bot_id, MediaRequest.user_id == user_id,
+                            MediaRequest.chat_id == chat_id, MediaRequest.deleted_at.is_(None))
+                        if command.name == "cancel":
+                            query = query.where(MediaRequest.id == command.arguments[0])
+                        else:
+                            query = query.where(MediaRequest.status.in_(ACTIVE | {"collecting", "awaiting_confirmation"}))
+                        rows = list(session.scalars(query))
+                        outcomes = [self.tasks.cancel_in_session(session, row) for row in rows]
+                        cancelled, stopping = outcomes.count("cancelled"), outcomes.count("cancelling")
+                        if command.name == "cancel" and not rows:
+                            response = "未找到可操作的任务，请用 /status 检查当前私聊的完整任务编号。"
+                        elif cancelled or stopping:
+                            response = f"🛑 已取消 {cancelled} 个任务；正在取消 {stopping} 个任务（等待安全停止或清理）。文件清理尚未确认完成。" + CACHE_NOTICE
+                        elif command.name == "cancel":
+                            response = f"任务当前状态：{status_label(rows[0].status)}，无需取消；本次没有删除文件。"
+                        else:
+                            response = "当前没有需要取消的未完成任务（任务可能已完成或已取消）；本次没有删除文件。"
+                elif command and command.arguments:
+                    response = f"用法：/{command.name}（无需参数）。/help 查看使用说明。"
+                elif command and command.name == "status":
                     rows = list(session.scalars(select(MediaRequest).where(MediaRequest.user_id == user_id,
                                                                             MediaRequest.bot_id == bot_id,
+                                                                            MediaRequest.chat_id == chat_id,
                                                                             MediaRequest.deleted_at.is_(None))
                                                 .order_by(MediaRequest.created_at.desc()).limit(5)))
-                    response = "\n\n".join(task_message(f"{status_label(r.status)}\n{r.title}", r.id, limit=750)
-                                             for r in rows) or "📭 暂无下载任务，发送文件即可开始。"
+                    summaries = []
+                    for row in rows:
+                        cleanup = session.get(CancelCleanup, row.id)
+                        text = f"{status_label(row.status)}\n{row.title}"
+                        if cleanup:
+                            text += "\n文件清理：" + cleanup.message
+                        summaries.append(task_message(text, row.id, limit=750))
+                    response = "\n\n".join(summaries) or "📭 暂无下载任务，发送文件即可开始。"
                 else:
-                    workflow = ("我会先整理文件信息，然后自动加入下载队列，无需手动确认。同组文件会一起整理。\n"
-                                if settings.auto_download else
-                                "我会先整理文件信息，等你确认后再下载。同组文件共用确认提示。\n"
-                                "✅ 点击「确认下载」开始，点击「取消」放弃本次请求。\n")
-                    response = ("📥 发送或转发文件（如 APK、PDF）、视频、图片、音频、语音、动画或视频留言，"
-                                + workflow +
-                                "📋 /status 查看最近任务；/help 查看使用说明。\n"
-                                "✏️ 转发时可先附带一条文字，作为下一条文件或文件组的名称，仅使用一次。\n"
-                                "暂不支持消息链接和贴纸。")
+                    response = help_text(settings.auto_download)
                 if not session.scalar(select(Notification).where(Notification.event_key == key)):
                     session.add(Notification(event_key=key, chat_id=chat_id, payload={"text": response, "bot_id": bot_id}))
 

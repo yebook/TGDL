@@ -20,10 +20,18 @@ from aiogram.exceptions import (
     TelegramUnauthorizedError,
 )
 from aiogram.methods import GetFile, GetUpdates
-from aiogram.types import File, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    File,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonCommands,
+)
 from aiohttp import ClientError, ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 
+from app.bot.commands import COMMANDS
 from app.core.config import Config
 from app.core.errors import AppError
 from app.core.security import digest
@@ -95,17 +103,22 @@ class TelegramClient:
         self._acquisition_session: ClientSession | None = None
 
     async def file_acquisition(self, generation: str, *, file_id: str | None = None,
-                               acquisition_id: str | None = None, cancel: bool = False) -> dict[str, Any]:
+                               acquisition_id: str | None = None, cancel: bool = False,
+                               expected_cache_identity: str | None = None) -> dict[str, Any]:
         """Bounded local control only: it neither enters nor clears Telegram protection."""
         if (self.mode != "local" or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", generation)
                 or file_id is not None and not 1 <= len(file_id.encode("utf-8")) <= 4096
                 or acquisition_id is not None and not re.fullmatch(r"[0-9a-f]{64}", acquisition_id)
-                or (file_id is None) == (acquisition_id is None)):
+                or (file_id is None) == (acquisition_id is None)
+                or expected_cache_identity is not None and (file_id is None
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected_cache_identity))):
             raise AppError("ACQUISITION_CONTROL_UNAVAILABLE", "获取控制暂不可用")
         data = {"generation": generation}
         if file_id is not None:
             method = "tgdPrepareFileAcquisition"
             data["file_id"] = file_id
+            if expected_cache_identity is not None:
+                data["expected_cache_identity"] = expected_cache_identity
         else:
             method = "tgdCancelFileAcquisition" if cancel else "tgdGetFileAcquisition"
             data["acquisition_id"] = str(acquisition_id)
@@ -231,6 +244,113 @@ class TelegramClient:
         except (ValueError, TypeError, OverflowError, RecursionError):
             raise CacheCleanupError("cache_response_invalid", started, http_status) from None
 
+    async def inspect_file_cache(self, file_id: str, generation: str, *, acquisition_id: str | None = None,
+                                 expected_path: str | None = None, expected_size: int | None = None,
+                                 expected_identity: str | None = None) -> dict[str, Any]:
+        """Bounded offline evidence, including settled orphan partials; never starts a transfer."""
+        proof = any(value is not None for value in (expected_path, expected_size, expected_identity))
+        if (self.mode != "local" or not 1 <= len(file_id.encode()) <= 4096
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,100}", generation) is None
+                or acquisition_id is not None and re.fullmatch(r"[0-9a-f]{64}", acquisition_id) is None
+                or proof and (expected_path is None or not 1 <= len(expected_path.encode()) <= 4096
+                    or not expected_path.startswith("/") or "\0" in expected_path
+                    or type(expected_size) is not int or not 0 <= expected_size <= 2**63 - 1
+                    or expected_identity is None or re.fullmatch(r"[0-9a-f]{64}", expected_identity) is None)):
+            raise AppError("CACHE_INSPECTION_UNAVAILABLE", "缓存检查暂不可用", 409)
+        data = {"generation": generation, "file_id": file_id}
+        if acquisition_id is not None:
+            data["acquisition_id"] = acquisition_id
+        if proof:
+            data.update(expected_path=str(expected_path), expected_size=str(expected_size),
+                        expected_identity=str(expected_identity))
+        try:
+            if self._cleanup_session is None:
+                self._cleanup_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
+            url = self.bot.session.api.api_url(self.bot.token, "tgdGetFileCache")
+            async with self._cleanup_session.post(url, data=data, allow_redirects=False) as response:
+                body = bytearray()
+                async for block in response.content.iter_chunked(4096):
+                    body.extend(block)
+                    if len(body) > 16384:
+                        raise ValueError("Cache response too large")
+                payload = json.loads(body)
+                if response.status in {404, 405, 501} or (response.status == 400
+                        and isinstance(payload, dict) and payload.get("description") == "Bad Request: method not found"):
+                    raise AppError("CACHE_INSPECTION_UNSUPPORTED", "当前本地 API 不支持缓存检查，请更新配套服务", 409)
+                if (response.status == 409 and isinstance(payload, dict)
+                        and payload.get("description") in {"Conflict: cache cleanup busy", "Conflict: cache file busy"}):
+                    raise AppError("CACHE_NATIVE_BUSY", "文件或缓存操作尚未停止，请稍后重试", 409)
+                if (response.status != 200 or not isinstance(payload, dict) or set(payload) != {"ok", "result"}
+                        or payload["ok"] is not True):
+                    raise ValueError("Cache evidence unavailable")
+                result = payload["result"]
+                fields = {"generation", "completeness", "path", "size", "allocated_bytes", "identity",
+                          "resumable", "reason", "settled"}
+                reasons = {"cache_unavailable", "cache_busy", "cache_missing", "cache_identity_changed",
+                           "bitmap_unavailable", "cache_complete", "resume_available"}
+                if (not isinstance(result, dict) or set(result) != fields or result["generation"] != generation
+                        or result["completeness"] not in {"complete", "partial", "absent", "unknown"}
+                        or not isinstance(result["path"], str) or len(result["path"].encode()) > 4096
+                        or "\0" in result["path"] or not isinstance(result["identity"], str)
+                        or type(result["size"]) is not int or not 0 <= result["size"] <= 2**63 - 1
+                        or type(result["allocated_bytes"]) is not int or not 0 <= result["allocated_bytes"] <= 2**63 - 1
+                        or type(result["settled"]) is not bool or type(result["resumable"]) is not bool
+                        or result["reason"] not in reasons):
+                    raise ValueError("Invalid cache evidence")
+                present = result["completeness"] in {"complete", "partial"}
+                if (present and (not result["path"].startswith("/")
+                                 or re.fullmatch(r"[0-9a-f]{64}", result["identity"]) is None)
+                        or not present and (result["path"] or result["identity"] or result["size"] or result["allocated_bytes"])
+                        or result["resumable"] and (result["completeness"] != "partial"
+                            or not result["settled"] or result["reason"] != "resume_available")):
+                    raise ValueError("Inconsistent cache evidence")
+                return dict(result)
+        except (ClientError, TimeoutError, ValueError, TypeError, OverflowError, RecursionError):
+            raise AppError("CACHE_INSPECTION_UNAVAILABLE", "缓存检查失败，请检查本地 API 后重试", 409) from None
+
+    async def delete_partial_file_cache(self, file_id: str, expected_path: str, expected_size: int,
+                                        generation: str, *, expected_identity: str) -> str:
+        """Exact TDLib-owned partial deletion; a lost reply remains an unknown mutation."""
+        started = time.monotonic()
+        http_status = None
+        if (self.mode != "local" or not 1 <= len(file_id.encode()) <= 4096
+                or not 1 <= len(expected_path.encode()) <= 4096 or not expected_path.startswith("/")
+                or "\0" in expected_path or re.fullmatch(r"[A-Za-z0-9_-]{1,100}", generation) is None
+                or re.fullmatch(r"[0-9a-f]{64}", expected_identity) is None
+                or type(expected_size) is not int or not 0 <= expected_size <= 2**63 - 1):
+            raise CacheCleanupError("cache_invalid_request", started)
+        try:
+            if self._cleanup_session is None:
+                self._cleanup_session = ClientSession(timeout=ClientTimeout(total=2), trust_env=False)
+            url = self.bot.session.api.api_url(self.bot.token, "tgdDeletePartialFileCache")
+            async with self._cleanup_session.post(url, data={"file_id": file_id, "expected_path": expected_path,
+                    "expected_size": str(expected_size), "expected_identity": expected_identity,
+                    "generation": generation}, allow_redirects=False) as response:
+                http_status = response.status
+                body = bytearray()
+                async for block in response.content.iter_chunked(4096):
+                    body.extend(block)
+                    if len(body) > 8192:
+                        raise CacheCleanupError("cache_response_too_large", started, http_status)
+                payload = json.loads(body)
+                if http_status != 200:
+                    reason = "cache_unsupported" if http_status in {404, 405, 501} else "cache_http_error"
+                    if isinstance(payload, dict) and isinstance(payload.get("description"), str):
+                        reason = _CACHE_CLEANUP_REJECTIONS.get((http_status, payload["description"]), reason)
+                    raise CacheCleanupError(reason, started, http_status)
+                result = payload.get("result") if isinstance(payload, dict) else None
+                if (not isinstance(payload, dict) or set(payload) != {"ok", "result"} or payload["ok"] is not True
+                        or not isinstance(result, dict) or set(result) != {"generation", "status"}
+                        or result["generation"] != generation or result["status"] not in {"deleted", "absent"}):
+                    raise ValueError("Invalid cleanup proof")
+                return str(result["status"])
+        except TimeoutError:
+            raise CacheCleanupError("cache_timeout", started, http_status) from None
+        except ClientError:
+            raise CacheCleanupError("cache_network_error", started, http_status) from None
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            raise CacheCleanupError("cache_response_invalid", started, http_status) from None
+
     async def file_progress(self, file_ids: list[str]) -> tuple[str, dict[str, dict[str, Any]]] | None:
         """Read our private local snapshot method. Never enter Telegram request/protection paths."""
         if (self.mode != "local" or time.monotonic() < self._progress_retry_at
@@ -290,7 +410,8 @@ class TelegramClient:
             await self.record(method, exc, started)
             raise
         except Exception as exc:
-            if isinstance(exc, AppError) and exc.code in {"ACQUISITION_CANCELLED", "ACQUISITION_REJECTED"}:
+            if isinstance(exc, AppError) and exc.code in {
+                    "ACQUISITION_CANCELLED", "ACQUISITION_REJECTED", "NO_SPACE", "CACHE_RESUME_UNAVAILABLE"}:
                 # A fixed private control outcome is not a Telegram failure/success.
                 await self.record(method, AppError("CANCELLED", "下载已取消")
                                   if exc.code == "ACQUISITION_CANCELLED" else exc, started)
@@ -318,6 +439,13 @@ class TelegramClient:
     async def identity(self, *, probe: bool = False) -> dict[str, Any]:
         me = await self.request(lambda: self.bot.get_me(request_timeout=20), probe=probe)
         return {"id": me.id, "username": me.username or ""}
+
+    async def register_commands(self) -> None:
+        await self.request(lambda: self.bot.set_my_commands(
+            commands=[BotCommand(command=name, description=description) for name, description in COMMANDS],
+            scope=BotCommandScopeAllPrivateChats(), request_timeout=20), method="setMyCommands")
+        await self.request(lambda: self.bot.set_chat_menu_button(
+            menu_button=MenuButtonCommands(), request_timeout=20), method="setChatMenuButton")
 
     async def record_updates(self, error: BaseException | None = None) -> None:
         diagnostic = getattr(self.safety, "diagnostics", None)
@@ -351,6 +479,11 @@ class TelegramClient:
                 extra = {"tgd_generation": generation, "tgd_acquisition_id": acquisition_id} if acquisition_id else {}
                 return await self.bot(GetFile(file_id=file_id, **extra), request_timeout=timeout)
             except TelegramBadRequest as exc:
+                if self.mode == "local" and exc.message in {"TGD_CACHE_NO_SPACE", "Bad Request: TGD_CACHE_NO_SPACE"}:
+                    raise AppError("NO_SPACE", "缓存盘空间不足，下载已停止；缓存保留，可到任务详情清理或继续下载") from None
+                if self.mode == "local" and exc.message in {
+                        "TGD_CACHE_RESUME_UNAVAILABLE", "Bad Request: TGD_CACHE_RESUME_UNAVAILABLE"}:
+                    raise AppError("CACHE_RESUME_UNAVAILABLE", "缓存或分片信息已失效，无法继续下载；可清理缓存或确认重新下载") from None
                 if self.mode == "local" and exc.message in {"TGD_CACHE_CLEANUP_BUSY", "Bad Request: TGD_CACHE_CLEANUP_BUSY"}:
                     raise AppError("CACHE_CLEANUP_BUSY", "媒体缓存正在清理，稍后自动继续下载") from exc
                 if self.mode == "local" and acquisition_id and exc.message in {

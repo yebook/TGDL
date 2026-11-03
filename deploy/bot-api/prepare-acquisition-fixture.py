@@ -106,7 +106,8 @@ if source.count(anchor) != 1:
 start = source.index('bool Td::is_preauthentication_request(')
 end = source.index('\n}', start)
 preauth = source[start:end]
-for method in ('getRemoteFile', 'getFile', 'downloadFile', 'tgdCancelDownloadFile'):
+for method in ('getRemoteFile', 'getFile', 'downloadFile', 'tgdCancelDownloadFile',
+               'tgdGetFileCache', 'tgdDeletePartialFileCache', 'tgdResumeDownloadFile'):
     case = f'    case td_api::{method}::ID:'
     if case not in preauth:
         preauth = preauth.replace(anchor, case + '\n' + anchor)

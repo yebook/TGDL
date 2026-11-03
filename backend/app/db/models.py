@@ -114,6 +114,19 @@ class PendingMediaName(Base):
     name: Mapped[str | None] = mapped_column(String(80))
 
 
+class CancelCleanup(Base):
+    """Request-scoped durable deletion intent, independent of task history."""
+    __tablename__ = "cancel_cleanup"
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), primary_key=True)
+    state: Mapped[str] = mapped_column(default="pending", index=True)
+    entries: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    file_operation_id: Mapped[str | None]
+    message: Mapped[str] = mapped_column(default="等待任务安全停止后清理缓存和已保存文件。")
+    revision: Mapped[int] = mapped_column(default=1)
+    next_run_at: Mapped[float] = mapped_column(default=time.time)
+    updated_at: Mapped[float] = mapped_column(default=time.time)
+
+
 class MediaItem(Base):
     __tablename__ = "media_items"
     __table_args__ = (UniqueConstraint("bot_id", "chat_id", "message_id"),)
@@ -156,6 +169,49 @@ class Job(Base):
     error_code: Mapped[str | None]
     error_message: Mapped[str | None]
     linked_job_id: Mapped[str | None]
+    execution_mode: Mapped[str] = mapped_column(default="download", server_default="download")
+    cache_id: Mapped[str | None]
+    storage_failure: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class RetainedCache(Base):
+    """Private native identity, retained independently of task deletion and retries."""
+    __tablename__ = "retained_caches"
+    id: Mapped[str] = mapped_column(primary_key=True, default=uid)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    bot_id: Mapped[int]
+    file_id: Mapped[str]
+    attempt: Mapped[int]
+    generation: Mapped[str] = mapped_column(default="")
+    acquisition_id: Mapped[str | None]
+    credential: Mapped[str] = mapped_column(default="")
+    path_encrypted: Mapped[str | None]
+    path_digest: Mapped[str | None] = mapped_column(index=True)
+    completeness: Mapped[str] = mapped_column(default="unknown")
+    state: Mapped[str] = mapped_column(default="retained")
+    size_bytes: Mapped[int | None]
+    allocated_bytes: Mapped[int | None]
+    fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    native_identity: Mapped[str | None]
+    resumable: Mapped[bool] = mapped_column(default=False)
+    resume_reason: Mapped[str | None]
+    updated_at: Mapped[float] = mapped_column(default=time.time)
+
+
+class CacheAction(Base):
+    """Idempotent explicit intent; uncertain deletion is never blindly replayed."""
+    __tablename__ = "cache_actions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), index=True)
+    cache_id: Mapped[str | None] = mapped_column(ForeignKey("retained_caches.id"))
+    kind: Mapped[str]
+    state: Mapped[str] = mapped_column(default="queued", index=True)
+    attempt: Mapped[int]
+    generation: Mapped[str] = mapped_column(default="")
+    credential: Mapped[str] = mapped_column(default="")
+    error_code: Mapped[str | None]
+    message: Mapped[str | None]
+    created_at: Mapped[float] = mapped_column(default=time.time)
 
 
 class Attempt(Base):

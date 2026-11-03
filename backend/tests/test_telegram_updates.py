@@ -88,6 +88,9 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
     offsets = []
 
     async def response(bot, method, timeout=None):
+        if method.__api_method__ in {"setMyCommands", "setChatMenuButton"}:
+            clock[0] += 10
+            return True
         assert method.__api_method__ == "getUpdates"
         offsets.append(method.offset)
         clock[0] += 10  # Advance the test clock, retaining the real admission gate.

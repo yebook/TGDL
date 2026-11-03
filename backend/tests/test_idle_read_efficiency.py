@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import event, select
 
-from app.db.models import Job, LocalApiRuntime, MediaItem, MediaRequest, Notification, Settings
+from app.db.models import Job, LocalApiRuntime, MediaItem, MediaRequest, Notification, RetainedCache, Settings
 from app.schemas.contracts import SettingsPatch, UserSettings
 
 
@@ -73,7 +73,8 @@ def test_concurrent_readers_observe_saved_revision(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("count", [0, 1, 20])
-def test_task_list_batches_queries_and_matches_individual_projection(authenticated: TestClient, count: int) -> None:
+@pytest.mark.parametrize("retry_cache", ["none", "partial", "missing"])
+def test_task_list_batches_queries_and_matches_individual_projection(authenticated: TestClient, count: int, retry_cache: str) -> None:
     state = authenticated.app.state
     with state.db.transaction() as session:
         for index in range(count):
@@ -87,13 +88,33 @@ def test_task_list_batches_queries_and_matches_individual_projection(authenticat
                                  size_bytes=None if offset else 123)
                 session.add(item)
                 session.flush()
-                session.add(Job(request_id=request.id, item_id=item.id,
-                                state="failed" if offset else "succeeded", completed_bytes=100,
-                                relative_path=f"day/{index}-{offset}.mp4"))
+                job = Job(request_id=request.id, item_id=item.id,
+                          state="failed" if offset else "succeeded", completed_bytes=100,
+                          relative_path=f"day/{index}-{offset}.mp4")
+                session.add(job)
+                if offset and retry_cache != "none":
+                    if retry_cache == "partial":
+                        session.flush()
+                        cache = RetainedCache(job_id=job.id, bot_id=7, file_id=item.file_id,
+                                              attempt=1, completeness="partial", state="retained")
+                        session.add(cache)
+                        session.flush()
+                        job.cache_id = cache.id
+                    else:
+                        job.cache_id = f"missing-cache-{index}"
             session.add(Notification(request_id=request.id, event_key=f"batch-{index}",
                                      chat_id=42, state="failed" if index % 2 else "pending", payload={}))
     with state.db.sessions() as session:
-        expected = {row.id: state.tasks._dto(session, row) for row in session.scalars(select(MediaRequest))}
+        requests = list(session.scalars(select(MediaRequest)))
+        expected = {row.id: state.tasks._dto(session, row) for row in requests}
+        jobs = {row.id: list(session.scalars(select(Job).where(Job.request_id == row.id))) for row in requests}
+    # Filesystem observations are deliberately projected after the read session,
+    # matching both public list/detail paths rather than the SQL-only _dto stage.
+    observations = {}
+    for request_id, dto in expected.items():
+        state.tasks._local_files(dto, jobs[request_id], observations)
+        assert dto["local_files"] == {"present": 0, "missing": 0, "changed": 0, "unavailable": 1, "not_saved": 1}
+        assert dto["can_retry"] is (retry_cache != "partial")
     queries: list[str] = []
 
     def capture(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
@@ -106,7 +127,7 @@ def test_task_list_batches_queries_and_matches_individual_projection(authenticat
     finally:
         event.remove(state.db.engine, "before_cursor_execute", capture)
     assert response.status_code == 200
-    assert len(queries) == (7 if count else 4)
+    assert len(queries) == (7 + (retry_cache != "none") if count else 4)
     data = response.json()
     assert data["total"] == count
     assert {item["id"]: item for item in data["items"]} == expected

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.security import digest
-from app.db.models import CacheCleanup, FileDeletionOperation, Job, LocalApiRuntime
+from app.db.models import CacheAction, CacheCleanup, FileDeletionOperation, Job, LocalApiRuntime
 
 BUSY = {"running", "uncertain"}
 MESSAGES = {
@@ -43,13 +43,14 @@ def maintenance_values(session: Session) -> dict[str, Any]:
     return value
 
 
-def maintenance_blocked(session: Session) -> bool:
+def maintenance_blocked(session: Session, *, allow_automatic_cleanup: bool = False, bot_id: int | None = None) -> bool:
     return (maintenance_values(session).get("state") in BUSY
+            or session.scalar(select(CacheAction.id).where(CacheAction.kind == "clean", CacheAction.state.in_(BUSY)).limit(1)) is not None
             or session.scalar(select(FileDeletionOperation.id).where(FileDeletionOperation.state == "running").limit(1)) is not None)
 
 
-def require_no_maintenance(session: Session) -> None:
-    if maintenance_blocked(session):
+def require_no_maintenance(session: Session, *, bot_id: int | None = None) -> None:
+    if maintenance_blocked(session, bot_id=bot_id):
         raise AppError("CACHE_MAINTENANCE_BUSY", "缓存维护尚未完成，请等待处理完成后重试", 409)
 
 

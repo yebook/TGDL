@@ -15,6 +15,7 @@ class AcquisitionControl {
     int32_t file_id = 0;
     double touched = 0;
     bool settled = false;
+    std::string expected_cache_identity;
   };
   struct File {
     uint64_t epoch = 0;
@@ -56,7 +57,7 @@ class AcquisitionControl {
     prune(now);
     // Active/resolving/stopping records are never evicted to admit work.
     if (owners.size() >= 4096) return false;
-    return owners.emplace(id, Owner{alias, State::Prepared, 0, now, false}).second;
+    return owners.emplace(id, Owner{alias, State::Prepared, 0, now, false, {}}).second;
   }
   bool claim(const std::string &id, const std::string &alias, double now) {
     prune(now);

@@ -40,7 +40,8 @@ from app.services.network_errors import classify_network_failure
 EVENTS = {"service_started", "service_stopped", "logs_cleared", "telegram_request", "telegram_recovered",
           "request_deferred", "task_result", "local_api_transition", "local_api_action", "bot_recovery",
           "event_summary", "request_protection", "cache_cleanup", "runtime_failure", "runtime_recovered"}
-METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut"}
+METHODS = {"getMe", "getUpdates", "getFile", "downloadFile", "sendMessage", "answerCallbackQuery", "logOut",
+           "setMyCommands", "setChatMenuButton"}
 OUTCOMES = {"success", "failed", "deferred", "cancelled", "succeeded", "already_exists", "retry_wait",
             "recovery_blocked", "queued", "ready", "throttled", "backoff", "auth_paused",
             "cancelling", "fetching", "saving", "partial_success", "expired", "awaiting_confirmation", "collecting",

@@ -28,6 +28,7 @@ from app.db.models import Admin, MediaRequest, Session, uid
 from app.db.session import Database
 from app.schemas.backup import BackupExport, BackupExportResponse, BackupInput, BackupPreview, BackupRestore
 from app.schemas.contracts import (
+    CacheActionInput,
     Credentials,
     LocalApiRetry,
     PasswordChange,
@@ -289,8 +290,9 @@ def create_app(config: Config | None = None) -> FastAPI:
         return tasks.delete([request_id], delete_files=delete_files, operation_id=operation_id)
 
     @application.get("/api/v1/tasks/{request_id}", dependencies=[Depends(auth)], response_model=TaskDetail)
-    def task_detail(request_id: str) -> dict[str, Any]:
-        return tasks.detail(request_id)
+    async def task_detail(request_id: str) -> dict[str, Any]:
+        await runtime.retained_cache.refresh(request_id)
+        return await asyncio.to_thread(tasks.detail, request_id)
 
     @application.post("/api/v1/tasks/{request_id}/cancel", dependencies=[Depends(auth)], response_model=TaskDetail)
     def cancel(request_id: str) -> dict[str, Any]:
@@ -299,6 +301,14 @@ def create_app(config: Config | None = None) -> FastAPI:
     @application.post("/api/v1/tasks/{request_id}/retry", dependencies=[Depends(auth)], response_model=TaskDetail)
     def retry(request_id: str, payload: Retry | None = None) -> dict[str, Any]:
         return tasks.retry(request_id, payload.item_ids if payload else None)
+
+    @application.post("/api/v1/tasks/{request_id}/items/{item_id}/cache/{kind}",
+                      dependencies=[Depends(auth)], response_model=TaskDetail)
+    async def item_cache_action(request_id: str, item_id: str, kind: str, payload: CacheActionInput) -> dict[str, Any]:
+        if kind not in {"clean", "save", "download", "redownload"}:
+            raise AppError("INVALID_ACTION", "无效的缓存操作", 404)
+        return await runtime.retained_cache.submit(request_id, item_id, kind, payload.operation_id,
+            cache_id=payload.cache_id, confirmed=payload.confirmed)
 
     @application.get("/api/v1/settings", dependencies=[Depends(auth)], response_model=SettingsResponse)
     def get_settings() -> dict[str, Any]:

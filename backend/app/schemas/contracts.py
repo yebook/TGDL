@@ -141,6 +141,13 @@ class Retry(BaseModel):
     item_ids: list[str] | None = None
 
 
+class CacheActionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    cache_id: str | None = Field(default=None, min_length=1, max_length=100)
+    confirmed: bool = Field(default=False, strict=True)
+
+
 class LocalApiRetry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     acknowledge_logout_uncertain: bool = False

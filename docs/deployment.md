@@ -147,7 +147,7 @@ services:
 # 三个服务：WebUI/下载应用、本地 API 管理服务、一次性权限初始化。
   app:
   # 应用服务，承载 WebUI、Bot 消息处理和下载任务。
-    image: tgd-app-source:0.2.0
+    image: tgd-app-source:0.2.1
     # 本机源码构建标签，与旧运行标签区分；不从仓库拉取。
     pull_policy: build
     # 默认启动时构建源码；有效构建缓存仍可复用。
@@ -221,7 +221,7 @@ services:
       # 每个容器日志文件最多 10 MiB、最多 3 个；按需调整容量。
   bot-api:
   # 常驻本地 API 管理服务；初次使用云端也会启动，但无需填写本地凭据。
-    image: tgd-bot-api-source:0.2.0
+    image: tgd-bot-api-source:0.2.1
     # 配套 API 镜像引用，必须与初始化服务完全相同；不可换成普通第三方镜像。
     pull_policy: build
     # 与应用采用相同构建策略，不从 GHCR 拉取运行镜像。
@@ -275,7 +275,7 @@ services:
     # 复用 app 中定义的 Docker 日志轮转策略。
   init-volumes:
   # 只准备私有控制卷权限，成功退出是正常现象。
-    image: tgd-bot-api-source:0.2.0
+    image: tgd-bot-api-source:0.2.1
     # 与 bot-api 使用同一镜像引用；不独立选择版本。
     pull_policy: never
     # 使用 bot-api 在服务创建前构建好的镜像，不重复构建或远程拉取。

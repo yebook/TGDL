@@ -11,6 +11,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramUnauthorizedError,
 )
+from cryptography.fernet import InvalidToken
 from sqlalchemy import func, select
 
 from app.bot.client import CacheCleanupError, TelegramClient
@@ -24,14 +25,18 @@ from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.cache_cleanup import CacheCleanupService
 from app.services.cache_maintenance import CacheMaintenanceService, maintenance_blocked
+from app.services.cancel_cleanup import CancelCleanupService
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.local_api import LocalApiService
 from app.services.request_safety import RequestSafetyService, SafetyDeferred
+from app.services.retained_cache import RetainedCacheService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
 from app.workers.download import DownloadWorker, owned_thread
+
+MENU_TIMEOUT = 25.0
 
 
 class Runtime:
@@ -54,6 +59,11 @@ class Runtime:
         self.client_generation = ""
         self.verified_client: TelegramClient | None = None
         self.verified_username = ""
+        self.menu_client: TelegramClient | None = None
+        self.menu_registered = False
+        self.menu_retry_at = 0.0
+        self.menu_failures = 0
+        self.menu_task: asyncio.Task[None] | None = None
         self.bot_status_signature = ""
         self.bot_status_generation = ""
         self.bot_id: int | None = None
@@ -74,6 +84,10 @@ class Runtime:
         self.connection_lock = asyncio.Lock()
         self.cache_cleanup = CacheCleanupService(db, storage, self.diagnostics, settings.secrets)
         self.cache_maintenance = CacheMaintenanceService(self)
+        self.retained_cache = RetainedCacheService(self)
+        self.worker.retained_cache = self.retained_cache
+        self.tasks.retained_cache = self.retained_cache
+        self.cancel_cleanup = CancelCleanupService(self)
 
     def acquisition_generation(self) -> str:
         # Freeze this before prepare. Draining/offline/cooldown must not revoke an
@@ -103,6 +117,8 @@ class Runtime:
             result = await self.worker.stop_acquisition(client, owner)
             if result["settled"] and owner in await asyncio.to_thread(self.worker.acquisitions.owners,
                                                                       cancelled_only=True):
+                await self.retained_cache.capture_native(client, owner.job_id, owner.generation,
+                                                         owner.acquisition_id, attempt=owner.attempt)
                 await owned_thread(self.worker.failed, owner.job_id, "CANCELLED", "下载已取消", False,
                                    False, 0, owner)
                 await owned_thread(self.worker.acquisitions.remove, owner)
@@ -187,6 +203,9 @@ class Runtime:
 
     async def close(self) -> None:
         self.stopping = True
+        if self.menu_task:
+            self.menu_task.cancel()
+            await asyncio.gather(self.menu_task, return_exceptions=True)
         await self.cache_maintenance.close()
         for task in self.loops:
             task.cancel()
@@ -366,8 +385,11 @@ class Runtime:
                 MediaRequest.bot_id != identity["id"]).limit(1))
             if active:
                 raise AppError("BOT_BUSY", "存在原 Bot 的活动或待确认请求，不能更换 Bot 身份", 409)
-            if not session.get(BotIdentity, identity["id"]):
+            stored = session.get(BotIdentity, identity["id"])
+            if stored is None:
                 session.add(BotIdentity(id=identity["id"], username=identity["username"]))
+            else:
+                stored.username = identity["username"]
 
     async def record_runtime(self, component: str, stage: str, *, error: BaseException | None = None,
                              client: TelegramClient | None = None, mode: str | None = None,
@@ -411,7 +433,8 @@ class Runtime:
                     eligible = await self.ensure_client()
                     polling_client = self.client
                     scope = self.client_signature
-                    if self.config.managed_local_api and not eligible:
+                    if (self.config.managed_local_api and not eligible
+                            and not await asyncio.to_thread(self.verified_connection_current, self.client)):
                         await asyncio.sleep(0.5)
                         continue
                     if not self.client or self.bot_id is None:
@@ -454,6 +477,7 @@ class Runtime:
                         stage = "inbox_mark"
                         await asyncio.to_thread(self.ingest.mark_processed, inbox_id)
                         completed.add(stage)
+                    self.schedule_menu(self.client)
                     stage = "cursor_read"
                     offset = await asyncio.to_thread(self.ingest.offset, self.bot_id)
                     completed.add(stage)
@@ -486,6 +510,59 @@ class Runtime:
                 await asyncio.to_thread(self.poll_result, polling_client, error="Telegram 连接失败，请检查所选 API、凭据、网络或代理")
                 await asyncio.sleep(5)
 
+    def schedule_menu(self, client: TelegramClient) -> None:
+        """One bounded task per verified client, independent of inbox consumption."""
+        if (self.stopping or client is not self.client or client is not self.verified_client
+                or self.menu_task is not None and not self.menu_task.done()):
+            return
+        if self.menu_client is not client:
+            self.menu_client, self.menu_registered = client, False
+            self.menu_retry_at, self.menu_failures = 0.0, 0
+        if self.menu_registered or time.time() < self.menu_retry_at:
+            return
+        self.menu_task = asyncio.create_task(self.register_menu(client))
+
+    def verified_connection_current(self, client: TelegramClient | None) -> bool:
+        """Validate local ownership independently of temporary request protection."""
+        with self.settings.connection_publication_lock:
+            if client is None or client is not self.client or client is not self.verified_client:
+                return False
+            revision, settings, _ = self.settings.read()
+            state = self.local_api.read()
+            if (not settings.bot_token or self.client_signature != self.settings.client_signature(settings)
+                    or state.get("phase") != "idle"):
+                return False
+            if self.config.managed_local_api:
+                if state.get("applied_mode") != settings.bot_api_mode:
+                    return False
+                if settings.bot_api_mode == "local":
+                    applied = self.local_api.applied()
+                    proxy = self.settings.proxy_status(revision, settings, applied=applied, runtime_state=state)
+                    if (applied.get("state") != "running" or applied.get("generation") != self.client_generation
+                            or proxy["state"] != ("active" if settings.proxy.enabled else "disabled")):
+                        return False
+            return True
+
+    async def register_menu(self, client: TelegramClient) -> None:
+        try:
+            if not await asyncio.to_thread(self.verified_connection_current, client):
+                return
+            # Shared request admission still applies to both remote mutations.
+            # No connection/publication/database lock spans this network wait.
+            async with asyncio.timeout(MENU_TIMEOUT):
+                await client.register_commands()
+            current = await asyncio.to_thread(self.verified_connection_current, client)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if client is self.client and client is self.menu_client:
+                self.menu_failures += 1
+                self.menu_retry_at = max(time.time() + min(300, 5 * 2 ** min(self.menu_failures - 1, 6)),
+                                         exc.retry_at or 0 if isinstance(exc, SafetyDeferred) else 0)
+        else:
+            if current and client is self.menu_client:
+                self.menu_registered = True
+
     def counts(self) -> tuple[int, int, int]:
         with self.db.sessions() as session:
             active, blocked, pending = session.execute(select(
@@ -503,13 +580,22 @@ class Runtime:
         client, bot_id = self.client, self.bot_id
         if client is None or bot_id is None or client.mode != "local":
             return False
-        row = await asyncio.to_thread(self.cache_cleanup.due, bot_id)
-        if row is None or not self.progress_generation():
-            return False
+        excluded: set[str] = set()
+        while True:
+            row = await asyncio.to_thread(partial(self.cache_cleanup.due, bot_id, exclude_ids=excluded))
+            if row is None or not self.progress_generation():
+                return False
+            try:
+                if await asyncio.to_thread(self.retained_cache.automatic_allowed, row):
+                    break
+                excluded.add(row.job_id)
+            except (InvalidToken, ValueError, AppError):
+                await owned_thread(self.cache_cleanup.retry, row.job_id)
+                return True
         self.worker.cleanup_paused = True
         try:
             with self.db.transaction() as session:
-                if maintenance_blocked(session):
+                if maintenance_blocked(session, allow_automatic_cleanup=True):
                     return True
             # Set the claim barrier before inspecting durable ownership. A claim already
             # inside its transaction is then visible to the following owner query.
@@ -527,7 +613,7 @@ class Runtime:
                 return True
             async with self.connection_lock:
                 with self.db.sessions() as session:
-                    if maintenance_blocked(session):
+                    if maintenance_blocked(session, allow_automatic_cleanup=True):
                         return True
                 if (await asyncio.to_thread(self.cache_maintenance.read)).get("state") in {"running", "uncertain"}:
                     return True
@@ -555,6 +641,7 @@ class Runtime:
                 except Exception:
                     await owned_thread(self.cache_cleanup.retry, row.job_id)
                 else:
+                    await owned_thread(self.retained_cache.mark_automatic_deleted, row)
                     await owned_thread(self.cache_cleanup.complete, row.job_id)
             # One item per tick bounds connection-lock/network ownership to one request.
             return True
@@ -568,6 +655,8 @@ class Runtime:
             scope = self.client_signature
             try:
                 await self.reconcile_acquisition_cancellations()
+                await self.retained_cache.recover()
+                await self.cancel_cleanup.run_due()
                 await self.cache_maintenance.resume()
                 async with self.connection_lock:
                     paused = await self.local_api.reconcile(self)
@@ -586,23 +675,30 @@ class Runtime:
                     continue
                 revision, settings, _ = await asyncio.to_thread(self.settings.read)
                 active, blocked, pending = await asyncio.to_thread(self.counts)
-                can_dispatch = (pending > 0 and active < settings.download_concurrency and bool(settings.bot_token)
-                                and self.client_signature == self.settings.client_signature(settings) and self.bot_status["state"] == "online"
-                                and not blocked)
+                dispatch_ready = (pending > 0 and active < settings.download_concurrency and bool(settings.bot_token)
+                                  and self.client_signature == self.settings.client_signature(settings) and not blocked)
+                can_dispatch = dispatch_ready and self.bot_status["state"] == "online"
                 if can_dispatch:
                     proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
                     safety = await asyncio.to_thread(self.safety.status, settings.bot_token)
                     can_dispatch = (safety["state"] == "ready"
                                     and proxy["state"] == ("active" if settings.proxy.enabled else "disabled"))
-                if can_dispatch and self.config.managed_local_api and settings.bot_api_mode == "local":
+                # A complete cache is local input: Telegram cooldown/authentication
+                # failures cannot strand an explicit save behind a network gate.
+                can_save = (dispatch_ready and settings.bot_api_mode == "local" and not can_dispatch
+                            and await asyncio.to_thread(self.retained_cache.identity, allow_saving=True) is not None)
+                if (can_dispatch or can_save) and self.config.managed_local_api and settings.bot_api_mode == "local":
                     applied = await asyncio.to_thread(self.local_api.applied)
-                    can_dispatch = can_dispatch and applied.get("state") == "running" and applied.get("generation") == self.client_generation
+                    child_ready = applied.get("state") == "running" and applied.get("generation") == self.client_generation
+                    can_dispatch, can_save = can_dispatch and child_ready, can_save and child_ready
                 if await self.cleanup_cache():
-                    can_dispatch = False
-                if can_dispatch:
+                    can_dispatch, can_save = False, False
+                if can_dispatch or can_save:
                     stage = "dispatch_run"
                     for _ in range(max(0, settings.download_concurrency - active)):
-                        job_id = await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)
+                        job_id = (await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)
+                                  if can_dispatch else await asyncio.to_thread(
+                                      self.worker.claim, bot_id, settings.bot_api_mode, save_only=True))
                         if not job_id:
                             break
                         if settings.bot_api_mode == "local":

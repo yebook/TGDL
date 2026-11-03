@@ -121,7 +121,7 @@ Dockerfile 另外使用 BuildKit 的 pnpm、uv 下载缓存和 ccache 编译缓�
 修改本地 API 源码补丁时，先编译实际镜像，再运行专用传输检查。以下命令在项目根目录执行，不挂载应用数据，不填写真实凭据；专用检查镜像安装 `strace`，只在断网容器中验证。
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.2.0 .
+docker build -f deploy/bot-api/Dockerfile -t tgd-bot-api-source:0.2.1 .
 docker build -f deploy/bot-api/Dockerfile.verify-native -t tgd-native-transport-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-transport-acceptance
 ```
@@ -150,7 +150,7 @@ docker run --rm --network none tgd-native-http-download-wait-acceptance
 进度扩展读取现有 TDLib 下载事件的内存快照。修改后使用相同原生镜像构建专用检查镜像：
 
 ```sh
-docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.2.0 -t tgd-native-progress-acceptance .
+docker build -f deploy/bot-api/Dockerfile.verify-progress --build-arg TGDL_API_IMAGE=tgd-bot-api-source:0.2.1 -t tgd-native-progress-acceptance .
 docker run --rm --network none --cap-drop ALL --cap-add SYS_PTRACE --security-opt no-new-privileges:true --user 1000:1000 --read-only --tmpfs /tmp:rw,nosuid,size=256m tgd-native-progress-acceptance
 ```
 
@@ -209,6 +209,23 @@ docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,s
 夹具保留真实 TDLib 文件管理、分块记录、文件写入和线程退出路径，仅替换远端数据并设置隔离的测试屏障。检查迟到回调、共享消费者、取消确认前仍打开的写入句柄、确认后不再写入、同进程分块复用，以及取消／正常完成期间的缓存清理保护。活跃写入期间也运行实际占用扫描，核对新增分块引起的分配空间增长、临时文件改名不重复计数，扫描期间新下载和取消仍可用、清理保持互斥。生产二进制另检查私有请求不会创建缺失的 Bot 客户端或产生外连；真实 Telegram 大文件与 NAS 仍需单独验收。
 
 浏览器检查在 `frontend/` 执行 `pnpm build` 和 `pnpm exec playwright test --config playwright.cancellation.config.ts`。专用配置使用端口 `18766` 和固定的 `E2E_ACQUISITION_CANCEL=1` 场景，运行真实 REST、任务服务、工作器和持久状态，只替换原生传输边界。若独立启动测试服务，设置 `TGDL_E2E_PORT=18766`、`E2E_ACQUISITION_CANCEL=1`，然后以 `TGDL_E2E_EXTERNAL_SERVER=1` 运行上述浏览器配置并在检查后停止服务。
+
+### 失败缓存恢复与继续下载
+
+缓存续传协议修改后，用固定生产源码构建原生环境和隔离夹具：
+
+```sh
+docker build --target build -f deploy/bot-api/Dockerfile -t tgd-storage-cache-native-build .
+docker build --target native -f deploy/bot-api/Dockerfile -t tgd-storage-cache-native .
+docker build -f deploy/bot-api/Dockerfile.verify-retained-cache -t tgd-storage-cache-native-fixture .
+docker run --rm --network none tgd-storage-cache-native-fixture
+```
+
+夹具运行真实 TDLib 文件写入和分片记录，离线验证同一子进程继续下载、空间耗尽分类、部分缓存精确清理、重启后检查旧缓存但拒绝无证明续传、替换保护和清理响应丢失时的互斥。合成远端及临时文件不进入正式产物，不连接 Telegram。修改原生补丁后仍需按前文重新打包并验证预编译归档，不能只改产品版本标签。
+
+浏览器检查在 `frontend/` 执行 `pnpm build`，再运行 `pnpm exec playwright test --config playwright.retained-cache.config.ts`。专用端口为 `18769`，固定场景为 `E2E_RETAINED_CACHE=1`；独立启动测试服务时同时设置 `TGDL_E2E_PORT=18769`，运行浏览器检查时设置 `TGDL_E2E_EXTERNAL_SERVER=1`，结束后停止对应服务。覆盖桌面/手机完整缓存继续保存、部分续传后取消清理、API 重启失效指引、清理确认和丢回复核对。
+
+后端定向回归包括 `test_storage_space.py`、`test_storage_admission.py`、`test_retained_cache*.py`、`test_retained_save_dispatch.py`、`test_cancel_cleanup*.py` 和 `test_bot_commands*.py`。取消清理还需核对已保存文件共享引用、发布竞争、未知删除结果与重启不重放；平台跳过的文件系统检查不能当作部署验收通过。
 
 ## 文档开发
 

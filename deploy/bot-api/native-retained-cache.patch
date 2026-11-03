@@ -1,0 +1,471 @@
+--- a/td/td/generate/scheme/td_api.tl
++++ b/td/td/generate/scheme/td_api.tl
+@@ -11281,6 +11281,9 @@
+ //@description A simple object containing a vector of objects that hold a string; for testing only @value Vector of objects
+ testVectorStringObject value:vector<testString> = TestVectorStringObject;
+ 
++//-Private current-generation local cache evidence; never a public download API
++tgdFileCacheSnapshot completeness:string path:string size:int53 allocated_bytes:int53 identity:string resumable:Bool reason:string settled:Bool = TgdFileCacheSnapshot;
++
+ ---functions---
+ 
+ //@description Returns the current authorization state. This is an offline method. For informational purposes only. Use updateAuthorizationState instead to maintain the current authorization state. Can be called before initialization
+@@ -13994,6 +13997,13 @@
+ //-file_id Identifier of the file
+ tgdCancelDownloadFile file_id:int32 = File;
+ 
++//-Private local cache inspection with optional exact orphan proof
++tgdGetFileCache file_id:int32 expected_path:string expected_size:int53 expected_identity:string = TgdFileCacheSnapshot;
++//-Private exact partial cache deletion, including verified orphan after child restart
++tgdDeletePartialFileCache file_id:int32 expected_path:string expected_size:int53 expected_identity:string = Ok;
++//-Private same-child continuation, refuses missing or changed partial metadata
++tgdResumeDownloadFile file_id:int32 expected_identity:string priority:int32 offset:int53 limit:int53 synchronous:Bool = File;
++
+ //-TGDL private offline recovery of an exact verified successful-publication cache file
+ tgdRecoverFileCache file_id:int32 expected_path:string expected_size:int53 expected_sha256:string = Ok;
+ 
+--- a/td/td/telegram/files/FileManager.cpp
++++ b/td/td/telegram/files/FileManager.cpp
+@@ -19,6 +19,7 @@
+ #include "td/telegram/misc.h"
+ #include "td/telegram/SecureStorage.h"
+ #include "td/telegram/TdDb.h"
++#include "td/telegram/Td.h"
+ #include "td/telegram/Version.h"
+ 
+ #include "td/actor/SleepActor.h"
+@@ -1279,6 +1280,12 @@
+   }
+ 
+   void on_download_error(FileId file_id, Status error) final {
++    // Async downloadFile returns before disk writes. Preserve the typed local
++    // storage failure before the inactive updateFile that otherwise hides it.
++    // This is a transient private event, never a persisted/user-set option.
++    if (error.message() == "TGD_CACHE_NO_SPACE")
++      send_closure(G()->td(), &Td::send_update, td_api::make_object<td_api::updateOption>(
++          "tgd_cache_no_space", td_api::make_object<td_api::optionValueInteger>(file_id.get())));
+     file_manager_->on_user_file_download_finished(file_id);
+   }
+ };
+@@ -2925,6 +2932,112 @@
+         pending_user_file_downloads_.count(id)) return false;
+   }
+   return true;
++}
++
++namespace {
++string tgd_cache_fingerprint(const TgdCacheProof &proof, const string &remote) {
++  const auto &st = proof.identity;
++  string value = remote + ":" + proof.path;
++  for (auto part : {static_cast<long long>(st.st_dev), static_cast<long long>(st.st_ino),
++                    static_cast<long long>(st.st_size), static_cast<long long>(st.st_mode),
++                    static_cast<long long>(st.st_mtim.tv_sec), static_cast<long long>(st.st_mtim.tv_nsec),
++                    static_cast<long long>(st.st_ctim.tv_sec), static_cast<long long>(st.st_ctim.tv_nsec)})
++    value += ":" + std::to_string(part);
++  return hex_encode(sha256(value));
++}
++}
++
++td_api::object_ptr<td_api::tgdFileCacheSnapshot> FileManager::tgd_get_file_cache(
++                               FileId alias, const string &expected_path, int64 expected_size,
++                               const string &expected_identity) {
++  auto out = td_api::make_object<td_api::tgdFileCacheSnapshot>("unknown", "", 0, 0, "", false,
++                                                             "cache_unavailable", false);
++  auto node = get_sync_file_node(alias);
++  if (!node || !FileView(node).has_full_remote_location()) return out;
++  const auto type = FileView(node).get_type();
++  const auto kind = get_file_type_class(type);
++  if (kind == FileTypeClass::Temp || kind == FileTypeClass::Encrypted || kind == FileTypeClass::Secure ||
++      type == FileType::None || type == FileType::Size) return out;
++  out->settled_ = tgd_cache_node_idle(node);
++  string path, root;
++  bool orphan = false, partial = false;
++  if (node->local_.type() == LocalFileLocation::Type::Full) {
++    path = node->local_.full().path_;
++    root = get_files_dir(type);
++  } else if (node->local_.type() == LocalFileLocation::Type::Partial) {
++    partial = true;
++    path = node->local_.partial().path_;
++    root = get_files_temp_dir(type);
++  } else if (!expected_path.empty()) {
++    orphan = partial = true;
++    path = expected_path;
++    root = get_files_temp_dir(type);
++  } else {
++    out->completeness_ = "absent";
++    out->reason_ = "cache_missing";
++    return out;
++  }
++  // No directory scans, links, arbitrary ancestors or media registration. A
++  // retained exact native proof alone may identify a partial orphan after restart.
++  struct stat named{};
++  if (::lstat(path.c_str(), &named) != 0) {
++    if (errno == ENOENT) { out->completeness_ = "absent"; out->reason_ = "cache_missing"; }
++    return out;
++  }
++  auto proof = TgdCacheProof::open(root, path, named.st_size);
++  if (!proof) { out->reason_ = "cache_identity_changed"; return out; }
++  const auto identity = tgd_cache_fingerprint(*proof, node->get_unique_file_id());
++  if ((!expected_path.empty() && (path != expected_path || named.st_size != expected_size ||
++                                  identity != expected_identity)) || !proof->matches()) {
++    out->reason_ = "cache_identity_changed";
++    return out;
++  }
++  out->completeness_ = partial ? "partial" : "complete";
++  out->path_ = path;
++  out->size_ = named.st_size;
++  out->allocated_bytes_ = static_cast<int64>(named.st_blocks) * 512;
++  out->identity_ = identity;
++  out->reason_ = out->settled_ ? (partial ? "bitmap_unavailable" : "cache_complete") : "cache_busy";
++  if (partial && !orphan && out->settled_) {
++    const auto &location = node->local_.partial();
++    // Never treat sparse length or progress alone as reusable downloaded data.
++    if (location.part_size_ > 0 && !location.ready_bitmask_.empty() && location.ready_size_ > 0 &&
++        Bitmask(Bitmask::Decode{}, location.ready_bitmask_).get_total_size(location.part_size_,
++                            node->expected_size(true)) == location.ready_size_ &&
++        location.ready_size_ <= named.st_size) {
++      out->resumable_ = true;
++      out->reason_ = "resume_available";
++    }
++  }
++  return out;
++}
++
++void FileManager::tgd_delete_partial_file_cache(FileId alias, string path, int64 size, string identity,
++                                               Promise<Unit> promise) {
++  TRY_STATUS_PROMISE(promise, G()->close_status());
++  auto node = get_sync_file_node(alias);
++  if (!node || !tgd_cache_node_idle(node)) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  auto state = tgd_get_file_cache(alias, path, size, identity);
++  if (!state->settled_) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  if (state->completeness_ == "absent") return promise.set_value(Unit());
++  if (state->completeness_ != "partial" || state->path_ != path || state->size_ != size || state->identity_ != identity)
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  auto proof = TgdCacheProof::open(get_files_temp_dir(FileView(node).get_type()), path, size);
++  if (!proof || tgd_cache_fingerprint(*proof, node->get_unique_file_id()) != identity)
++    return promise.set_error(409, "TGD_CACHE_RECOVERY_IDENTITY");
++  // Check every node, not only this alias: merges/aliases must never let an idle
++  // remote delete a different active writer's partial pathname.
++  if (file_nodes_.size() > 65536) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  for (size_t i = 0; i < file_nodes_.size(); ++i) {
++    auto other = file_nodes_[i].get();
++    if (other && other->local_.type() != LocalFileLocation::Type::Empty && other->local_.file_name() == path &&
++        !tgd_cache_node_idle(FileNodePtr(other->main_file_id_, this))) return promise.set_error(409, "TGD_CACHE_RECOVERY_BUSY");
++  }
++  if (node->local_.type() == LocalFileLocation::Type::Partial)
++    return delete_file_with_proof(alias, std::move(promise), "tgd_partial_cache", std::move(proof));
++  // Restart or previous failed unlink: no local association exists. The exact
++  // native proof remains scoped to this remote and current Bot's temp directory.
++  send_closure(file_load_manager_, &FileLoadManager::tgd_unlink_file, path, std::move(promise), std::move(proof));
+ }
+ 
+ void FileManager::tgd_recover_file_cache(FileId alias, string path, int64 size, string sha256, Promise<Unit> promise) {
+@@ -5258,6 +5371,9 @@
+     LOG(ERROR) << "Can't find file node for " << query.file_id_ << " " << status;
+     return;
+   }
++  if ((status.code() == ENOSPC && status.public_message() == "No space left on device") ||
++      (status.code() == EDQUOT && status.public_message() == "Disk quota exceeded"))
++    status = Status::Error(400, "TGD_CACHE_NO_SPACE");
+   on_download_error_impl(node, query.type_, was_active, std::move(status));
+ }
+ 
+--- a/td/td/telegram/files/FileManager.h
++++ b/td/td/telegram/files/FileManager.h
+@@ -568,6 +568,9 @@
+   void tgd_cache_verified(FileId alias, string path, int64 size, FileType type,
+                           Result<std::shared_ptr<TgdCacheProof>> result, Promise<Unit> promise);
+   bool tgd_cache_node_idle(FileNodePtr node) const;
++  td_api::object_ptr<td_api::tgdFileCacheSnapshot> tgd_get_file_cache(FileId alias, const string &path,
++                                                  int64 size, const string &identity);
++  void tgd_delete_partial_file_cache(FileId alias, string path, int64 size, string identity, Promise<Unit> promise);
+ 
+   void external_file_generate_write_part(int64 generation_id, int64 offset, string data, Promise<> promise);
+   void external_file_generate_progress(int64 generation_id, int64 expected_size, int64 local_prefix_size,
+--- a/td/td/telegram/Requests.cpp
++++ b/td/td/telegram/Requests.cpp
+@@ -6466,6 +6466,28 @@
+                td_api::make_object<td_api::fileDownloadedPrefixSize>(file_view.downloaded_prefix(request.offset_)));
+ }
+ 
++void Requests::on_request(uint64 id, const td_api::tgdGetFileCache &request) {
++  CREATE_REQUEST_PROMISE();
++  promise.set_result(td_->file_manager_->tgd_get_file_cache(FileId(request.file_id_, 0),
++                       request.expected_path_, request.expected_size_, request.expected_identity_));
++}
++
++void Requests::on_request(uint64 id, const td_api::tgdDeletePartialFileCache &request) {
++  CREATE_OK_REQUEST_PROMISE();
++  td_->file_manager_->tgd_delete_partial_file_cache(FileId(request.file_id_, 0), request.expected_path_,
++                          request.expected_size_, request.expected_identity_, std::move(promise));
++}
++
++void Requests::on_request(uint64 id, const td_api::tgdResumeDownloadFile &request) {
++  CREATE_REQUEST_PROMISE();
++  auto cache = td_->file_manager_->tgd_get_file_cache(FileId(request.file_id_, 0), "", 0, "");
++  if (!cache->settled_ || !cache->resumable_ || cache->identity_ != request.expected_identity_) {
++    return promise.set_error(400, "TGD_CACHE_RESUME_UNAVAILABLE");
++  }
++  td_->file_manager_->download_file(FileId(request.file_id_, 0), request.priority_, request.offset_, request.limit_,
++                                   request.synchronous_, std::move(promise));
++}
++
+ void Requests::on_request(uint64 id, const td_api::tgdRecoverFileCache &request) {
+   CREATE_OK_REQUEST_PROMISE();
+   td_->file_manager_->tgd_recover_file_cache(FileId(request.file_id_, 0), request.expected_path_,
+--- a/td/td/telegram/Requests.h
++++ b/td/td/telegram/Requests.h
+@@ -1267,6 +1267,9 @@
+   void on_request(uint64 id, const td_api::tgdCancelDownloadFile &request);
+ 
+   void on_request(uint64 id, const td_api::tgdRecoverFileCache &request);
++  void on_request(uint64 id, const td_api::tgdGetFileCache &request);
++  void on_request(uint64 id, const td_api::tgdDeletePartialFileCache &request);
++  void on_request(uint64 id, const td_api::tgdResumeDownloadFile &request);
+ 
+   void on_request(uint64 id, const td_api::getSuggestedFileName &request);
+ 
+--- a/telegram-bot-api/Client.cpp
++++ b/telegram-bot-api/Client.cpp
+@@ -7577,6 +7577,19 @@
+   td::uint64 epoch_;
+ };
+ 
++class Client::TdOnRetainedCacheCallback final : public TdQueryCallback {
++ public:
++  TdOnRetainedCacheCallback(Client *client, PromisedQueryPtr query, int stage)
++      : client_(client), query_(std::move(query)), stage_(stage) {}
++  void on_result(object_ptr<td_api::Object> result) final {
++    client_->tgd_retained_cache_result(std::move(query_), stage_, std::move(result));
++  }
++ private:
++  Client *client_;
++  PromisedQueryPtr query_;
++  int stage_;
++};
++
+ class Client::TdOnAcquisitionResolvedCallback final : public TdQueryCallback {
+  public:
+   TdOnAcquisitionResolvedCallback(Client *client, td::string id, PromisedQueryPtr query)
+@@ -8695,6 +8708,8 @@
+ }
+ 
+ void Client::send(PromisedQueryPtr query) {
++  if (query->method() == "tgdgetfilecache" || query->method() == "tgddeletepartialfilecache")
++    return tgd_retained_cache(std::move(query));
+   if (query->method() == "tgdpreparefileacquisition" || query->method() == "tgdgetfileacquisition" ||
+       query->method() == "tgdcancelfileacquisition") return tgd_acquisition_control(std::move(query));
+   if (query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage") {
+@@ -9448,7 +9463,8 @@
+   }
+   if (tgd_cache_gate_.busy() && f->get_id() != td_api::getRemoteFile::ID &&
+       f->get_id() != td_api::deleteFile::ID && f->get_id() != td_api::tgdRecoverFileCache::ID &&
+-      f->get_id() != td_api::tgdCancelDownloadFile::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
++      f->get_id() != td_api::tgdCancelDownloadFile::ID && f->get_id() != td_api::tgdGetFileCache::ID &&
++      f->get_id() != td_api::tgdDeletePartialFileCache::ID && f->get_id() != td_api::setBotUpdatesStatus::ID) {
+     return handler->on_result(make_object<td_api::error>(400, "TGD_CACHE_CLEANUP_BUSY"));
+   }
+   do_send_request(std::move(f), std::move(handler));
+@@ -9911,6 +9927,13 @@
+     case td_api::updateOption::ID: {
+       auto update = move_object_as<td_api::updateOption>(result);
+       const td::string &name = update->name_;
++      if (parameters_->local_mode_ && name == "tgd_cache_no_space" &&
++          update->value_->get_id() == td_api::optionValueInteger::ID) {
++        auto id = static_cast<td_api::optionValueInteger *>(update->value_.get())->value_;
++        if (id > 0 && id <= 2147483647 && is_file_being_downloaded(static_cast<int32>(id)))
++          on_file_download(static_cast<int32>(id), td::Status::Error(400, "Bad Request: TGD_CACHE_NO_SPACE"));
++        break;
++      }
+       if (name == "my_id") {
+         if (update->value_->get_id() == td_api::optionValueEmpty::ID) {
+           CHECK(logging_out_);
+@@ -17508,6 +17531,123 @@
+ };
+ }
+ 
++namespace {
++struct TgdRetainedCacheReply final : td::Jsonable {
++  td::string generation;
++  td_api::object_ptr<td_api::tgdFileCacheSnapshot> cache;
++  void store(td::JsonValueScope *scope) const {
++    auto o = scope->enter_object();
++    o("generation", generation);
++    o("completeness", cache->completeness_);
++    o("path", cache->path_);
++    o("size", cache->size_);
++    o("allocated_bytes", cache->allocated_bytes_);
++    o("identity", cache->identity_);
++    o("resumable", td::JsonBool(cache->resumable_));
++    o("reason", cache->reason_);
++    o("settled", td::JsonBool(cache->settled_));
++  }
++};
++}
++
++void Client::tgd_retained_cache(PromisedQueryPtr query) {
++  const char *generation = std::getenv("TGD_PROGRESS_GENERATION");
++  if (!parameters_->local_mode_ || !was_authorized_ || closing_ || logging_out_ || !generation || !*generation)
++    return fail_query(404, "Not Found: cache cleanup unavailable", std::move(query));
++  auto alias = query->arg("file_id");
++  auto expected = query->arg("generation");
++  auto path = query->arg("expected_path");
++  auto identity = query->arg("expected_identity");
++  auto size = td::to_integer_safe<int64>(query->arg("expected_size"));
++  bool proof = query->has_arg("expected_path") || query->has_arg("expected_size") || query->has_arg("expected_identity");
++  bool deleting = query->method() == "tgddeletepartialfilecache";
++  bool owner = query->has_arg("acquisition_id");
++  const size_t count = 2 + (proof ? 3 : 0) + (owner ? 1 : 0);
++  if (alias.empty() || alias.size() > 4096 || expected.empty() || expected.size() > 128 ||
++      !query->files().empty() || query->args().size() != count ||
++      (deleting && (!proof || owner)) ||
++      (proof && (path.empty() || path.size() > 4096 || path[0] != '/' || path.find('\0') != td::Slice::npos ||
++                 size.is_error() || size.ok() < 0 || query->arg("expected_size").size() > 20 || identity.size() != 64 ||
++                 identity.str().find_first_not_of("0123456789abcdef") != td::string::npos)))
++    return fail_query(400, "Bad Request: invalid cache cleanup request", std::move(query));
++  if (expected != td::Slice(generation))
++    return fail_query(409, "Conflict: cache generation changed", std::move(query));
++  tgd_acquisitions_.prune(td::Time::now());
++  if (owner) {
++    auto *registered = tgd_acquisitions_.get(query->arg("acquisition_id").str());
++    if (!registered || registered->alias != alias.str())
++      return fail_query(409, "Conflict: cache identity unavailable", std::move(query));
++  }
++  if (tgd_cache_gate_.busy() || tgd_cache_storage_.mutation_busy() ||
++      (deleting && (tgd_cache_storage_.busy() || tgd_cache_native_busy())))
++    return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
++  if (deleting && !tgd_cache_gate_.begin_resolution())
++    return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
++  send_request(make_object<td_api::getRemoteFile>(alias.str(), nullptr),
++               td::make_unique<TdOnRetainedCacheCallback>(this, std::move(query), 0));
++}
++
++void Client::tgd_retained_cache_result(PromisedQueryPtr query, int stage, object_ptr<td_api::Object> result) {
++  bool deleting = query->method() == "tgddeletepartialfilecache";
++  if (stage == 2) {
++    // The native fence belongs to the mutation through unlink completion,
++    // independently of the HTTP waiter. Inspect cannot settle while it is held.
++    tgd_cache_gate_.resolved();
++    if (result->get_id() != td_api::ok::ID) {
++      if (result->get_id() == td_api::error::ID &&
++          static_cast<td_api::error *>(result.get())->message_ == "TGD_CACHE_RECOVERY_BUSY")
++        return fail_query(409, "Conflict: cache file busy", std::move(query));
++      if (result->get_id() == td_api::error::ID &&
++          static_cast<td_api::error *>(result.get())->message_ == "TGD_CACHE_RECOVERY_IDENTITY")
++        return fail_query(409, "Conflict: cache identity changed", std::move(query));
++      return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
++    }
++    if (!cache_path_absent(query->arg("expected_path").str()))
++      return fail_query(500, "Internal Server Error: cache removal unconfirmed", std::move(query));
++    TgdCacheReply reply;
++    reply.generation = query->arg("generation").str();
++    reply.status = "deleted";
++    return answer_query(reply, std::move(query));
++  }
++  if (closing_ || logging_out_ || result->get_id() == td_api::error::ID) {
++    if (deleting) tgd_cache_gate_.resolved();
++    return fail_query(409, "Conflict: cache identity unavailable", std::move(query));
++  }
++  if (stage == 0) {
++    CHECK(result->get_id() == td_api::file::ID);
++    auto file = move_object_as<td_api::file>(result);
++    auto path = query->arg("expected_path").str();
++    auto size_arg = query->arg("expected_size");
++    auto size = size_arg.empty() ? 0 : td::to_integer_safe<int64>(size_arg).ok();
++    auto identity = query->arg("expected_identity").str();
++    if (deleting) {
++      send_request(make_object<td_api::tgdDeletePartialFileCache>(file->id_, path, size, identity),
++                   td::make_unique<TdOnRetainedCacheCallback>(this, std::move(query), 2));
++    } else {
++      if (tgd_cache_gate_.busy() || tgd_cache_storage_.mutation_busy())
++        return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
++      send_request(make_object<td_api::tgdGetFileCache>(file->id_, path, size, identity),
++                   td::make_unique<TdOnRetainedCacheCallback>(this, std::move(query), 1));
++    }
++    return;
++  }
++  if (tgd_cache_gate_.busy() || tgd_cache_storage_.mutation_busy())
++    return fail_query(409, "Conflict: cache cleanup busy", std::move(query));
++  CHECK(result->get_id() == td_api::tgdFileCacheSnapshot::ID);
++  TgdRetainedCacheReply reply;
++  reply.generation = query->arg("generation").str();
++  reply.cache = move_object_as<td_api::tgdFileCacheSnapshot>(result);
++  if (query->has_arg("acquisition_id")) {
++    auto *registered = tgd_acquisitions_.get(query->arg("acquisition_id").str());
++    if (!registered || !registered->settled) {
++      reply.cache->settled_ = false;
++      reply.cache->resumable_ = false;
++      reply.cache->reason_ = "cache_busy";
++    }
++  }
++  answer_query(reply, std::move(query));
++}
++
+ void Client::tgd_acquisition_settle(const td::string &id, AcquisitionControl::State state) {
+   auto *owner = tgd_acquisitions_.get(id);
+   if (!owner) return;
+@@ -17533,7 +17673,11 @@
+   td::string id = query->arg("acquisition_id").str();
+   if (query->method() == "tgdpreparefileacquisition") {
+     auto alias = query->arg("file_id").str();
+-    if (alias.empty() || alias.size() > 4096 || query->args().size() != 2) {
++    auto resume = query->arg("expected_cache_identity");
++    if (alias.empty() || alias.size() > 4096 ||
++        query->args().size() != (query->has_arg("expected_cache_identity") ? 3 : 2) ||
++        (query->has_arg("expected_cache_identity") &&
++         (resume.size() != 64 || resume.str().find_first_not_of("0123456789abcdef") != td::string::npos))) {
+       return fail_query(400, "Bad Request: invalid acquisition request", std::move(query));
+     }
+     if (tgd_cache_storage_.mutation_busy() || tgd_cache_gate_.busy()) {
+@@ -17549,6 +17693,7 @@
+     if (!tgd_acquisitions_.prepare(id, alias, td::Time::now())) {
+       return fail_query(409, "Conflict: acquisition capacity reached", std::move(query));
+     }
++    tgd_acquisitions_.get(id)->expected_cache_identity = resume.str();
+   } else {
+     if (id.size() != 64 || query->args().size() != 2 ||
+         id.find_first_not_of("0123456789abcdef") != td::string::npos) {
+@@ -17712,9 +17857,17 @@
+     owner->state = AcquisitionControl::State::Downloading;
+     owner->file_id = file_id;
+   }
++  auto *registered = tgd_acquisitions_.get(owner_id);
++  auto resume = registered ? registered->expected_cache_identity : td::string();
+   file_download_listeners_[file_id].push_back(std::move(query));
+-  send_request(make_object<td_api::downloadFile>(file_id, 1, 0, 0, false),
+-               td::make_unique<TdOnDownloadFileCallback>(this, file_id, tgd_acquisitions_.start(file_id)));
++  auto epoch = tgd_acquisitions_.start(file_id);
++  if (!resume.empty()) {
++    send_request(make_object<td_api::tgdResumeDownloadFile>(file_id, resume, 1, 0, 0, false),
++                 td::make_unique<TdOnDownloadFileCallback>(this, file_id, epoch));
++  } else {
++    send_request(make_object<td_api::downloadFile>(file_id, 1, 0, 0, false),
++                 td::make_unique<TdOnDownloadFileCallback>(this, file_id, epoch));
++  }
+ }
+ 
+ bool Client::is_file_being_downloaded(int32 file_id) const {
+--- a/telegram-bot-api/Client.h
++++ b/telegram-bot-api/Client.h
+@@ -1061,6 +1061,9 @@
+   class TdOnAcquisitionResolvedCallback;
+   class TdOnAcquisitionStoppedCallback;
+   void tgd_acquisition_control(PromisedQueryPtr query);
++  class TdOnRetainedCacheCallback;
++  void tgd_retained_cache(PromisedQueryPtr query);
++  void tgd_retained_cache_result(PromisedQueryPtr query, int stage, object_ptr<td_api::Object> result);
+   void tgd_acquisition_resolved(td::string id, PromisedQueryPtr query, object_ptr<td_api::Object> result);
+   void tgd_acquisition_settle(const td::string &id, AcquisitionControl::State state);
+   void tgd_acquisition_wait(int32 file_id, const td::string &id, AcquisitionControl::State state);
+--- a/telegram-bot-api/ClientManager.cpp
++++ b/telegram-bot-api/ClientManager.cpp
+@@ -92,7 +92,8 @@
+   if ((query->method() == "tgdgetfileprogress" || query->method() == "tgddeletefilecache" ||
+        query->method() == "tgdgetcachestorage" || query->method() == "tgdclearcachestorage" ||
+        query->method() == "tgdpreparefileacquisition" || query->method() == "tgdgetfileacquisition" ||
+-       query->method() == "tgdcancelfileacquisition")) {
++       query->method() == "tgdcancelfileacquisition" || query->method() == "tgdgetfilecache" ||
++       query->method() == "tgddeletepartialfilecache")) {
+     if (!parameters_->local_mode_ || id_it == token_to_id_.end()) {
+       return fail_query(404, "Not Found: progress unavailable", std::move(query));
+     }

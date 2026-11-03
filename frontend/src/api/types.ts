@@ -33,6 +33,10 @@ export interface Task {
   item_count: number; completed_count: number; total_bytes: number | null; completed_bytes: number
   effective_destination: string | null; notification_status: string; can_cancel: boolean; can_retry: boolean; can_delete: boolean
   local_files: LocalFileCounts
+  cancel_cleanup?: {
+    state: 'pending' | 'running' | 'partial' | 'complete'; message: string; can_retry: boolean
+    entries: { kind: 'cache' | 'saved' | 'temporary'; path: string | null; outcome: string; message: string | null }[]
+  } | null
 }
 export type LocalFileState = 'present' | 'missing' | 'changed' | 'unavailable' | 'not_saved'
 export type LocalFileCounts = Record<LocalFileState, number>
@@ -47,6 +51,26 @@ export interface DownloadProgress {
   speed_bps: number | null; active: boolean; completed: boolean
 }
 export type MediaType = 'video' | 'image' | 'audio' | 'voice' | 'animation' | 'video_note' | 'document'
+export type ItemCacheAction = 'save' | 'clean' | 'download' | 'redownload'
+export interface ItemCacheOperation {
+  id: string; kind: ItemCacheAction
+  state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'uncertain'
+  error_code?: string | null; message?: string | null
+}
+export interface ItemCache {
+  id: string; state: 'retained' | 'missing' | 'changed' | 'deleted' | 'uncertain'
+  completeness: 'complete' | 'partial' | 'unknown' | 'absent'
+  /** Server-redacted display path, never a browser-supplied filesystem path. */
+  path: string | null; size_bytes: number | null; allocated_bytes: number | null
+  can_clean: boolean; can_save: boolean; can_resume_download: boolean; can_redownload: boolean
+  unavailable_reason: string | null; resume_unavailable_reason: string | null
+  recovery_guidance: string | null; operation: ItemCacheOperation | null
+}
+export interface StorageFailure {
+  phase: 'before_download' | 'before_save' | 'downloading' | 'saving'; sufficient: boolean
+  volumes: Array<{ location: 'target' | 'cache' | 'target+cache'; free_bytes: number | null
+    required_bytes: number; reserve_bytes: number; concurrent_bytes: number; missing_bytes: number | null; error_code: string | null }>
+}
 export interface MediaItem {
   id: string; job_id: string | null; media_type: MediaType; original_name: string | null; size_bytes: number | null
   duration_seconds: number | null; status: string; phase: string | null; completed_bytes: number; total_bytes: number | null
@@ -55,6 +79,9 @@ export interface MediaItem {
   speed_bps: number | null; elapsed_seconds: number | null; relative_path: string | null
   error_code: string | null; error_message: string | null; linked_job_id: string | null; attempts: Attempt[]
   local_file_state: LocalFileState
+  cache?: ItemCache | null
+  caches?: ItemCache[]
+  storage_failure?: StorageFailure | null
 }
 export interface TaskDetail extends Task { items: MediaItem[]; expires_at: string | null }
 export interface TaskPage { items: Task[]; total: number; page: number; page_size: number }

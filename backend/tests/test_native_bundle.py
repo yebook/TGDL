@@ -149,7 +149,11 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
     before = H["native_identity"](tmp_path)
     if changed == "product-version":
         dockerfile = api / "Dockerfile"
-        dockerfile.write_text(dockerfile.read_text().replace('image.version="0.1.0"', 'image.version="0.2.0"'))
+        current_version = json.loads((ROOT / "backend/app/version.json").read_text())["version"]
+        current = dockerfile.read_text()
+        label = f'image.version="{current_version}"'
+        assert label in current
+        dockerfile.write_text(current.replace(label, 'image.version="99.2.3"'))
     elif changed == "app-only":
         (tmp_path / "frontend").mkdir()
         (tmp_path / "frontend/app.ts").write_text("app-only update")
@@ -169,6 +173,7 @@ def test_runtime_and_app_edits_preserve_native_identity(tmp_path: Path, changed:
     "native-acquisition.patch", "AcquisitionControl.h", "native-download-stop.patch", "native-cache-live.patch",
     "native-cache-recovery.patch", "CacheRecovery.h",
     "native-cache-directories.patch", "CacheDirectories.h",
+    "native-retained-cache.patch",
     "upstream-revision", "tdlib-revision", "compiler-toolchain", ".dockerignore",
 ])
 def test_native_inputs_invalidate_native_artifact(tmp_path: Path, changed: str) -> None:

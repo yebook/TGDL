@@ -4,6 +4,7 @@ FROM scratch AS native-inputs
 COPY .dockerignore /.dockerignore
 COPY deploy/bot-api/native-cache-recovery.patch deploy/bot-api/CacheRecovery.h /deploy/bot-api/
 COPY deploy/bot-api/native-cache-directories.patch deploy/bot-api/CacheDirectories.h /deploy/bot-api/
+COPY deploy/bot-api/native-retained-cache.patch /deploy/bot-api/
 COPY deploy/bot-api/Dockerfile deploy/bot-api/native_identity.py deploy/bot-api/native-proxy.patch deploy/bot-api/native-progress.patch deploy/bot-api/ProgressCache.h deploy/bot-api/native-cache-cleanup.patch deploy/bot-api/CacheCleanup.h deploy/bot-api/native-http-timeout.patch deploy/bot-api/native-cache-storage.patch deploy/bot-api/CacheStorage.h deploy/bot-api/native-acquisition.patch deploy/bot-api/AcquisitionControl.h deploy/bot-api/native-download-stop.patch deploy/bot-api/native-cache-live.patch /deploy/bot-api/
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS build
@@ -59,6 +60,10 @@ COPY deploy/bot-api/CacheDirectories.h /src/telegram-bot-api/CacheDirectories.h
 RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
     cd /src && git apply --check /native-cache-directories.patch && git apply /native-cache-directories.patch && \
     cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
+COPY deploy/bot-api/native-retained-cache.patch /native-retained-cache.patch
+RUN --mount=type=cache,id=tgd-ccache-bookworm-gcc12-${TARGETARCH}-${TELEGRAM_BOT_API_REV},target=/root/.cache/ccache,sharing=locked \
+    cd /src && git apply --check /native-retained-cache.patch && git apply /native-retained-cache.patch && \
+    cmake --build build --parallel "$TGD_BUILD_JOBS" && cmake --install build
 RUN cmp /src/build/telegram-bot-api /out/bin/telegram-bot-api && mkdir -p /out/licenses/tdlib /out/share && cp /src/LICENSE* /out/licenses/ && cp /src/td/LICENSE* /out/licenses/tdlib/ && \
     printf '{"bot_api_revision":"%s","tdlib_revision":"%s"}\n' "$(git -C /src rev-parse HEAD)" "$(git -C /src/td rev-parse HEAD)" > /out/share/tgdl-source.json
 
@@ -81,7 +86,7 @@ RUN --mount=type=bind,from=native-inputs,target=/tgd-source --mount=type=bind,fr
 FROM ${TGD_NATIVE_IMAGE} AS runtime
 RUN --mount=type=bind,from=native-inputs,target=/tgd-source \
     python3 /tgd-source/deploy/bot-api/native_identity.py verify --root /tgd-source --manifest /usr/local/share/tgdl-native.json
-LABEL org.opencontainers.image.version="0.2.0"
+LABEL org.opencontainers.image.version="0.2.1"
 COPY --chmod=0755 deploy/bot-api/entrypoint.sh /entrypoint.sh
 COPY --chmod=0644 deploy/bot-api/supervisor.py /usr/local/lib/tgd-api-supervisor.py
 COPY --chmod=0644 backend/app/services/protocol_probe.py /usr/local/lib/protocol_probe.py

@@ -45,6 +45,20 @@ class LocalFiles(BaseModel):
     not_saved: int = 0
 
 
+class CancelCleanupEntry(BaseModel):
+    kind: Literal["cache", "saved", "temporary"]
+    path: str | None = None
+    outcome: Literal["pending", "deleted", "missing", "retained_shared", "retained_unverified", "failed", "uncertain"]
+    message: str | None = None
+
+
+class CancelCleanupResponse(BaseModel):
+    state: Literal["pending", "running", "partial", "complete"]
+    message: str
+    can_retry: bool
+    entries: list[CancelCleanupEntry] = Field(default_factory=list)
+
+
 class TaskSummary(BaseModel):
     id: str
     title: str
@@ -61,6 +75,7 @@ class TaskSummary(BaseModel):
     can_cancel: bool
     can_retry: bool
     can_delete: bool
+    cancel_cleanup: CancelCleanupResponse | None = None
     local_files: LocalFiles = Field(default_factory=LocalFiles)
 
 
@@ -102,6 +117,47 @@ class DownloadProgressResponse(BaseModel):
     completed: bool
 
 
+class CacheOperationResponse(BaseModel):
+    id: str
+    kind: Literal["clean", "save", "download", "redownload"]
+    state: Literal["queued", "running", "succeeded", "failed", "cancelled", "uncertain"]
+    error_code: str | None = None
+    message: str | None = None
+
+
+class RetainedCacheResponse(BaseModel):
+    id: str
+    state: Literal["retained", "missing", "changed", "deleted", "uncertain"]
+    completeness: Literal["complete", "partial", "unknown", "absent"]
+    path: str | None
+    size_bytes: int | None
+    allocated_bytes: int | None
+    can_clean: bool
+    can_save: bool
+    can_resume_download: bool
+    can_redownload: bool
+    unavailable_reason: str | None = None
+    resume_unavailable_reason: str | None = None
+    recovery_guidance: str | None = None
+    operation: CacheOperationResponse | None = None
+
+
+class SpaceVolumeResponse(BaseModel):
+    location: Literal["target", "cache", "target+cache"]
+    free_bytes: int | None
+    required_bytes: int
+    reserve_bytes: int
+    concurrent_bytes: int
+    missing_bytes: int | None
+    error_code: str | None = None
+
+
+class StorageFailureResponse(BaseModel):
+    phase: Literal["before_download", "downloading", "before_save", "saving"]
+    sufficient: bool
+    volumes: list[SpaceVolumeResponse]
+
+
 class MediaResponse(BaseModel):
     id: str
     job_id: str | None
@@ -123,6 +179,9 @@ class MediaResponse(BaseModel):
     linked_job_id: str | None
     local_file_state: Literal["present", "missing", "changed", "unavailable", "not_saved"] = "not_saved"
     attempts: list[AttemptResponse]
+    storage_failure: StorageFailureResponse | None = None
+    cache: RetainedCacheResponse | None = None
+    caches: list[RetainedCacheResponse] = Field(default_factory=list)
 
 
 class TaskDetail(TaskSummary):

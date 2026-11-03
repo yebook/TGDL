@@ -21,9 +21,10 @@ class CacheCleanupService:
         # Native Bot API paths can embed its Bot Token. Only decrypt at private I/O.
         return self.secrets.decrypt(row.source_path_encrypted)
 
-    def due(self, bot_id: int) -> CacheCleanup | None:
+    def due(self, bot_id: int, *, exclude_ids: set[str] | None = None) -> CacheCleanup | None:
         with self.db.sessions() as session:
             return session.scalar(select(CacheCleanup).where(CacheCleanup.bot_id == bot_id,
+                CacheCleanup.job_id.not_in(exclude_ids or set()),
                 CacheCleanup.next_run_at <= time.time()).order_by(CacheCleanup.next_run_at, CacheCleanup.job_id).limit(1))
 
     def local_owners(self) -> bool:

@@ -163,9 +163,11 @@ async def test_same_child_recovery_uses_encrypted_original_credential_and_owner_
     assert made == [TOKEN] and fake.closed
     assert state.tasks.detail(request_id)["status"] == "cancelled"
     assert authenticated.get("/api/v1/system/status").json()["recovery"]["message"] == ""
+    settled_message = state.tasks.detail(request_id)["items"][0]["error_message"]
+    assert settled_message.startswith("下载已取消") and "清理" in settled_message
     worker.failed(job_id, "CANCELLED", "stale", False, owner=replace(owner, attempt=owner.attempt + 1))
     with state.db.sessions() as session:
-        assert session.get(Job, job_id).error_message == "下载已取消"
+        assert session.get(Job, job_id).error_message == settled_message
         assert session.get(LocalApiRuntime, 1).values["phase"] == "draining"
 
 

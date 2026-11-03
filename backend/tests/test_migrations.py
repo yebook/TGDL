@@ -9,7 +9,7 @@ from alembic.util import CommandError
 from sqlalchemy import MetaData, create_engine, inspect
 from sqlalchemy.orm import Session
 
-from app.db.models import Base, Job, MediaRequest, Settings, StoredFile
+from app.db.models import Base, MediaRequest, Settings, StoredFile
 
 
 def migration_config() -> AlembicConfig:
@@ -23,7 +23,7 @@ def test_initial_schema_matches_models_and_repeated_startup_is_idempotent(tmp_pa
             migration = migration_config()
             migration.attributes["connection"] = connection
             command.upgrade(migration, "head")
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "file_types"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "cancel_cleanup"
             assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
             connection.exec_driver_sql("INSERT INTO settings VALUES (1, 8, 1, '{}')")
             command.upgrade(migration, "head")
@@ -33,7 +33,7 @@ def test_initial_schema_matches_models_and_repeated_startup_is_idempotent(tmp_pa
         engine.dispose()
 
 
-@pytest.mark.parametrize("released_revision", ["initial", "saved_media_deletion"])
+@pytest.mark.parametrize("released_revision", ["initial", "saved_media_deletion", "file_types", "retained_cache"])
 def test_current_initial_database_upgrades_without_changing_history_or_media(tmp_path: Path, released_revision: str) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'existing.db'}")
     media = tmp_path / "video.mp4"
@@ -58,10 +58,13 @@ def test_current_initial_database_upgrades_without_changing_history_or_media(tmp
                 session.execute(released.tables["media_items"].insert().values(
                     id="retained-item", request_id=request.id, bot_id=7, chat_id=42, message_id=1,
                     file_id="retained-file", media_type="video", planned_filename="video.mp4"))
-                job = Job(request_id=request.id, item_id="retained-item", state="succeeded", relative_path="video.mp4")
-                session.add(job)
+                job_id = "retained-job"
+                session.execute(released.tables["jobs"].insert().values(
+                    id=job_id, request_id=request.id, item_id="retained-item", state="succeeded", phase="succeeded",
+                    relative_path="video.mp4", root_id="default", acquisition_mode="local", attempt_sequence=1,
+                    auto_retries=0, max_auto_retries=3, next_run_at=0, cancel_requested=False, completed_bytes=22))
                 session.flush()
-                session.add(StoredFile(bot_id=7, file_unique_id="retained-unique", job_id=job.id, root_id="default",
+                session.add(StoredFile(bot_id=7, file_unique_id="retained-unique", job_id=job_id, root_id="default",
                                        relative_path="video.mp4", size_bytes=len(media.read_bytes()), sha256="retained-hash"))
                 session.commit()
             tables = ["settings", "requests", "media_items", "jobs", "stored_files"]
@@ -71,7 +74,9 @@ def test_current_initial_database_upgrades_without_changing_history_or_media(tmp
             command.upgrade(migration, "head")
             assert {table: connection.exec_driver_sql(f"SELECT {columns[table]} FROM {table}").all() for table in tables} == before
             assert connection.exec_driver_sql("SELECT mime_type FROM media_items").scalar() is None
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "file_types"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "cancel_cleanup"
+            assert connection.exec_driver_sql("SELECT execution_mode FROM jobs").scalar() == "download"
+            assert connection.exec_driver_sql("SELECT cache_id FROM jobs").scalar() is None
             command.upgrade(migration, "head")
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM file_deletion_operations").scalar() == 0
             assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []

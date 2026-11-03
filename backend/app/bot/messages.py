@@ -2,6 +2,7 @@
 
 from collections import Counter
 from collections.abc import Sequence
+from typing import Any
 
 from app.core.file_types import TYPE_LABELS
 
@@ -59,6 +60,31 @@ def format_bytes(value: int | None) -> str:
         size /= 1024
         unit += 1
     return f"{size:.0f} B" if unit == 0 else f"{size:.1f} {units[unit]}"
+
+
+def storage_warning(assessment: dict[str, Any]) -> str:
+    """Render only structured capacity values and fixed location labels."""
+    if assessment.get("sufficient") is True:
+        return ""
+    lines = ["⚠️ 空间提醒：下载或保存前会重新检查；不足时任务将失败，可释放空间后手动重试。"]
+    labels = {"target": "保存盘", "cache": "缓存盘", "target+cache": "缓存与保存盘（同盘）"}
+    for volume in assessment.get("volumes", []):
+        if not isinstance(volume, dict):
+            continue
+        location = volume.get("location")
+        label = labels.get(location, "存储盘") if isinstance(location, str) else "存储盘"
+        if volume.get("error_code"):
+            lines.append(f"{label}：无法检测空间，请检查挂载和权限。")
+            continue
+        if not volume.get("missing_bytes"):
+            continue
+        def capacity(key: str, row: dict[str, Any] = volume) -> str:
+            value = row.get(key)
+            return format_bytes(value if type(value) is int and value >= 0 else None)
+        lines.append(f"{label}：可用 {capacity('free_bytes')}，本次需要 {capacity('required_bytes')}，"
+                     f"并发预留 {capacity('concurrent_bytes')}，安全余量 {capacity('reserve_bytes')}，"
+                     f"尚缺 {capacity('missing_bytes')}。")
+    return "\n".join(lines)
 
 
 def type_summary(types: Sequence[str]) -> str:

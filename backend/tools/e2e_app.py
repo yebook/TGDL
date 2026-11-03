@@ -315,7 +315,17 @@ async def acquisition_cancellation(app: FastAPI) -> AsyncIterator[None]:
                                           "active": True, "completed": False, "speed_bps": None}
                                 for file_id in file_ids}
 
+        async def inspect_file_cache(self, file_id: str, observed_generation: str,
+                                     **identity: Any) -> dict[str, Any]:
+            assert observed_generation == generation
+            # This owner fixture has no cache bytes. Native stop proof still comes
+            # exclusively from file_acquisition, never this read-only snapshot.
+            return {"generation": generation, "completeness": "absent", "path": None,
+                    "settled": self.stopped, "resumable": False}
+
     owners: list[tuple[str, NativeBoundary, asyncio.Task[None]]] = []
+    cleanup_task: asyncio.Task[None] | None = None
+    cleanup_widths = (1440, 390) if os.getenv("E2E_ACQUISITION_CANCEL") == "1" else ()
     try:
         for index in (1, 2):
             job_id = worker.claim(bot_id=98765, mode="local")
@@ -325,6 +335,39 @@ async def acquisition_cancellation(app: FastAPI) -> AsyncIterator[None]:
             runtime.running[job_id] = task
             owners.append((job_id, boundary, task))
             await asyncio.wait_for(boundary.entered.wait(), 5)
+
+        # An output without a StoredFile publication proof must survive cancel
+        # cleanup. Exercise partial results and retry through the real REST API.
+        with app.state.db.transaction() as session:
+            for width in cleanup_widths:
+                request_id = f"cancel-unverified-{width}"
+                destination = f"2026-11-01/{request_id}"
+                path = runtime.config.download_root / destination / "keep-output.mp4"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"unverified output must survive cancel and retry")
+                session.add(MediaRequest(id=request_id, bot_id=98765, chat_id=12345, user_id=12345,
+                    kind="group", title=f"Unverified cancellation fixture {width}", status="queued",
+                    collect_until=time.time(), destination=destination))
+                session.flush()
+                for index, state in enumerate(("succeeded", "queued")):
+                    item_id = f"{request_id}-item-{index}"
+                    filename = "keep-output.mp4" if index == 0 else "not-started.mp4"
+                    session.add(MediaItem(id=item_id, request_id=request_id, bot_id=98765, chat_id=12345,
+                        message_id=width * 10 + index, file_id=item_id, file_unique_id=item_id,
+                        media_type="video", original_name=filename, size_bytes=path.stat().st_size))
+                    session.flush()
+                    session.add(Job(id=f"job-{item_id}", item_id=item_id, request_id=request_id,
+                        state=state, phase=state, relative_path=f"{destination}/{filename}",
+                        completed_bytes=path.stat().st_size if index == 0 else 0,
+                        finished_at=time.time() if index == 0 else None,
+                        next_run_at=time.time() + 3600))
+
+        async def run_cleanup() -> None:
+            while True:
+                await runtime.cancel_cleanup.run_due()
+                await asyncio.sleep(0.1)
+
+        cleanup_task = asyncio.create_task(run_cleanup())
         yield
     finally:
         # Graceful fixture shutdown uses the same durable intent and joins every owner.
@@ -336,6 +379,12 @@ async def acquisition_cancellation(app: FastAPI) -> AsyncIterator[None]:
         assert all(boundary.joined.is_set() for _, boundary, _ in owners)
         for job_id, _, _ in owners:
             runtime.running.pop(job_id, None)
+        if cleanup_task:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
+        for width in cleanup_widths:
+            output = runtime.config.download_root / f"2026-11-01/cancel-unverified-{width}/keep-output.mp4"
+            assert output.read_bytes() == b"unverified output must survive cancel and retry"
 
 
 def main() -> None:
@@ -418,14 +467,29 @@ def main() -> None:
                         settings.save(patch, settings.candidate(patch))
                         application.state.runtime.local_api.update(phase="failed", error_code="LOCAL_API_PREFLIGHT_FAILED")
                 try:
-                    if os.getenv("E2E_CACHE_STORAGE") == "1":
+                    if os.getenv("E2E_RETAINED_CACHE") == "1":
+                        from tools.retained_cache_fixture import retained_cache
+
+                        async with retained_cache(application):
+                            yield
+                    elif os.getenv("E2E_CACHE_STORAGE") == "1":
                         async with cache_storage(application):
                             yield
                     elif os.getenv("E2E_ACQUISITION_CANCEL") == "1":
                         async with acquisition_cancellation(application):
                             yield
                     else:
-                        yield
+                        async def run_cancel_cleanup() -> None:
+                            while True:
+                                await application.state.runtime.cancel_cleanup.run_due()
+                                await asyncio.sleep(.1)
+
+                        cleanup = asyncio.create_task(run_cancel_cleanup())
+                        try:
+                            yield
+                        finally:
+                            cleanup.cancel()
+                            await asyncio.gather(cleanup, return_exceptions=True)
                 finally:
                     if heartbeat:
                         heartbeat.cancel()

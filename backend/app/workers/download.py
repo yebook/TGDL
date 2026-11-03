@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from aiohttp import ClientError
 from sqlalchemy import delete, select
 
 from app.bot.client import TelegramClient, cloud_size_check
+from app.bot.messages import storage_warning
 from app.core.config import Config
 from app.core.errors import AppError
 from app.core.security import Secrets, digest
@@ -30,6 +32,7 @@ from app.db.models import (
     MediaRequest,
     PublishJournal,
     RequestSafety,
+    RetainedCache,
     Settings,
     StoredFile,
 )
@@ -39,6 +42,7 @@ from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress, ProgressOwner
 from app.services.file_acquisition import AcquisitionOwner, AcquisitionStore, uncertain_message
 from app.services.request_safety import RequestSafetyService, SafetyDeferralReason, SafetyDeferred
+from app.services.retained_cache import RetainedCacheService, cache_fingerprint
 from app.services.tasks import project
 from app.storage.files import (
     StorageManager,
@@ -46,9 +50,11 @@ from app.storage.files import (
     copy_stream,
     file_hash,
     publish_no_replace,
+    regular_file_hash,
     source_file,
 )
 from app.storage.naming import unique_name
+from app.storage.space import assess_space
 
 
 async def owned_thread[T](operation: Callable[..., T], *args: Any) -> T:
@@ -76,6 +82,7 @@ class DownloadWorker:
         self.secrets = secrets or Secrets(config.data_dir)
         self.acquisitions = AcquisitionStore(db)
         self.acquisition_generation: Callable[[], str] = lambda: ""
+        self.retained_cache: RetainedCacheService | None = None
 
     def progress_job(self, job_id: str) -> tuple[Job, MediaItem] | None:
         with self.db.sessions() as session:
@@ -130,9 +137,9 @@ class DownloadWorker:
         finally:
             registry.clear(owner)
 
-    def claim(self, bot_id: int | None = None, mode: str | None = None) -> str | None:
+    def claim(self, bot_id: int | None = None, mode: str | None = None, *, save_only: bool = False) -> str | None:
         outcomes: list[str] = []
-        result = self._claim(bot_id, mode, outcomes)
+        result = self._claim(bot_id, mode, outcomes, save_only=save_only)
         if self.diagnostics:
             for job_id in outcomes:
                 try:
@@ -141,13 +148,12 @@ class DownloadWorker:
                     self.diagnostics.error = True
         return result
 
-    def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str]) -> str | None:
+    def _claim(self, bot_id: int | None, mode: str | None, outcomes: list[str], *, save_only: bool = False) -> str | None:
         with self.db.transaction() as session:
             if self.cleanup_paused or maintenance_blocked(session):
                 return None
             safety = session.get(RequestSafety, self.credential_hash) if self.credential_hash else None
-            if safety and RequestSafetyService.blocked(safety.values, time.time()):
-                return None
+            safety_blocked = bool(safety and RequestSafetyService.blocked(safety.values, time.time()))
             local = session.get(LocalApiRuntime, 1)
             if (self.config.managed_local_api and not local or local
                     and (self.config.managed_local_api or local.values.get("action") == "cloud_reconnect")
@@ -164,23 +170,30 @@ class DownloadWorker:
                 Job.state.in_(["queued", "retry_wait", "waiting_existing"]), Job.next_run_at <= time.time())
             if bot_id is not None:
                 query = query.where(MediaRequest.bot_id == bot_id)
+            if save_only:
+                query = query.where(Job.execution_mode == "save")
             jobs = list(session.scalars(query.order_by(Job.next_run_at, Job.id).limit(50)))
             active_requests = list(session.scalars(select(Job.request_id).where(
                 Job.state.in_(["fetching", "saving", "cancelling", "recovery_blocked"]))))
             # One busy media group must not monopolize newly available global slots.
             jobs.sort(key=lambda job: (active_requests.count(job.request_id), job.next_run_at, job.id))
             for job in jobs:
+                if safety_blocked and job.execution_mode != "save":
+                    continue
                 item = session.get(MediaItem, job.item_id)
                 assert item
+                if maintenance_blocked(session, bot_id=item.bot_id):
+                    continue
                 if job.cancel_requested:
                     outcomes.append(job.id)
                     job.state, job.finished_at = "cancelled", time.time()
                     request = session.get(MediaRequest, job.request_id)
                     assert request
+                    RetainedCacheService.finish_action(session, job)
                     project(session, request)
                     continue
                 try:
-                    storage = self.storage.get(job.root_id)
+                    self.storage.get(job.root_id)
                 except AppError as exc:
                     outcomes.append(job.id)
                     job.state, job.phase, job.finished_at = "failed", "failed", time.time()
@@ -189,6 +202,7 @@ class DownloadWorker:
                     session.flush()
                     request = session.get(MediaRequest, job.request_id)
                     assert request
+                    RetainedCacheService.finish_action(session, job)
                     project(session, request)
                     continue
                 if item.file_unique_id:
@@ -206,6 +220,7 @@ class DownloadWorker:
                         session.flush()
                         request = session.get(MediaRequest, job.request_id)
                         assert request
+                        RetainedCacheService.finish_action(session, job)
                         project(session, request)
                         continue
                     if stored:
@@ -223,27 +238,38 @@ class DownloadWorker:
                     if not reservation or reservation.job_id != job.id:
                         session.add(FileReservation(bot_id=item.bot_id, file_unique_id=item.file_unique_id, job_id=job.id))
                 try:
-                    # Budget target+cache copies and in-flight known sizes conservatively (also across mounts).
-                    outstanding = session.scalars(select(MediaItem.size_bytes).join(Job, Job.item_id == MediaItem.id).where(
-                        Job.state.in_(["fetching", "saving", "cancelling", "recovery_blocked"])))
-                    budget = sum(value or self.config.minimum_free_bytes for value in outstanding)
-                    copies = 2 if current_mode == "local" else 1
-                    storage.check(copies * ((item.size_bytes or self.config.minimum_free_bytes) + budget))
-                    if current_mode == "local" and self.config.bot_api_root.exists():
-                        import shutil
-                        if shutil.disk_usage(self.config.bot_api_root).free < self.config.minimum_free_bytes + (item.size_bytes or 0) + budget:
-                            raise AppError("NO_SPACE", "Bot API 缓存空间不足")
+                    cache = session.get(RetainedCache, job.cache_id) if job.cache_id else None
+                    if job.execution_mode == "download" and cache and cache.completeness == "complete" and cache.state == "retained":
+                        job.execution_mode = "save"
+                    if cache and job.execution_mode == "save" and self.retained_cache and self.retained_cache.source_busy(session, cache):
+                        raise AppError("CACHE_MUTATION_UNCERTAIN", "此缓存的清理结果尚未确认，请恢复连接或安全重启本地 API 后重试")
+                    assessment = assess_space(session, self.storage, self.config, job.root_id, item.size_bytes,
+                        current_mode, "before_save" if job.execution_mode == "save" else "before_download", job.id)
+                    assessment.require()
                 except (OSError, AppError) as exc:
                     outcomes.append(job.id)
                     job.error_code = exc.code if isinstance(exc, AppError) else "STORAGE_UNAVAILABLE"
                     job.error_message = exc.message if isinstance(exc, AppError) else "存储不可用，请检查挂载和权限"
-                    job.next_run_at = time.time() + 10
+                    job.storage_failure = exc.details if isinstance(exc, AppError) and isinstance(exc.details, dict) else None
+                    if job.storage_failure:
+                        job.error_message = storage_warning(job.storage_failure)
+                    job.state, job.phase, job.finished_at = "failed", "failed", time.time()
+                    session.execute(delete(FileReservation).where(FileReservation.job_id == job.id))
+                    session.flush()
+                    request = session.get(MediaRequest, job.request_id)
+                    assert request
+                    RetainedCacheService.finish_action(session, job)
+                    project(session, request)
                     continue
                 job.state, job.phase, job.boot_id = "fetching", "fetching", self.boot_id
                 job.acquisition_mode = current_mode
                 job.started_at, job.completed_bytes, job.finished_at = time.time(), 0, None
                 job.attempt_sequence += 1
                 job.linked_job_id, job.error_code, job.error_message = None, None, None
+                job.storage_failure = None
+                action = RetainedCacheService.action(session, job)
+                if action:
+                    action.state = "running"
                 session.add(Attempt(job_id=job.id, sequence=job.attempt_sequence))
                 session.flush()
                 request = session.get(MediaRequest, job.request_id)
@@ -262,6 +288,10 @@ class DownloadWorker:
         if now - self.progress_times.get(job_id, 0) < 0.5:
             return
         self.progress_times[job_id] = now
+        failure = self.download_space_exhausted(job_id, "saving")
+        if failure:
+            self.record_space_failure(job_id, "saving", failure)
+            raise self.observed_error(failure)
         with self.db.transaction() as session:
             job = session.get(Job, job_id)
             if job:
@@ -284,6 +314,14 @@ class DownloadWorker:
                 job.state = "saving"
             row = session.get(PublishJournal, job_id)
             if row:
+                if row.stage == "ready":
+                    raise AppError("PUBLISH_UNCERTAIN", "发布结果尚待核对，请先恢复原任务", 409)
+                try:
+                    storage = self.storage.get(job.root_id)
+                    storage.check(check_space=False)
+                    contained(storage.root, row.temporary_path).unlink(missing_ok=True)
+                except (OSError, AppError) as exc:
+                    raise AppError("CACHE_TEMP_CLEANUP_FAILED", "目标临时文件仍无法清理，请检查权限后重试；缓存保留", 409) from exc
                 session.delete(row)
                 session.flush()
             session.add(PublishJournal(job_id=job_id, temporary_path=temporary, final_path=final,
@@ -351,6 +389,7 @@ class DownloadWorker:
         job.state, job.phase, job.finished_at = "succeeded", "succeeded", time.time()
         job.relative_path, job.completed_bytes = journal.final_path, journal.size_bytes or 0
         job.error_code, job.error_message = None, None
+        RetainedCacheService.finish_action(session, job)
         if job.acquisition_mode == "local" and journal.api_source_path_encrypted:
             session.add(CacheCleanup(job_id=job.id, bot_id=item.bot_id, file_id=item.file_id,
                                      source_path_encrypted=journal.api_source_path_encrypted, root_id=job.root_id,
@@ -377,17 +416,30 @@ class DownloadWorker:
         deferral: tuple[SafetyDeferralReason, bool] | None = None
         try:
             file_id, root_id, relative, expected = await asyncio.to_thread(self.prepare, job_id)
+            cached_source = await asyncio.to_thread(self.retained_cache.source, job_id) if self.retained_cache else None
+            if cached_source:
+                phase = "saving"
             if cloud:
                 cloud_size_check(expected)
-            elif hasattr(client, "file_progress"):
+            elif not cached_source and hasattr(client, "file_progress"):
                 try:
                     owner = await self.begin_progress(job_id)
                 except Exception:
                     owner = None
                 if owner:
                     observer = asyncio.create_task(self.observe_download(client, file_id, owner))
-            source = (await self.cloud_operation(client.get_file(file_id), job_id) if cloud
-                      else await self.local_acquisition(client, file_id, job_id))
+            source: str
+            if cached_source:
+                source = cached_source
+            elif cloud:
+                source = await self.cloud_operation(client.get_file(file_id), job_id)
+            else:
+                source = await self.local_acquisition(client, file_id, job_id)
+            if not cloud and self.retained_cache and not cached_source:
+                # Capture BEFORE cancellation and space admission: the completed source survives either.
+                await owned_thread(partial(self.retained_cache.capture, job_id, source, completeness="complete",
+                    generation=self.acquisition_generation(), credential=digest(client.bot.token)
+                    if getattr(client, "bot", None) else ""))
             if observer:
                 observer.cancel()
                 await asyncio.gather(observer, return_exceptions=True)
@@ -396,7 +448,7 @@ class DownloadWorker:
             if await asyncio.to_thread(self.cancelled, job_id):
                 raise AppError("CANCELLED", "下载已取消")
             storage = self.storage.get(root_id)
-            await asyncio.to_thread(storage.check, expected or 0)
+            await asyncio.to_thread(self.check_space, job_id, "before_save")
             final = await asyncio.to_thread(contained, storage.root, relative, create_parent=True)
             temporary = final.with_name(f".part.{job_id}")
             temp_relative = temporary.relative_to(storage.root.resolve()).as_posix()
@@ -414,6 +466,8 @@ class DownloadWorker:
                     lambda: copy_stop.is_set() or self.cancelled(job_id),
                     lambda count, speed: self.progress(job_id, count, speed)))
             size, sha = await asyncio.shield(copy_task)
+            if not cloud and self.retained_cache:
+                await asyncio.to_thread(self.retained_cache.source_unchanged, job_id)
             await owned_thread(self.journal_ready, job_id, size, sha)
             # Collisions are journaled and retried until an exclusive final path is obtained.
             for _ in range(10):
@@ -461,6 +515,12 @@ class DownloadWorker:
                 isinstance(exc, AppError) and exc.code == "ACQUISITION_UNCERTAIN"
                 or not isinstance(exc, (AppError, TelegramRetryAfter, TelegramBadRequest, TelegramUnauthorizedError)))
             code, message, retry, delay = self.classify(exc)
+            if code == "NO_SPACE":
+                await asyncio.to_thread(self.record_space_failure, job_id,
+                    "saving" if phase == "saving" else "downloading", getattr(exc, "details", None))
+                message += "；完整缓存已保留，可在详情继续保存或清理" if phase == "saving" and not cloud else ""
+            if await asyncio.to_thread(self.manual_recovery_attempt, job_id):
+                retry = False
             await asyncio.to_thread(self.failed, job_id, code, message, retry, uncertain, delay)
         finally:
             if observer:
@@ -475,6 +535,44 @@ class DownloadWorker:
                     await asyncio.to_thread(self.record_result, job_id, deferral)
                 except Exception:
                     self.diagnostics.error = True
+
+    def manual_recovery_attempt(self, job_id: str) -> bool:
+        with self.db.sessions() as session:
+            job = session.get(Job, job_id)
+            return bool(job and job.execution_mode in {"save", "download_resume", "redownload"})
+
+    def check_space(self, job_id: str, phase: str) -> None:
+        with self.db.transaction() as session:
+            job = session.get(Job, job_id)
+            item = session.get(MediaItem, job.item_id) if job else None
+            assert job and item
+            assessment = assess_space(session, self.storage, self.config, job.root_id,
+                                      item.size_bytes, job.acquisition_mode, phase, job.id)
+            assessment.require()
+
+    def record_space_failure(self, job_id: str, phase: str, details: Any = None) -> None:
+        with self.db.transaction() as session:
+            job = session.get(Job, job_id)
+            if job:
+                job.storage_failure = details if isinstance(details, dict) else {"phase": phase, "sufficient": False, "volumes": []}
+
+    @staticmethod
+    def observed_error(details: dict[str, Any]) -> AppError:
+        code = next((volume["error_code"] for volume in details.get("volumes", []) if volume.get("error_code")), "NO_SPACE")
+        return AppError(code, storage_warning(details) or "存储空间检查失败，请检查挂载和可用空间后手动重试", details=details)
+
+    def download_space_exhausted(self, job_id: str, phase: str = "downloading") -> dict[str, Any] | None:
+        # A budget is admission, not a filesystem reservation. Check actual free while active.
+        with self.db.sessions() as session:
+            job = session.get(Job, job_id)
+            if not job:
+                return None
+            assessment = assess_space(session, self.storage, self.config, job.root_id, 0,
+                                      job.acquisition_mode, phase, job.id)
+        value = assessment.observed().to_dict()
+        if value["sufficient"]:
+            return None
+        return value
 
     def record_result(self, job_id: str, deferral: tuple[SafetyDeferralReason, bool] | None = None) -> None:
         if not self.diagnostics:
@@ -516,13 +614,35 @@ class DownloadWorker:
         generation = await asyncio.to_thread(self.acquisition_generation)
         if not hasattr(client, "file_acquisition") or (not generation and not self.config.managed_local_api):
             # Legacy/external APIs cannot prove cancellation. Retain old ownership semantics.
+            with self.db.sessions() as session:
+                current = session.get(Job, job_id)
+                if current and current.execution_mode == "download_resume":
+                    raise AppError("RESUME_UNAVAILABLE", "当前 API 无法验证原进度，未开始下载；可恢复连接或确认从头重新下载")
             return await client.get_file(file_id)
         if not generation:
             raise AppError("ACQUISITION_CONTROL_UNAVAILABLE", "获取控制暂不可用，请检查本地 API")
+        resume_identity = None
+        if self.retained_cache:
+            with self.db.sessions() as session:
+                current = session.get(Job, job_id)
+                cache = session.get(RetainedCache, current.cache_id) if current and current.cache_id else None
+                if current and current.execution_mode == "download_resume":
+                    if not cache or cache.generation != generation or not cache.native_identity:
+                        raise AppError("RESUME_UNAVAILABLE", "Bot API 已重启或缓存记录失效；可清理旧缓存或从头重新下载")
+                    try:
+                        await asyncio.to_thread(self.retained_cache.validate, cache)
+                        async with asyncio.timeout(3):
+                            native = await client.inspect_file_cache(file_id, generation)
+                    except (AppError, AttributeError, TimeoutError, OSError) as exc:
+                        raise AppError("RESUME_UNAVAILABLE", "暂时无法确认是否可继续下载，请恢复连接后重试") from exc
+                    if not native.get("settled") or not native.get("resumable") or native.get("identity") != cache.native_identity:
+                        raise AppError("RESUME_UNAVAILABLE", "缓存分片已失效，未开始下载；可清理缓存或从头重新下载")
+                    resume_identity = cache.native_identity
         try:
-            prepared = await client.file_acquisition(generation, file_id=file_id)
+            prepared = (await client.file_acquisition(generation, file_id=file_id, expected_cache_identity=resume_identity)
+                        if resume_identity else await client.file_acquisition(generation, file_id=file_id))
         except AppError as exc:
-            if exc.code == "ACQUISITION_CONTROL_UNSUPPORTED" and not self.config.managed_local_api:
+            if exc.code == "ACQUISITION_CONTROL_UNSUPPORTED" and not self.config.managed_local_api and not resume_identity:
                 return await client.get_file(file_id)
             raise
         with self.db.sessions() as session:
@@ -541,9 +661,19 @@ class DownloadWorker:
                 task = asyncio.create_task(client.get_file(file_id, generation=generation,
                                                           acquisition_id=owner.acquisition_id))
             last_control = 0.0
+            last_inspect = 0.0
+            space_failure: dict[str, Any] | None = None
             while True:
                 cancelled = await asyncio.to_thread(self.cancelled, job_id)
-                if task and task.done() and not cancelled:
+                if time.monotonic() - last_inspect >= 1:
+                    last_inspect = time.monotonic()
+                    if self.retained_cache:
+                        await self.retained_cache.capture_native(client, job_id, generation, owner.acquisition_id,
+                                                                attempt=owner.attempt)
+                    space_failure = space_failure or await asyncio.to_thread(self.download_space_exhausted, job_id)
+                    if space_failure:
+                        await asyncio.to_thread(self.record_space_failure, job_id, "downloading", space_failure)
+                if task and task.done() and not cancelled and not space_failure:
                     try:
                         result = task.result()
                     except Exception as exc:
@@ -588,18 +718,32 @@ class DownloadWorker:
                     # Keep the slot and permit cancellation while that barrier settles.
                     await asyncio.sleep(0.5)
                     continue
-                if cancelled and time.monotonic() - last_control >= 0.5:
+                if (cancelled or space_failure) and time.monotonic() - last_control >= 0.5:
                     last_control = time.monotonic()
                     try:
                         state = await self.stop_acquisition(client, owner)
                         if state["settled"]:
+                            if self.retained_cache:
+                                await self.retained_cache.capture_native(client, job_id, generation, owner.acquisition_id,
+                                                                        attempt=owner.attempt)
+                                if task and task.done() and not task.cancelled():
+                                    try:
+                                        source = task.result()
+                                        await owned_thread(partial(self.retained_cache.capture, job_id, source,
+                                            completeness="complete", generation=generation,
+                                            acquisition_id=owner.acquisition_id, credential=owner.credential,
+                                            attempt=owner.attempt))
+                                    except Exception:
+                                        pass
                             if task and not task.done():
                                 task.cancel()
                             if task:
                                 await asyncio.gather(task, return_exceptions=True)
+                            if space_failure and not cancelled:
+                                raise self.observed_error(space_failure)
                             raise AppError("CANCELLED", "下载已取消")
                     except AppError as exc:
-                        if exc.code == "CANCELLED":
+                        if exc.code in {"CANCELLED", "NO_SPACE", "STORAGE_CHANGED", "STORAGE_UNAVAILABLE", "ROOT_UNAVAILABLE"}:
                             raise
                         # Hand the durable owner to reconciliation. Keeping this HTTP
                         # coroutine alive would prevent an explicit child restart from
@@ -614,6 +758,9 @@ class DownloadWorker:
                 task.cancel()
             if task:
                 await asyncio.gather(task, return_exceptions=True)
+            if self.retained_cache:
+                await self.retained_cache.capture_native(client, job_id, generation, owner.acquisition_id,
+                                                        attempt=owner.attempt)
 
     async def stop_acquisition(self, client: TelegramClient, owner: AcquisitionOwner) -> dict[str, Any]:
         """A lost stop reply cannot prevent an independent authoritative status check."""
@@ -665,7 +812,7 @@ class DownloadWorker:
         if isinstance(exc, (ClientError, TimeoutError)):
             return "NETWORK_ERROR", "Telegram 连接异常，请检查网络或代理", True, 0
         if isinstance(exc, OSError):
-            if exc.errno == errno.ENOSPC:
+            if exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", -1)}:
                 return "NO_SPACE", "存储空间不足", False, 0
             if exc.errno in {errno.EACCES, errno.EPERM}:
                 return "PERMISSION_DENIED", "存储目录权限不足", False, 0
@@ -674,6 +821,24 @@ class DownloadWorker:
 
     def failed(self, job_id: str, code: str, message: str, retry: bool, uncertain: bool = False,
                delay: float = 0, owner: AcquisitionOwner | None = None) -> None:
+        publication_proof = None
+        if code == "NO_SPACE":
+            # A potentially large final hash must never hold a write transaction.
+            with self.db.sessions() as session:
+                saved_job, saved_journal = session.get(Job, job_id), session.get(PublishJournal, job_id)
+                snapshot = ((saved_job.attempt_sequence, saved_job.root_id, saved_journal.final_path,
+                             saved_journal.size_bytes, saved_journal.sha256)
+                            if saved_job and saved_journal and saved_journal.stage == "ready" else None)
+            if snapshot:
+                try:
+                    storage = self.storage.get(snapshot[1])
+                    storage.check(check_space=False)
+                    final = contained(storage.root, snapshot[2])
+                    before = cache_fingerprint(final)
+                    if regular_file_hash(final) == (snapshot[3], snapshot[4]) and cache_fingerprint(final) == before:
+                        publication_proof = snapshot, before
+                except (OSError, AppError):
+                    pass
         with self.db.transaction() as session:
             job = session.get(Job, job_id)
             if not job or job.state in {"succeeded", "already_exists"}:
@@ -686,6 +851,27 @@ class DownloadWorker:
             if request and request.deleted_at is not None:
                 return
             journal = session.get(PublishJournal, job_id)
+            if journal and journal.stage == "ready" and code == "NO_SPACE":
+                # Space can disappear after copy/fsync but before the link. Check
+                # the journal now, so a pre-publication failure releases its slot.
+                try:
+                    storage = self.storage.get(job.root_id)
+                    storage.check(check_space=False)
+                    final = contained(storage.root, journal.final_path)
+                    if not final.exists():
+                        journal.stage = "copying"
+                    elif (publication_proof and publication_proof[0] ==
+                          (job.attempt_sequence, job.root_id, journal.final_path, journal.size_bytes, journal.sha256)
+                          and cache_fingerprint(final) == publication_proof[1]):
+                        temporary = contained(storage.root, journal.temporary_path)
+                        try:
+                            temporary.unlink(missing_ok=True)
+                        except OSError:
+                            pass  # The verified final publication already won.
+                        self._complete(session, job, journal)
+                        return
+                except (OSError, AppError):
+                    pass  # Publication may have happened: retain recovery ownership.
             if journal and journal.stage == "ready" and code != "CANCELLED":
                 # An irreversible publication might have happened; reconciliation owns it.
                 job.state, job.phase = "recovery_blocked", "recovery"
@@ -697,11 +883,24 @@ class DownloadWorker:
                 return
             if journal:
                 try:
-                    contained(self.storage.get(job.root_id).root, journal.temporary_path).unlink(missing_ok=True)
+                    storage = self.storage.get(job.root_id)
+                    storage.check(check_space=False)
+                    contained(storage.root, journal.temporary_path).unlink(missing_ok=True)
                 except (OSError, AppError):
-                    pass
-                session.delete(journal)
+                    journal.stage = "cleanup_failed"
+                    message += "；目标临时文件清理失败，已保留残留记录，请检查目标目录权限"
+                    residual = Path(journal.temporary_path)
+                    if not residual.anchor and ".." not in residual.parts:
+                        message += f"；残留路径（相对下载目录）：{residual.as_posix()}"
+                else:
+                    session.delete(journal)
             job.error_code, job.error_message = code, message
+            cache = session.get(RetainedCache, job.cache_id) if job.cache_id else None
+            if job.cancel_requested:
+                job.error_message += "；安全停止后将清理关联缓存及已保存文件，请查看任务的取消清理结果。"
+            elif cache and cache.state == "retained":
+                job.error_message += ("；完整缓存已保留，可在详情继续保存或清理" if cache.completeness == "complete"
+                                      else "；部分缓存已保留，可在详情检查继续下载或手动清理")
             attempt = session.scalar(select(Attempt).where(Attempt.job_id == job.id, Attempt.sequence == job.attempt_sequence))
             if attempt:
                 attempt.finished_at, attempt.error_code = time.time(), code
@@ -710,8 +909,8 @@ class DownloadWorker:
                 job.error_message = uncertain_message(session, job)
             elif job.cancel_requested or code == "CANCELLED":
                 job.state, job.phase, job.finished_at = "cancelled", "cancelled", time.time()
-            elif code in {"BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING", "CACHE_CLEANUP_BUSY",
-                          "ACQUISITION_CONTROL_UNAVAILABLE", "ACQUISITION_CONTROL_BUSY"}:
+            elif (code in {"BOT_REQUEST_PAUSED", "BOT_REQUEST_WAITING"} or job.execution_mode == "download" and code in {"CACHE_CLEANUP_BUSY",
+                          "ACQUISITION_CONTROL_UNAVAILABLE", "ACQUISITION_CONTROL_BUSY"}):
                 job.state, job.phase = "retry_wait", "retry_wait"
                 job.next_run_at = time.time() + max(2, delay)
             elif retry and job.auto_retries < job.max_auto_retries:
@@ -722,6 +921,7 @@ class DownloadWorker:
                 job.state, job.phase, job.finished_at = "failed", "failed", time.time()
             if job.state in {"cancelled", "failed"}:
                 session.execute(delete(FileReservation).where(FileReservation.job_id == job.id))
+            RetainedCacheService.finish_action(session, job)
             session.flush()
             request = session.get(MediaRequest, job.request_id)
             assert request
@@ -740,7 +940,7 @@ class DownloadWorker:
                 facts = (journal.temporary_path, journal.final_path, journal.size_bytes, journal.sha256, journal.stage) if journal else None
             try:
                 storage = self.storage.get(root_id)
-                storage.check()
+                storage.check(check_space=False)
                 if facts and facts[4] == "ready":
                     temporary, final = contained(storage.root, facts[0]), contained(storage.root, facts[1])
                     if final.exists() and file_hash(final) == (facts[2], facts[3]):
@@ -778,8 +978,20 @@ class DownloadWorker:
                         job.state = "recovery_blocked"
                         job.error_code, job.error_message = "ACQUISITION_UNCERTAIN", uncertain_message(session, job)
                     else:
-                        job.state = "cancelled" if job.cancel_requested else "queued"
+                        if job.storage_failure and job.phase == "fetching":
+                            job.state = "cancelled" if job.cancel_requested else "failed"
+                            job.error_code = "NO_SPACE"
+                            job.error_message = storage_warning(job.storage_failure) + "；旧获取已停止，缓存保留，请手动操作"
+                            job.finished_at = time.time()
+                        elif job.execution_mode == "download_resume" and job.phase == "fetching":
+                            job.state = "cancelled" if job.cancel_requested else "failed"
+                            job.error_code = "RESUME_UNAVAILABLE"
+                            job.error_message = "Bot API 已重启，原下载进度无法确认；可清理缓存或从头重新下载"
+                            job.finished_at = time.time()
+                        else:
+                            job.state = "cancelled" if job.cancel_requested else "queued"
                         job.phase, job.next_run_at = job.state, time.time()
+                    RetainedCacheService.finish_action(session, job)
                     session.flush()
                     request = session.get(MediaRequest, job.request_id)
                     assert request

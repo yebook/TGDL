@@ -16,7 +16,15 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.security import Secrets, digest, private_file
-from app.db.models import Job, LocalApiRuntime, Settings, uid
+from app.db.models import (
+    CacheAction,
+    CacheCleanup,
+    FileDeletionOperation,
+    Job,
+    LocalApiRuntime,
+    Settings,
+    uid,
+)
 from app.schemas.contracts import UserSettings
 from app.services import connection_waits as waits
 from app.services.cache_maintenance import maintenance_values, require_no_maintenance
@@ -266,7 +274,16 @@ class LocalApiService:
             assert row
             state = dict(row.values)
             maintenance = maintenance_values(session)
-            if not (restart and maintenance.get("state") == "uncertain"):
+            uncertain_cache = session.scalar(select(CacheAction.id).where(
+                CacheAction.kind == "clean", CacheAction.state == "uncertain").limit(1))
+            running_mutation = session.scalar(select(CacheAction.id).where(
+                CacheAction.kind == "clean", CacheAction.state == "running").limit(1))
+            running_deletion = session.scalar(select(FileDeletionOperation.id).where(
+                FileDeletionOperation.state == "running").limit(1))
+            auto_uncertain = session.scalar(select(CacheCleanup.job_id).where(CacheCleanup.error_code.in_(
+                ["CACHE_CLEANUP_IN_FLIGHT", "CACHE_CLEANUP_UNAVAILABLE"])).limit(1))
+            cache_restart = restart and (uncertain_cache or auto_uncertain) and not running_mutation and not running_deletion and maintenance.get("state") != "running"
+            if not (restart and maintenance.get("state") == "uncertain" or cache_restart):
                 require_no_maintenance(session)
             elif maintenance.get("invalid"):
                 # Corrupt intent is never treated as completed. An explicit restart records

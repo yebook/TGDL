@@ -16,6 +16,7 @@ from app.bot.messages import (
     file_list_body,
     format_bytes,
     shorten,
+    storage_warning,
     task_message,
     type_summary,
 )
@@ -23,25 +24,30 @@ from app.core.errors import AppError
 from app.core.templates import render_confirmation
 from app.db.models import (
     Attempt,
+    CancelCleanup,
     FileDeletionOperation,
     IngestUpdate,
     Job,
     MediaItem,
     MediaRequest,
     Notification,
+    RetainedCache,
     uid,
 )
 from app.db.session import Database
 from app.schemas.contracts import UserSettings
 from app.services.cache_maintenance import maintenance_blocked, require_no_maintenance
+from app.services.cancel_cleanup import CancelCleanupService, cleanup_blocked
 from app.services.diagnostics import DiagnosticLog
 from app.services.download_progress import DownloadProgress
 from app.services.file_acquisition import uncertain_message
+from app.services.retained_cache import RetainedCacheService
 from app.services.saved_media import SavedMediaService
 from app.services.settings import SettingsService
-from app.storage.files import contained
+from app.storage.files import StorageManager, contained
 from app.storage.naming import fit_name, planned_name, request_caption, request_summary, unique_name
 from app.storage.saved_media import observe
+from app.storage.space import assess_space
 
 ACTIVE = {"queued", "fetching", "saving", "cancelling", "retry_wait", "waiting_existing", "recovery_blocked"}
 TERMINAL = {"succeeded", "already_exists", "failed", "cancelled"}
@@ -85,6 +91,8 @@ def project(session: Session, request: MediaRequest) -> None:
         request.status, request.updated_at = state, time.time()
         if not any(s in ACTIVE for s in states):
             request.result_revision += 1
+            if cleanup_blocked(session, request.id):
+                return  # Cancel cleanup publishes its own truthful, per-file final result.
             stage = STAGE_LABELS[state]
             lines = [shorten(request.title, 300), ""]
             counts = [f"文件：{len(jobs)} 个"]
@@ -112,12 +120,23 @@ def project(session: Session, request: MediaRequest) -> None:
                 line = f"{label} {name}"
                 if job.state == "failed":
                     line += f"（{failure_hint(job.error_code)}）"
+                    if job.error_code in {"RESUME_UNAVAILABLE", "CACHE_RESUME_UNAVAILABLE"}:
+                        line += "\n原下载进度无法复用；请在详情检查原因，可手动清理缓存或确认从头重新下载。"
+                if job.storage_failure:
+                    line += "\n" + storage_warning(job.storage_failure)
+                cache = session.get(RetainedCache, job.cache_id) if job.cache_id else None
+                if cache and cache.state == "retained" and job.state not in {"succeeded", "already_exists"}:
+                    line += ("\n完整缓存已保留，目标尚未保存；可在详情继续保存或清理。"
+                             if cache.completeness == "complete" else
+                             "\n下载未完成，部分缓存已保留；可在详情检查继续下载或手动清理。")
+                elif cache and cache.state == "retained":
+                    line += "\n文件已保存，缓存清理将按现有规则独立处理。"
                 rows.append(line)
             footer = ""
             if "failed" in states:
                 footer = "请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。"
             elif "cancelled" in states:
-                footer = "已保存的文件会保留。如需再次下载，请重新发送文件。"
+                footer = "已保存的文件会保留，缓存可在 WebUI 详情中检查和操作；无缓存时可重新发送文件。"
             elif state == "already_exists":
                 footer = "文件已保存，无需重复下载。"
             text = file_list_body(stage, request.id, "\n".join(lines), rows, footer)
@@ -130,6 +149,18 @@ class TaskService:
         self.diagnostics: DiagnosticLog | None = None
         self.download_progress: DownloadProgress | None = None
         self.saved_media: SavedMediaService | None = None
+        self.retained_cache: RetainedCacheService | None = None
+
+    def space_warnings(self, session: Session, request: MediaRequest, items: list[MediaItem], settings: UserSettings) -> str:
+        manager = self.saved_media.storage if self.saved_media else StorageManager(
+            self.settings.config.storage_roots, self.settings.config.data_dir, self.settings.config.minimum_free_bytes)
+        warnings = []
+        for item in items:
+            assessment = assess_space(session, manager, self.settings.config, request.root_id,
+                                      item.size_bytes, settings.bot_api_mode, "before_download")
+            if not assessment.sufficient:
+                warnings.append(f"{item.planned_filename or '文件'}：{storage_warning(assessment.to_dict())}")
+        return "\n".join(warnings)
 
     def destination(self, session: Session, request: MediaRequest, summary: str, timezone: str) -> str:
         date = datetime.fromtimestamp(request.created_at, ZoneInfo(timezone))
@@ -239,6 +270,9 @@ class TaskService:
                                                if all(s is not None for s in sizes) else None),
                     "files": "\n\n".join(lines),
                 })
+                warning = self.space_warnings(session, request, items, settings)
+                if warning:
+                    text = shorten(text, max(100, 3400 - len(warning))) + "\n\n" + shorten(warning, 2200)
                 enqueue(session, request, f"confirm:{request.id}:{request.nonce}", text,
                         {"confirmation": True, "nonce": request.nonce}, stage=STAGE_LABELS["awaiting_confirmation"])
             for request in session.scalars(select(MediaRequest).where(
@@ -260,11 +294,11 @@ class TaskService:
                 request.status = "expired"
                 return "expired"
             if action == "cancel":
-                request.status, request.updated_at = "cancelled", time.time()
+                self.cancel_in_session(session, request)
                 return "cancelled"
             if action != "confirm":
                 raise AppError("INVALID_ACTION", "无效操作")
-            require_no_maintenance(session)
+            require_no_maintenance(session, bot_id=request.bot_id)
             # Only settings that affect consent invalidate this card. Other edits preserve its deadline.
             if request.root_id != settings.download_root_id:
                 request.nonce, request.status = uid()[:10], "collecting"
@@ -276,7 +310,7 @@ class TaskService:
             return "queued"
 
     def _queue(self, session: Session, request: MediaRequest, items: list[MediaItem], settings: UserSettings) -> None:
-        require_no_maintenance(session)
+        require_no_maintenance(session, bot_id=request.bot_id)
         if not items or any(not item.planned_filename for item in items):
             raise AppError("INVALID_FILE_PLAN", "确认信息中的文件名不完整，请重新发送文件", 409)
         for item in items:
@@ -292,10 +326,15 @@ class TaskService:
                 for index, item in enumerate(items, 1)]
         stage = STAGE_LABELS["queued"]
         text = file_list_body(stage, request.id, summary, rows, "系统将按并发设置处理，完成后通知你。")
+        warning = self.space_warnings(session, request, items, settings)
+        if warning:
+            text = shorten(text, max(100, 3400 - len(warning))) + "\n\n" + shorten(warning, 2200)
         enqueue(session, request, f"queued:{request.id}", text, stage=stage)
 
     def _dto(self, session: Session, request: MediaRequest, detail: bool = False, *,
-             related: tuple[list[MediaItem], list[Job], list[Notification]] | None = None) -> dict[str, Any]:
+             related: tuple[list[MediaItem], list[Job], list[Notification]] | None = None,
+             cache_rows: dict[str, RetainedCache] | None = None,
+             cleanup_rows: dict[str, CancelCleanup] | None = None) -> dict[str, Any]:
         if related is None:
             related = (
                 list(session.scalars(select(MediaItem).where(MediaItem.request_id == request.id).order_by(MediaItem.message_id))),
@@ -304,9 +343,16 @@ class TaskService:
             )
         items, job_rows, notifications = related
         jobs = {j.item_id: j for j in job_rows}
+        cleanup = cleanup_rows.get(request.id) if cleanup_rows is not None else session.get(CancelCleanup, request.id)
+        cleaning = bool(cleanup and cleanup.state != "complete")
         notification_status = "failed" if any(n.state == "failed" for n in notifications) else (
             "pending" if any(n.state == "pending" for n in notifications) else "sent")
         sizes = [i.size_bytes for i in items]
+        def retryable(job: Job) -> bool:
+            if job.state != "failed":
+                return False
+            cache = (cache_rows.get(job.cache_id) if cache_rows is not None else session.get(RetainedCache, job.cache_id)) if job.cache_id else None
+            return not (cache and cache.state == "retained" and cache.completeness != "complete")
         result: dict[str, Any] = {
             "id": request.id, "title": request.title, "kind": request.kind, "status": request.status,
             "created_at": iso(request.created_at), "updated_at": iso(request.updated_at),
@@ -314,17 +360,19 @@ class TaskService:
             "total_bytes": sum(s for s in sizes if s is not None) if all(s is not None for s in sizes) else None,
             "completed_bytes": sum(j.completed_bytes for j in jobs.values()),
             "effective_destination": request.destination, "notification_status": notification_status,
-            "can_cancel": (request.status in {"collecting", "awaiting_confirmation"}
+            "can_cancel": bool(cleanup and cleanup.state == "partial") or not cleaning and (request.status in {"collecting", "awaiting_confirmation"}
                            or request.status in ACTIVE and any(j.state in ACTIVE and not j.cancel_requested
                                                               for j in jobs.values())),
-            "can_retry": any(j.state == "failed" for j in jobs.values()),
-            "can_delete": request.status in DELETABLE and all(j.state in TERMINAL for j in jobs.values()),
+            "can_retry": cleanup is None and any(retryable(j) for j in jobs.values()),
+            "can_delete": not cleaning and request.status in DELETABLE and all(j.state in TERMINAL for j in jobs.values()),
+            "cancel_cleanup": CancelCleanupService.projection(cleanup, detail=detail),
         }
         if detail:
             result["expires_at"] = iso(request.expires_at)
             result["items"] = []
             for item in items:
                 job = jobs.get(item.id)
+                caches = self.retained_cache.project(session, job) if self.retained_cache and job else []
                 attempts = list(session.scalars(select(Attempt).where(Attempt.job_id == job.id).order_by(Attempt.sequence))) if job else []
                 result["items"].append({
                     "id": item.id, "job_id": job.id if job else None, "media_type": item.media_type,
@@ -338,6 +386,8 @@ class TaskService:
                     "elapsed_seconds": max(0, (job.finished_at or time.time()) - job.started_at) if job and job.started_at else 0,
                     "relative_path": job.relative_path if job else None, "error_code": job.error_code if job else None,
                     "error_message": job.error_message if job else None, "linked_job_id": job.linked_job_id if job else None,
+                    "storage_failure": job.storage_failure if job else None,
+                    "cache": caches[0] if caches else None, "caches": caches,
                     "attempts": [{"sequence": a.sequence, "started_at": iso(a.started_at),
                                   "finished_at": iso(a.finished_at), "error_code": a.error_code} for a in attempts]})
         return result
@@ -352,7 +402,11 @@ class TaskService:
                 query = query.where(or_(MediaRequest.title.contains(q, autoescape=True),
                                         MediaRequest.id.contains(q, autoescape=True)))
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
-            rows = list(session.scalars(query.order_by(MediaRequest.created_at.desc()).offset((page-1)*page_size).limit(page_size)))
+            page_rows = session.execute(query.add_columns(CancelCleanup).outerjoin(
+                CancelCleanup, CancelCleanup.request_id == MediaRequest.id).order_by(
+                    MediaRequest.created_at.desc()).offset((page-1)*page_size).limit(page_size)).all()
+            rows = [row[0] for row in page_rows]
+            cleanup_rows = {row[1].request_id: row[1] for row in page_rows if row[1] is not None}
             related: dict[str, tuple[list[MediaItem], list[Job], list[Notification]]] = {
                 row.id: ([], [], []) for row in rows
             }
@@ -365,7 +419,10 @@ class TaskService:
                 for notification in session.scalars(select(Notification).where(Notification.request_id.in_(ids))):
                     assert notification.request_id is not None
                     related[notification.request_id][2].append(notification)
-            result: dict[str, Any] = {"items": [self._dto(session, row, related=related[row.id]) for row in rows],
+            cache_ids = {job.cache_id for _, jobs, _ in related.values() for job in jobs if job.state == "failed" and job.cache_id}
+            cache_rows = {cache.id: cache for cache in session.scalars(select(RetainedCache).where(RetainedCache.id.in_(cache_ids)))} if cache_ids else {}
+            result: dict[str, Any] = {"items": [self._dto(session, row, related=related[row.id], cache_rows=cache_rows,
+                                                       cleanup_rows=cleanup_rows) for row in rows],
                       "total": total, "page": page, "page_size": page_size}
         observations: dict[tuple[str, str, int], str] = {}
         for dto, row in zip(result["items"], rows, strict=True):
@@ -408,35 +465,75 @@ class TaskService:
             request = session.get(MediaRequest, request_id)
             if not request or request.deleted_at is not None:
                 raise AppError("NOT_FOUND", "任务不存在", 404)
-            if request.status in {"collecting", "awaiting_confirmation"}:
-                request.status = "cancelled"
-            for job in session.scalars(select(Job).where(Job.request_id == request.id)):
-                if job.state not in ACTIVE:
-                    continue
-                job.cancel_requested = True
-                if job.state in {"queued", "retry_wait", "waiting_existing"}:
-                    job.state, job.finished_at = "cancelled", time.time()
-                else:
-                    job.state = "cancelling" if job.state != "recovery_blocked" else "recovery_blocked"
-                    if job.state == "recovery_blocked":
-                        job.error_message = uncertain_message(session, job)
-            session.flush()
-            project(session, request)
+            self.cancel_in_session(session, request)
             outcome = request.status
         if self.diagnostics:
             self.diagnostics.emit("task_result", level="info", task_id=request_id, outcome=outcome)
         return self.detail(request_id)
 
+    @staticmethod
+    def cancel_in_session(session: Session, request: MediaRequest) -> str:
+        """Persist intent in the caller's transaction; never perform file/network I/O."""
+        cleanup = session.get(CancelCleanup, request.id)
+        if cleanup:
+            if cleanup.state == "partial":
+                cleanup.state, cleanup.file_operation_id, cleanup.next_run_at = "pending", None, time.time()
+                cleanup.message, cleanup.revision = "已重新提交文件清理，等待安全核对。", cleanup.revision + 1
+                cleanup.entries = [({key: value for key, value in dict(entry, outcome="pending", message="等待重新核对").items()
+                                     if key != "action_id"} if entry["kind"] == "cache"
+                                    and entry["outcome"] not in {"deleted", "missing"} else entry)
+                                   for entry in cleanup.entries if entry["kind"] != "temporary"]
+                return "cancelling"
+            return "cancelling" if cleanup.state != "complete" else "unchanged"
+        changed = request.status in {"collecting", "awaiting_confirmation"}
+        if changed:
+            request.status = "cancelled"
+        stopping = False
+        for job in session.scalars(select(Job).where(Job.request_id == request.id)):
+            if job.state not in ACTIVE:
+                continue
+            changed = True
+            job.cancel_requested = True
+            if job.state in {"queued", "retry_wait", "waiting_existing"}:
+                job.state, job.finished_at = "cancelled", time.time()
+            else:
+                stopping = True
+                job.state = "cancelling" if job.state != "recovery_blocked" else "recovery_blocked"
+                if job.state == "recovery_blocked":
+                    job.error_message = uncertain_message(session, job)
+            RetainedCacheService.finish_action(session, job)
+        if not changed:
+            return "unchanged"
+        session.add(CancelCleanup(request_id=request.id))
+        for notice in session.scalars(select(Notification).where(Notification.request_id == request.id,
+                Notification.state == "pending", Notification.event_key.startswith("result:"))):
+            notice.state = "obsolete"
+        session.flush()
+        project(session, request)
+        enqueue(session, request, f"cancel:{request.id}", "已提交取消并清理文件；安全停止后将删除关联缓存和已保存文件，任务记录保留。")
+        return "cancelling" if stopping else "cancelled" if changed else "unchanged"
+
     def retry(self, request_id: str, item_ids: list[str] | None) -> dict[str, Any]:
         _, settings, _ = self.settings.read()
         with self.db.transaction() as session:
-            require_no_maintenance(session)
             request = session.get(MediaRequest, request_id)
             if not request or request.deleted_at is not None:
                 raise AppError("NOT_FOUND", "任务不存在", 404)
+            cleanup = session.get(CancelCleanup, request_id)
+            if cleanup:
+                raise AppError("TASK_CANCELLED" if cleanup.state == "complete" else "CANCEL_CLEANUP_PENDING",
+                    "任务已取消并完成文件清理；如需重新下载，请重新发送文件创建新任务" if cleanup.state == "complete" else
+                    "取消后的文件清理尚未完成，请等待或在详情重试清理", 409)
+            require_no_maintenance(session, bot_id=request.bot_id)
             changed = False
             for job in session.scalars(select(Job).where(Job.request_id == request.id)):
                 if job.state == "failed" and (item_ids is None or job.item_id in item_ids):
+                    cache = session.get(RetainedCache, job.cache_id) if job.cache_id else None
+                    if cache and cache.state == "retained" and cache.completeness != "complete":
+                        if item_ids is None:
+                            continue
+                        raise AppError("CACHE_CHOICE_REQUIRED", "此文件保留了部分缓存，请在详情选择继续下载或确认重新下载", 409)
+                    job.execution_mode = "save" if cache and cache.completeness == "complete" and cache.state == "retained" else "download"
                     job.state, job.phase, job.next_run_at = "queued", "queued", time.time()
                     job.auto_retries, job.max_auto_retries = 0, settings.max_auto_retries
                     job.cancel_requested, job.error_code, job.error_message = False, None, None
@@ -462,10 +559,13 @@ class TaskService:
                 MediaRequest.id.in_(request_ids), MediaRequest.deleted_at.is_(None))))
             if len(requests) != len(request_ids):
                 raise AppError("NOT_FOUND", "任务不存在或已删除", 404)
+            if any(cleanup_blocked(session, request_id) for request_id in request_ids):
+                raise AppError("CANCEL_CLEANUP_PENDING", "取消后的文件清理尚未完成，暂不能删除任务记录", 409)
             busy = session.scalar(select(Job.id).where(
                 Job.request_id.in_(request_ids), Job.state.not_in(TERMINAL)).limit(1))
             if busy or any(request.status not in DELETABLE for request in requests):
                 raise AppError("TASK_DELETE_BUSY", "任务尚未结束，请先取消并等待处理完成", 409)
+            require_no_maintenance(session)
             if delete_files:
                 assert self.saved_media and operation_id
                 self.saved_media.prepare(session, operation_id, request_ids)

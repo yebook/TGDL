@@ -1,13 +1,8 @@
 import type { TaskDeleteRequest } from './types'
 import { ApiError } from './client'
+export { operationId as taskDeletionOperationId } from './operationId'
 
 const key = 'tgdl.pending-task-file-deletion'
-
-export function taskDeletionOperationId(): string {
-  // Standard deployments use HTTP on a LAN host. randomUUID is restricted to
-  // secure contexts; getRandomValues provides the same 128 random bits there.
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
-}
 
 export function deletionOutcomeUncertain(cause: unknown, previouslyUncertain: boolean): boolean {
   // Rejection of a retry says nothing about the first accepted request. Only a
