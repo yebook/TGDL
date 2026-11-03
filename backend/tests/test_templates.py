@@ -40,7 +40,7 @@ def test_default_confirmation_summary_and_labelled_files(client: TestClient, siz
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         text = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%"))).payload["text"]
-        assert text.startswith(f"任务编号：{request_id}\n======\n📥 确认下载：")
+        assert text.startswith(f"📋 等待确认\n任务编号：{request_id}\n\n======\n📥 确认下载：")
         assert text.count(f"任务编号：{request_id}") == 1
         assert "📄 文件数量：2 个" in text
         assert f"📦 总文件大小：{total}\n" in text
@@ -78,7 +78,7 @@ def test_default_card_minutes_and_existing_expiry_unchanged(client: TestClient) 
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         card = session.scalar(select(Notification).where(Notification.request_id == new_id))
-        assert card.payload["text"] == f"任务编号：{new_id}\n1.5 分钟"
+        assert card.payload["text"] == f"📋 等待确认\n任务编号：{new_id}\n\n1.5 分钟"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -147,7 +147,7 @@ def test_freeze_names_prompt_and_retry_preserve_snapshot(client: TestClient) -> 
         assert names == ["19700101_1.mp4", "19700101_2.mp4"]
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert card.payload["text"] == (
-            f"任务编号：{card.request_id}\n2项 2.0 KB\n文件名：19700101_1.mp4\n文件大小：1.0 KB\n\n"
+            f"📋 等待确认\n任务编号：{card.request_id}\n\n2项 2.0 KB\n文件名：19700101_1.mp4\n文件大小：1.0 KB\n\n"
             "文件名：19700101_2.mp4\n文件大小：1.0 KB")
     patch = SettingsPatch(revision=3, filename_template="new_{name}", timezone="Pacific/Honolulu")
     state.settings.save(patch, state.settings.candidate(patch))
@@ -182,7 +182,7 @@ def test_group_confirmation_separates_each_size_in_custom_file_list(client: Test
     with state.db.sessions() as session:
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert card.payload["text"] == (
-            f"任务编号：{card.request_id}\n清单\n文件名：1.mp4\n文件大小：1.5 KB\n\n"
+            f"📋 等待确认\n任务编号：{card.request_id}\n\n清单\n文件名：1.mp4\n文件大小：1.5 KB\n\n"
             "文件名：2.mp4\n文件大小：未知")
     assert state.settings.read()[1].confirmation_template == "清单\n{files}"
 

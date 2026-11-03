@@ -190,7 +190,7 @@ def test_task_message_reserves_identifier_before_long_astral_content() -> None:
     request_id = "0123456789abcdef" * 2
     text = task_message("😀" * 4000, request_id)
     assert len(text.encode("utf-16-le")) // 2 <= 3900
-    assert text.startswith(f"任务编号：{request_id}\n")
+    assert text.startswith(f"📋 任务状态\n任务编号：{request_id}\n\n")
     assert text.endswith("…")
 
 

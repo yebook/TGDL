@@ -8,7 +8,7 @@ from app.services.tasks import project
 
 
 def build_result(client: TestClient, states: list[str], *, separate_paths: bool = False,
-                 title: str = "海边旅行") -> tuple[str, str]:
+                 title: str = "海边旅行", sizes: list[int | None] | None = None) -> tuple[str, str]:
     state, _ = setup_pipeline(client)
     with state.db.transaction() as session:
         request = MediaRequest(bot_id=7, user_id=42, chat_id=42, title=title,
@@ -24,7 +24,9 @@ def build_result(client: TestClient, states: list[str], *, separate_paths: bool 
             directory = f"2026-10-28/旅行{index}" if separate_paths else "2026-10-28/旅行"
             session.add(Job(request_id=request_id, item_id=item.id, state=outcome,
                             relative_path=f"{directory}/video_{index}.mp4",
-                            error_code="NO_SPACE", error_message="unsafe-upstream-secret"))
+                            error_code="NO_SPACE", error_message="unsafe-upstream-secret",
+                            completed_bytes=sizes[index - 1] or 0 if sizes else 0,
+                            finished_at=1 if sizes and sizes[index - 1] is not None else None))
         session.flush()
         project(session, request)
         project(session, request)
@@ -38,20 +40,21 @@ def build_result(client: TestClient, states: list[str], *, separate_paths: bool 
 
 def test_two_file_success_has_one_overall_result_and_clear_file_list(client: TestClient) -> None:
     request_id, text = build_result(client, ["succeeded", "succeeded"])
-    assert text == (f"任务编号：{request_id}\n✅ 下载完成：海边旅行\n"
+    assert text == (f"✅ 下载完成\n任务编号：{request_id}\n\n海边旅行\n\n"
                     "文件：2 个 · 已下载 2 个\n"
-                    "📁 保存到：2026-10-28/旅行\n"
-                    "文件清单：\n✅ video_1.mp4\n✅ video_2.mp4")
+                    "实际已保存：2 / 2 个文件 · 共 未知\n"
+                    "📁 实际目录：2026-10-28/旅行\n\n"
+                    "保存结果：\n✅ video_1.mp4\n✅ video_2.mp4")
     assert "下载成功" not in text
 
 
 @pytest.mark.parametrize("states,summary,details", [
     (["already_exists", "already_exists"], "已保存，无需重复下载 2 个", ["📎 已保存 video_1.mp4"]),
     (["succeeded", "already_exists"], "已下载 1 个 · 已保存，无需重复下载 1 个", ["📎 已保存 video_2.mp4"]),
-    (["succeeded", "failed"], "已下载 1 个 · 失败 1 个", ["⚠️ 部分完成", "❌ 失败 video_2.mp4", "存储空间不足"]),
-    (["succeeded", "cancelled"], "已下载 1 个 · 取消 1 个", ["⚠️ 部分完成", "🚫 已取消 video_2.mp4"]),
+    (["succeeded", "failed"], "已下载 1 个 · 失败 1 个", ["⚠️ 部分下载完成", "❌ 失败 video_2.mp4", "存储空间不足"]),
+    (["succeeded", "cancelled"], "已下载 1 个 · 取消 1 个", ["⚠️ 部分下载完成", "🚫 已取消 video_2.mp4"]),
     (["failed", "failed"], "失败 2 个", ["❌ 下载失败", "请在 WebUI"]),
-    (["cancelled", "cancelled"], "取消 2 个", ["❌ 已取消", "重新发送媒体"]),
+    (["cancelled", "cancelled"], "取消 2 个", ["🛑 下载已取消", "重新发送文件"]),
 ])
 def test_mixed_and_unsaved_results_are_honest(client: TestClient, states: list[str], summary: str,
                                              details: list[str]) -> None:
@@ -59,11 +62,11 @@ def test_mixed_and_unsaved_results_are_honest(client: TestClient, states: list[s
     assert f"文件：2 个 · {summary}" in text
     assert all(detail in text for detail in details)
     assert "unsafe-upstream-secret" not in text
-    assert text.startswith(f"任务编号：{request_id}\n")
+    assert text.splitlines()[1] == f"任务编号：{request_id}"
     if "succeeded" not in states:
         assert "已下载" not in text
     if all(outcome in {"failed", "cancelled"} for outcome in states):
-        assert "📁 保存到" not in text
+        assert "📁 实际目录" not in text
     if "failed" not in states:
         assert "重试失败文件" not in text
 
@@ -72,13 +75,15 @@ def test_result_uses_actual_paths_when_files_saved_in_different_directories(clie
     _, text = build_result(client, ["succeeded", "already_exists"], separate_paths=True)
     assert "✅ 2026-10-28/旅行1/video_1.mp4" in text
     assert "📎 已保存 2026-10-28/旅行2/video_2.mp4" in text
-    assert "📁 保存到" not in text
+    assert "📁 实际目录" not in text
 
 
 def test_long_result_preserves_full_identifier_without_splitting_emoji(client: TestClient) -> None:
     request_id, text = build_result(client, ["succeeded"], title="🌅" * 2500)
     assert len(text.encode("utf-16-le")) // 2 <= 3900
-    assert text.startswith(f"任务编号：{request_id}\n")
+    assert text.startswith(f"✅ 下载完成\n任务编号：{request_id}\n\n")
+    assert "文件：1 个 · 已下载 1 个" in text
+    assert "video_1.mp4" in text
     assert "\ufffd" not in text
 
 
@@ -110,3 +115,25 @@ def test_retry_emits_one_new_summary_only_after_remaining_file_finishes(client: 
         assert notes[0].payload["text"] == original
         assert notes[1].event_key == f"result:{request_id}:2"
         assert "已下载 2 个" in notes[1].payload["text"]
+
+
+@pytest.mark.parametrize("states,sizes,expected", [
+    (["succeeded", "already_exists", "failed", "cancelled"], [1024, 2048, 8000, 9000], "共 3.0 KB"),
+    (["succeeded", "failed"], [0, 8000], "共 0 B"),
+    (["succeeded", "succeeded"], [1024, None], "共 未知"),
+])
+def test_saved_size_uses_only_reliable_terminal_saved_bytes(client: TestClient, states: list[str],
+                                                            sizes: list[int | None], expected: str) -> None:
+    _, text = build_result(client, states, sizes=sizes)
+    assert expected in text
+
+
+def test_long_result_omits_files_but_keeps_summary_and_action(client: TestClient) -> None:
+    request_id, text = build_result(client, ["succeeded"] * 300 + ["failed"])
+    assert text.startswith(f"⚠️ 部分下载完成\n任务编号：{request_id}\n\n")
+    assert "已下载 300 个 · 失败 1 个" in text
+    assert "个文件未展开" in text
+    assert text.endswith("请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。")
+    assert len(text.encode("utf-16-le")) // 2 <= 3900
+    shown = sum(line.startswith("✅ video_") for line in text.splitlines())
+    assert f"另有 {301 - shown} 个文件未展开" in text

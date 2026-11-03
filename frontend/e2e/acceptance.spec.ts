@@ -844,6 +844,9 @@ test('custom Bot and filename templates preview, reject mistakes and persist off
   await page.locator('#confirmation-template').fill(confirmation)
   await page.locator('#filename-template').fill(filename)
   await expect(page.getByTestId('filename-preview')).toHaveText('20261020_video_1_海边日落_a1b2c3d4.mp4')
+  await expect(page.getByTestId('confirmation-preview')).toHaveText(
+    '📋 等待确认\n任务编号：e5f6a7b80123456789abcdef01234567\n\n'
+    + '准备保存 1 个文件，共 12.5 MB\n文件名：20261020_video_1_海边日落_a1b2c3d4.mp4\n文件大小：12.5 MB\n目录：2026-10-20')
   await expect(page.getByTestId('confirmation-preview')).toContainText('共 12.5 MB')
   await page.getByRole('button', { name: '保存设置' }).click()
   await expect(page.locator('.el-message').last()).toContainText('设置已保存')
@@ -875,7 +878,7 @@ test('custom Bot and filename templates preview, reject mistakes and persist off
   await rules.locator('summary').focus()
   await page.keyboard.press('Enter')
   await expect(rules).toHaveAttribute('open', '')
-  await expect(rules).toContainText('恢复默认只修改表单，仍需保存设置。')
+  await expect(rules).toContainText('恢复默认只修改表单，仍需保存设置')
   await page.keyboard.press('Enter')
   await expect(rules).not.toHaveAttribute('open', '')
   for (const viewport of [{ width: 1440, height: 600 }, { width: 390, height: 600 }]) {

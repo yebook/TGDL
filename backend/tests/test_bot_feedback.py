@@ -79,10 +79,10 @@ def test_status_translates_states_and_keeps_full_ids(client: TestClient) -> None
 
 
 @pytest.mark.parametrize("states,expected", [
-    (["succeeded", "failed"], "⚠️ 部分完成"),
+    (["succeeded", "failed"], "⚠️ 部分下载完成"),
     (["failed", "failed"], "❌ 下载失败"),
-    (["already_exists", "already_exists"], "✅ 文件已保存，无需重复下载"),
-    (["cancelled", "cancelled"], "❌ 已取消"),
+    (["already_exists", "already_exists"], "📁 文件已存在"),
+    (["cancelled", "cancelled"], "🛑 下载已取消"),
     (["succeeded", "succeeded"], "✅ 下载完成"),
 ])
 def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClient, states: list[str], expected: str) -> None:
@@ -102,7 +102,7 @@ def test_result_messages_have_friendly_states_and_safe_reasons(client: TestClien
         project(session, session.get(MediaRequest, request_id))
     with state.db.sessions() as session:
         text = session.scalar(select(Notification).where(Notification.event_key.like("result:%"))).payload["text"]
-    assert text.startswith(f"任务编号：{request_id}\n{expected}")
+    assert text.startswith(f"{expected}\n任务编号：{request_id}\n\n")
     assert text.splitlines().count(f"任务编号：{request_id}") == 1
     assert "secret-raw-upstream-error" not in text
     for status in states:

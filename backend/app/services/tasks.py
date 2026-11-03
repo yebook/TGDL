@@ -10,7 +10,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.bot.grouping import GROUP_MAX_SECONDS
-from app.bot.messages import failure_hint, status_label
+from app.bot.messages import (
+    STAGE_LABELS,
+    failure_hint,
+    file_list_body,
+    format_bytes,
+    shorten,
+    task_message,
+    type_summary,
+)
 from app.core.errors import AppError
 from app.core.templates import render_confirmation
 from app.db.models import (
@@ -40,38 +48,18 @@ TERMINAL = {"succeeded", "already_exists", "failed", "cancelled"}
 DELETABLE = TERMINAL | {"partial_success", "expired"}
 
 
-def format_bytes(value: int | None) -> str:
-    if value is None:
-        return "未知"
-    units = ("B", "KB", "MB", "GB", "TB")
-    size = float(value)
-    unit = 0
-    while size >= 1024 and unit < len(units) - 1:
-        size /= 1024
-        unit += 1
-    return f"{size:.0f} B" if unit == 0 else f"{size:.1f} {units[unit]}"
-
-
 def iso(value: float | None) -> str | None:
     return datetime.fromtimestamp(value, UTC).isoformat().replace("+00:00", "Z") if value is not None else None
 
 
-def task_message(text: str, request_id: str, limit: int = 3900) -> str:
-    """Reserve a complete system-owned identifier line outside custom content."""
-    prefix = f"任务编号：{request_id}\n"
-    budget = limit - len(prefix.encode("utf-16-le")) // 2
-    if len(text.encode("utf-16-le")) // 2 > budget:
-        text = text.encode("utf-16-le")[:(budget - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
-    return prefix + text
-
-
 def enqueue(session: Session, request: MediaRequest, key: str, text: str,
-            payload: dict[str, Any] | None = None) -> None:
+            payload: dict[str, Any] | None = None, *, stage: str | None = None) -> None:
     if request.deleted_at is not None:
         return
     if not session.scalar(select(Notification).where(Notification.event_key == key)):
         session.add(Notification(event_key=key, request_id=request.id, chat_id=request.chat_id,
-                                 payload={"text": task_message(text, request.id), "bot_id": request.bot_id, **(payload or {})}))
+                                 payload={"text": task_message(text, request.id, stage=stage),
+                                          "bot_id": request.bot_id, **(payload or {})}))
 
 
 def project(session: Session, request: MediaRequest) -> None:
@@ -97,8 +85,8 @@ def project(session: Session, request: MediaRequest) -> None:
         request.status, request.updated_at = state, time.time()
         if not any(s in ACTIVE for s in states):
             request.result_revision += 1
-            headline = "✅ 下载完成" if state == "succeeded" else status_label(state)
-            lines = [f"{headline}：{request.title}"]
+            stage = STAGE_LABELS[state]
+            lines = [shorten(request.title, 300), ""]
             counts = [f"文件：{len(jobs)} 个"]
             for outcome, label in (("succeeded", "已下载"), ("already_exists", "已保存，无需重复下载"),
                                    ("failed", "失败"), ("cancelled", "取消")):
@@ -106,11 +94,17 @@ def project(session: Session, request: MediaRequest) -> None:
                 if count:
                     counts.append(f"{label} {count} 个")
             lines.append(" · ".join(counts))
+            saved = [job for job in jobs if job.state in {"succeeded", "already_exists"}]
+            if saved:
+                size = sum(job.completed_bytes for job in saved) if all(
+                    job.finished_at is not None and job.completed_bytes >= 0 for job in saved) else None
+                lines.append(f"实际已保存：{len(saved)} / {len(jobs)} 个文件 · 共 {format_bytes(size)}")
             paths = [PurePosixPath(job.relative_path) for job in jobs]
             common_parent = len({path.parent for path in paths}) == 1
             if common_parent and any(s in {"succeeded", "already_exists"} for s in states):
-                lines.append(f"📁 保存到：{paths[0].parent}")
-            lines.append("文件清单：")
+                lines.append(f"📁 实际目录：{shorten(str(paths[0].parent), 800)}")
+            lines.extend(["", "保存结果："])
+            rows = []
             for job in jobs:
                 name = PurePosixPath(job.relative_path).name if common_parent else job.relative_path
                 label = {"succeeded": "✅", "already_exists": "📎 已保存", "failed": "❌ 失败",
@@ -118,12 +112,16 @@ def project(session: Session, request: MediaRequest) -> None:
                 line = f"{label} {name}"
                 if job.state == "failed":
                     line += f"（{failure_hint(job.error_code)}）"
-                lines.append(line)
+                rows.append(line)
+            footer = ""
             if "failed" in states:
-                lines.append("请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。")
+                footer = "请在 WebUI 查看详情并重试失败文件，已保存的文件会保留。"
             elif "cancelled" in states:
-                lines.append("已保存的文件会保留。如需再次下载，请重新发送文件。")
-            enqueue(session, request, f"result:{request.id}:{request.result_revision}", "\n".join(lines))
+                footer = "已保存的文件会保留。如需再次下载，请重新发送文件。"
+            elif state == "already_exists":
+                footer = "文件已保存，无需重复下载。"
+            text = file_list_body(stage, request.id, "\n".join(lines), rows, footer)
+            enqueue(session, request, f"result:{request.id}:{request.result_revision}", text, stage=stage)
 
 
 class TaskService:
@@ -242,7 +240,7 @@ class TaskService:
                     "files": "\n\n".join(lines),
                 })
                 enqueue(session, request, f"confirm:{request.id}:{request.nonce}", text,
-                        {"confirmation": True, "nonce": request.nonce})
+                        {"confirmation": True, "nonce": request.nonce}, stage=STAGE_LABELS["awaiting_confirmation"])
             for request in session.scalars(select(MediaRequest).where(
                     MediaRequest.deleted_at.is_(None), MediaRequest.status == "awaiting_confirmation", MediaRequest.expires_at < time.time())):
                 request.status, request.updated_at = "expired", time.time()
@@ -285,7 +283,16 @@ class TaskService:
             session.add(Job(item_id=item.id, request_id=request.id, root_id=request.root_id,
                             relative_path=f"{request.destination}/{item.planned_filename}", max_auto_retries=settings.max_auto_retries))
         request.status, request.updated_at = "queued", time.time()
-        enqueue(session, request, f"queued:{request.id}", f"⏳ 已加入下载队列：{request.title}\n完成后会在这里通知你。")
+        sizes = [item.size_bytes for item in items]
+        total = sum(size for size in sizes if size is not None) if all(size is not None for size in sizes) else None
+        summary = (f"{shorten(request.title, 300)}\n\n{len(items)} 个文件 · 共 {format_bytes(total)}\n"
+                   f"{type_summary([item.media_type for item in items])}\n"
+                   f"保存目录：{shorten(request.destination, 800)}\n\n下载清单")
+        rows = [f"{index}. {item.planned_filename} · {format_bytes(item.size_bytes)}"
+                for index, item in enumerate(items, 1)]
+        stage = STAGE_LABELS["queued"]
+        text = file_list_body(stage, request.id, summary, rows, "系统将按并发设置处理，完成后通知你。")
+        enqueue(session, request, f"queued:{request.id}", text, stage=stage)
 
     def _dto(self, session: Session, request: MediaRequest, detail: bool = False, *,
              related: tuple[list[MediaItem], list[Job], list[Notification]] | None = None) -> dict[str, Any]:
