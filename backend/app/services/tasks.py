@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -21,9 +22,11 @@ from app.bot.messages import (
     type_summary,
 )
 from app.core.errors import AppError
+from app.core.security import digest
 from app.core.templates import render_confirmation
 from app.db.models import (
     Attempt,
+    CacheAction,
     CancelCleanup,
     FileDeletionOperation,
     IngestUpdate,
@@ -355,6 +358,7 @@ class TaskService:
             return not (cache and cache.state == "retained" and cache.completeness != "complete")
         result: dict[str, Any] = {
             "id": request.id, "title": request.title, "kind": request.kind, "status": request.status,
+            "terminal": request.status in DELETABLE,
             "created_at": iso(request.created_at), "updated_at": iso(request.updated_at),
             "item_count": len(items), "completed_count": sum(j.state in {"succeeded", "already_exists"} for j in jobs.values()),
             "total_bytes": sum(s for s in sizes if s is not None) if all(s is not None for s in sizes) else None,
@@ -548,6 +552,7 @@ class TaskService:
                operation_id: str | None = None) -> dict[str, Any]:
         # BEGIN IMMEDIATE serializes this eligibility check with retry, claim,
         # cancellation and worker completion. Never remove referenced history.
+        caches: list[tuple[str, str, str]] = []
         with self.db.transaction() as session:
             if operation_id and self.saved_media:
                 existing = self.saved_media.existing(session, operation_id, request_ids, delete_files)
@@ -566,6 +571,51 @@ class TaskService:
             if busy or any(request.status not in DELETABLE for request in requests):
                 raise AppError("TASK_DELETE_BUSY", "任务尚未结束，请先取消并等待处理完成", 409)
             require_no_maintenance(session)
+            if delete_files and self.retained_cache:
+                for cache in session.scalars(select(RetainedCache).join(Job, Job.id == RetainedCache.job_id).where(
+                        Job.request_id.in_(request_ids), RetainedCache.state == "retained")):
+                    job = session.get(Job, cache.job_id)
+                    if not job:
+                        continue
+                    blocker = self.retained_cache.blocker(session, job, cache, clean=True)
+                    if blocker:
+                        raise AppError("TASK_CACHE_DELETE_BLOCKED", blocker, 409)
+                    caches.append((job.request_id, job.item_id, cache.id))
+            if not delete_files:
+                now = time.time()
+                for request in requests:
+                    request.deleted_at = now
+                for row in session.scalars(select(Notification).where(
+                        Notification.request_id.in_(request_ids), Notification.state == "pending")):
+                    row.state = "obsolete"
+                if operation_id:
+                    operation = FileDeletionOperation(id=operation_id, request_ids=request_ids,
+                                                      delete_files=False, entries=[], state="complete")
+                    session.add(operation)
+                    session.flush()
+                    return self.saved_media.result(operation) if self.saved_media else {
+                        "deleted_ids": request_ids, "operation_id": operation_id,
+                        "files": {key: 0 for key in ("deleted", "missing", "retained_shared",
+                                                      "retained_unverified", "failed", "uncertain")}}
+                return {"deleted_ids": request_ids}
+        if delete_files and self.retained_cache:
+            # Native cache ownership remains under RetainedCacheService. Each
+            # action is durable, so a retry never replays a lost mutation.
+            for request_id, item_id, cache_id in caches:
+                cache_operation = digest(f"task-delete:{operation_id}:{cache_id}")[:32]
+                asyncio.run(self.retained_cache.submit(request_id, item_id, "clean", cache_operation,
+                                                       cache_id=cache_id, confirmed=True))
+                with self.db.sessions() as session:
+                    action = session.get(CacheAction, cache_operation)
+                    if not action or action.state != "succeeded":
+                        raise AppError("TASK_CACHE_DELETE_BLOCKED",
+                                       action.message if action and action.message else
+                                       "缂撳瓨娓呯悊缁撴灉灏氭湭纭锛屾殏涓嶈兘鍒犻櫎浠诲姟璁板綍", 409)
+        with self.db.transaction() as session:
+            requests = list(session.scalars(select(MediaRequest).where(
+                MediaRequest.id.in_(request_ids), MediaRequest.deleted_at.is_(None))))
+            if len(requests) != len(request_ids):
+                raise AppError("NOT_FOUND", "任务不存在或已删除", 404)
             if delete_files:
                 assert self.saved_media and operation_id
                 self.saved_media.prepare(session, operation_id, request_ids)

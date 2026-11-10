@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.bot.client import CacheCleanupError
@@ -118,14 +118,32 @@ class RetainedCacheService:
             item = session.get(MediaItem, job.item_id) if job else None
             if not job or not item or attempt is not None and job.attempt_sequence != attempt:
                 return None
-            if only_if_missing and session.scalar(select(RetainedCache.id).where(RetainedCache.job_id == job_id).limit(1)):
+            if only_if_missing and session.scalar(select(RetainedCache.id).where(
+                    RetainedCache.job_id == job_id,
+                    RetainedCache.attempt == (attempt if attempt is not None else job.attempt_sequence)).limit(1)):
                 return None
             if completeness == "complete" and (not fingerprint or item.size_bytes is not None
                                                 and fingerprint["size"] != item.size_bytes):
                 raise AppError("SIZE_MISMATCH", "完整缓存的文件大小校验失败，未开始保存", 409)
             key = digest(raw) if raw else None
+            # A native acquisition can rotate its temporary path while keeping
+            # the same physical owner. Reuse that row instead of creating one
+            # record per observation. Path identity remains the strongest key;
+            # native identity and acquisition identity are bounded fallbacks.
+            identity_match = []
+            if native_identity:
+                identity_match.append(RetainedCache.native_identity == native_identity)
+            if generation:
+                identity_match.append((RetainedCache.generation == generation)
+                                      & (RetainedCache.acquisition_id == acquisition_id))
+            match = [RetainedCache.path_digest == key] if key else []
+            if identity_match:
+                match.append(or_(*identity_match))
+            if not match and not raw:
+                match.append(RetainedCache.path_digest.is_(None))
             row = session.scalar(select(RetainedCache).where(RetainedCache.job_id == job.id,
-                RetainedCache.path_digest == key).order_by(RetainedCache.updated_at.desc()).limit(1))
+                RetainedCache.attempt == job.attempt_sequence, or_(*match))
+                .order_by(RetainedCache.updated_at.desc()).limit(1)) if match else None
             if row is None:
                 row = RetainedCache(job_id=job.id, bot_id=item.bot_id, file_id=item.file_id,
                                     attempt=job.attempt_sequence)

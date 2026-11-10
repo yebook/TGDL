@@ -117,6 +117,7 @@ p { font-size: 14px; line-height: 1.7; }
 .el-alert__title { overflow-wrap: anywhere; }
 .el-drawer__header { margin-bottom: 0; padding: 24px; border-bottom: 1px solid var(--line); font-size: 15px; }
 .el-drawer__body { padding: 26px; }
+.task-detail-drawer .el-drawer__body { padding: 0 26px 26px; }
 .el-drawer__close-btn { min-height: 40px; min-width: 40px; }
 .detail-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
 .detail-heading h2 { overflow-wrap: anywhere; }
@@ -390,6 +391,7 @@ p { font-size: 14px; line-height: 1.7; }
   .storage-row > div:last-child { text-align: left; }
   .detail-meta { grid-template-columns: 1fr; padding: 16px; gap: 16px; }
   .el-drawer__body { padding: 20px 16px; }
+  .task-detail-drawer .el-drawer__body { padding: 0 16px 20px; }
   .media-card { padding: 17px 15px; }
   .el-message-box { width: calc(100% - 32px); }
   .el-message { max-width: calc(100% - 24px); }

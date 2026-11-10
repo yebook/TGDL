@@ -30,6 +30,41 @@ from app.storage.space import SpaceAssessment, SpaceVolume
 from app.workers import download
 
 
+def test_repeated_native_observation_reuses_physical_cache_row(client, config):
+    state, _, request_id, _, job_id, cache_id = seed(client, config, partial=True)
+    first = config.bot_api_root / "owned-cache"
+    second = config.bot_api_root / "rotated-cache"
+    second.write_bytes(first.read_bytes())
+    state.runtime.retained_cache.capture(job_id, str(second), completeness="partial",
+        generation="generation1", acquisition_id="acquisition-1", native_identity="a" * 64,
+        resumable=True)
+    state.runtime.retained_cache.capture(job_id, str(first), completeness="partial",
+        generation="generation1", acquisition_id="acquisition-1", native_identity="a" * 64,
+        resumable=True)
+    with state.db.sessions() as session:
+        rows = list(session.scalars(select(RetainedCache).where(RetainedCache.job_id == job_id)))
+        assert len(rows) == 1
+        assert rows[0].id == cache_id
+        assert rows[0].native_identity == "a" * 64
+        assert state.tasks.detail(request_id)["items"][0]["cache"]["path"]
+
+
+def test_repeated_unknown_observation_is_one_row_per_attempt(client, config):
+    state, _, _, _, job_id, cache_id = seed(client, config, partial=True)
+    with state.db.transaction() as session:
+        job = session.get(Job, job_id)
+        assert job
+        job.cache_id = None
+        session.delete(session.get(RetainedCache, cache_id))
+        attempt = job.attempt_sequence
+    state.runtime.retained_cache.capture_unknown(job_id, "generation-unknown", attempt)
+    state.runtime.retained_cache.capture_unknown(job_id, "generation-unknown", attempt)
+    with state.db.sessions() as session:
+        rows = list(session.scalars(select(RetainedCache).where(
+            RetainedCache.job_id == job_id, RetainedCache.attempt == attempt)))
+        assert len(rows) == 1
+
+
 @pytest.mark.parametrize("automatic", [False, True])
 async def test_no_space_admission_terminal_no_timer_polling(client, config, monkeypatch, automatic):
     state, ingest = setup_pipeline(client)

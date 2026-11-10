@@ -29,7 +29,7 @@ export interface SettingsBackupPreview {
   summary: { bot_api_mode: 'cloud' | 'local'; download_root_id: string; download_concurrency: number; allowed_user_count: number }
 }
 export interface Task {
-  id: string; title: string; kind: 'single' | 'group'; status: string; created_at: string; updated_at: string
+  id: string; title: string; kind: 'single' | 'group'; status: string; terminal: boolean; created_at: string; updated_at: string
   item_count: number; completed_count: number; total_bytes: number | null; completed_bytes: number
   effective_destination: string | null; notification_status: string; can_cancel: boolean; can_retry: boolean; can_delete: boolean
   local_files: LocalFileCounts

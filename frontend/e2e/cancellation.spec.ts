@@ -1,132 +1,64 @@
 import { expect, test, type Page } from '@playwright/test'
 
-async function settleDrawer(page: Page) {
-  await page.locator('.el-drawer').evaluate(async element => {
-    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
-    await Promise.all(element.getAnimations({ subtree: true })
-      .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
-      .map(animation => animation.finished.catch(() => {})))
-  })
+async function login(page: Page) {
+  await page.goto('/')
+  await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
+  await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.getByLabel('搜索名称或任务编号')).toBeVisible()
+}
+async function chooseAction(page: Page, label: string) {
+  const detail = page.locator('.detail-view')
+  await detail.getByRole('button', { name: '任务操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
 }
 
-// Run against a fresh tools.e2e_app with E2E_ACQUISITION_CANCEL=1.
-// Native transport is replaced there; every browser REST request is real.
 for (const width of [1440, 390]) {
-  test(`pending getFile cancellation survives reload at ${width}px`, async ({ page }, testInfo) => {
+  test(`任务进行中只显示任务级取消操作 ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 })
-    await page.goto('/')
-    await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
-    await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
-    await page.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(page.getByRole('link', { name: '下载任务', exact: true })).toHaveAttribute('aria-current', 'page')
+    await login(page)
     const id = `cancel-acquisition-${width}`
-    const title = `Acquisition cancellation fixture ${width}`
     const apiPath = `/api/v1/tasks/${id}`
-    let cancelRequests = 0
-    page.on('request', request => {
-      if (request.method() === 'POST' && new URL(request.url()).pathname === `${apiPath}/cancel`) cancelRequests++
-    })
-    await page.getByLabel('搜索名称或任务编号').fill(title)
+    await page.getByLabel('搜索名称或任务编号').fill(id)
     await page.getByRole('button', { name: '搜索', exact: true }).click()
     await expect(page.locator('.task-row')).toHaveCount(1)
     await page.locator('.task-row .task-name').click()
     const detail = page.locator('.detail-view')
-    await expect(detail.locator('.detail-heading')).toContainText('下载中')
-    await expect(detail.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50')
-    expect((await (await page.request.get(apiPath)).json()).items[0].phase).toBe('fetching')
-    await detail.getByRole('button', { name: '取消并删除文件', exact: true }).click()
+    await expect(detail.getByRole('button', { name: '任务操作', exact: true })).toBeVisible()
+    await expect(detail.locator('.cache-summary')).toHaveCount(0)
+    await detail.getByRole('button', { name: '任务操作', exact: true }).click()
+    await expect(page.getByRole('menuitem', { name: '取消', exact: true })).toBeVisible()
+    await page.getByRole('menuitem', { name: '取消', exact: true }).click()
     const confirmation = page.locator('.el-message-box')
-    await expect(confirmation).toContainText('删除关联缓存、目标临时文件和已保存文件')
-    await expect(confirmation).toContainText('等待安全停止')
+    await expect(confirmation).toContainText('任务将安全停止')
     await confirmation.getByRole('button', { name: '暂不操作', exact: true }).click()
-    await expect(confirmation).not.toBeVisible()
-    expect(cancelRequests).toBe(0)
-    expect((await (await page.request.get(apiPath)).json()).status).toBe('fetching')
-
-    await detail.getByRole('button', { name: '取消并删除文件', exact: true }).click()
+    await chooseAction(page, '取消')
     const submitted = page.waitForResponse(response => new URL(response.url()).pathname === `${apiPath}/cancel`
       && response.request().method() === 'POST')
-    await confirmation.getByRole('button', { name: '确认取消并删除', exact: true }).click()
+    await confirmation.getByRole('button', { name: '确认取消', exact: true }).click()
     expect((await submitted).ok()).toBe(true)
-    await expect(detail.locator('.detail-heading')).toContainText('取消中')
-    await expect(detail.locator('.media-progress')).toContainText('正在停止下载并等待安全确认')
-    await expect(detail.getByRole('button', { name: '取消并删除文件', exact: true })).toHaveCount(0)
-    await expect(detail.getByRole('button', { name: '删除任务', exact: true })).toHaveCount(0)
-    const pending = await (await page.request.get(apiPath)).json()
-    expect(pending.status).toBe('cancelling')
-    expect(pending.can_cancel).toBe(false)
-    expect(pending.can_delete).toBe(false)
-    expect(pending.items[0].phase).toBe('fetching')
-    expect(pending.items[0].attempts[0].finished_at).toBeNull()
+    await expect(detail.getByRole('button', { name: '任务操作', exact: true })).toHaveCount(0)
+    expect((await (await page.request.get(apiPath)).json()).can_cancel).toBe(false)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    await settleDrawer(page)
-    await page.screenshot({ path: testInfo.outputPath(`getfile-cancelling-${width}.png`), fullPage: true })
-
-    await expect.poll(async () => (await (await page.request.get(apiPath)).json()).cancel_cleanup?.state,
-      { timeout: 10_000 }).toBe('complete')
-    await expect(detail.locator('.detail-heading')).toContainText('已取消')
-    await expect(detail.getByRole('region', { name: '取消后的文件清理' })).toContainText('已清理')
-    expect(cancelRequests).toBe(1)
-    const terminal = await (await page.request.get(apiPath)).json()
-    expect(terminal.status).toBe('cancelled')
-    expect(terminal.can_delete).toBe(true)
-    expect(terminal.items[0].status).toBe('cancelled')
-    expect(terminal.items[0].attempts[0].error_code).toBe('CANCELLED')
-    expect(terminal.items[0].attempts[0].finished_at).not.toBeNull()
-    await page.reload()
-    await page.getByLabel('搜索名称或任务编号').fill(title)
-    await page.getByRole('button', { name: '搜索', exact: true }).click()
-    await expect(page.locator('.task-row')).toHaveCount(1)
-    await page.locator('.task-row .task-name').click()
-    await expect(detail.locator('.detail-heading')).toContainText('已取消')
-    await expect(detail.getByRole('button', { name: '取消并删除文件', exact: true })).toHaveCount(0)
-    await settleDrawer(page)
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    await page.screenshot({ path: testInfo.outputPath(`getfile-cancelled-${width}.png`), fullPage: true })
   })
 
-  test(`partial cancellation cleanup can retry without removing an unverified output at ${width}px`, async ({ page }, testInfo) => {
+  test(`取消清理只保留紧凑任务级反馈 ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 })
-    await page.goto('/')
-    await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
-    await page.getByLabel('密码', { exact: true }).fill('local-e2e-password')
-    await page.getByRole('button', { name: '登录', exact: true }).click()
-    const apiPath = `/api/v1/tasks/cancel-unverified-${width}`
+    await login(page)
+    const id = `cancel-unverified-${width}`
+    const apiPath = `/api/v1/tasks/${id}`
     await page.getByLabel('搜索名称或任务编号').fill(`Unverified cancellation fixture ${width}`)
     await page.getByRole('button', { name: '搜索', exact: true }).click()
     await expect(page.locator('.task-row')).toHaveCount(1)
     await page.locator('.task-row .task-name').click()
     const detail = page.locator('.detail-view')
-    await detail.getByRole('button', { name: '取消并删除文件', exact: true }).click()
-    await page.locator('.el-message-box').getByRole('button', { name: '确认取消并删除', exact: true }).click()
+    await chooseAction(page, '取消')
+    await page.locator('.el-message-box').getByRole('button', { name: '确认取消', exact: true }).click()
     await expect.poll(async () => (await (await page.request.get(apiPath)).json()).cancel_cleanup?.state).toBe('partial')
-    const cleanup = detail.getByRole('region', { name: '取消后的文件清理' })
-    await expect(cleanup).toContainText('keep-output.mp4')
-    await expect(cleanup).toContainText('已保留')
-    await expect(detail.getByRole('button', { name: '删除任务', exact: true })).toHaveCount(0)
-    const retry = detail.getByRole('button', { name: '重试清理', exact: true })
-    await expect(retry).toBeVisible()
-    const before = await (await page.request.get(apiPath)).json()
-    expect(before.items.find((item: { original_name: string }) => item.original_name === 'keep-output.mp4').local_file_state).toBe('present')
-    expect(before.can_retry).toBe(false)
-    await retry.click()
-    const confirmation = page.locator('.el-message-box')
-    await expect(confirmation).toContainText('身份无法确认的文件')
-    const submitted = page.waitForResponse(response => new URL(response.url()).pathname === `${apiPath}/cancel`
-      && response.request().method() === 'POST')
-    await confirmation.getByRole('button', { name: '确认重试清理', exact: true }).click()
-    expect((await submitted).ok()).toBe(true)
-    await expect.poll(async () => (await (await page.request.get(apiPath)).json()).cancel_cleanup?.state).toBe('partial')
-    const after = await (await page.request.get(apiPath)).json()
-    expect(after.items.find((item: { original_name: string }) => item.original_name === 'keep-output.mp4').local_file_state).toBe('present')
-    await page.reload()
-    await page.getByLabel('搜索名称或任务编号').fill(`Unverified cancellation fixture ${width}`)
-    await page.getByRole('button', { name: '搜索', exact: true }).click()
-    await page.locator('.task-row .task-name').click()
-    await expect(retry).toBeVisible()
-    await expect(cleanup).toContainText('keep-output.mp4')
-    await settleDrawer(page)
+    await expect(detail.locator('.el-alert')).toHaveCount(1)
+    await expect(detail.locator('.attempts')).toHaveCount(0)
+    await expect(detail.locator('.item-cache')).toHaveCount(0)
+    expect((await (await page.request.get(apiPath)).json()).can_retry).toBe(false)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    await page.screenshot({ path: testInfo.outputPath(`cancel-cleanup-partial-${width}.png`), fullPage: true })
   })
 }

@@ -16,6 +16,10 @@ async function search(page: Page, value: string) {
   await page.getByRole('button', { name: '搜索', exact: true }).click()
   await expect(page.locator('.task-row')).toHaveCount(1)
 }
+async function chooseDetailAction(page: Page, label: string) {
+  await page.locator('.detail-view').getByRole('button', { name: '任务操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+}
 async function filePresence(page: Page, id: string) {
   const response = await page.request.get(`/__e2e__/task-files/${id}`)
   expect(response.ok()).toBe(true)
@@ -48,11 +52,11 @@ for (const width of [1440, 390]) {
     expect((await page.request.post(`/__e2e__/task-files/${id}/restore`)).ok()).toBe(true)
     await expect(page.locator('.media-card')).toContainText('本地文件存在')
     await expect(page.locator('.task-row')).not.toContainText('本地文件不存在')
-    await page.getByRole('button', { name: '删除任务', exact: true }).click()
+    await chooseDetailAction(page, '删除')
     await expect(dialog(page).getByRole('checkbox')).not.toBeChecked()
     await dialog(page).getByRole('button', { name: '保留任务', exact: true }).click()
     expect((await page.request.get(`/api/v1/tasks/${id}`)).status()).toBe(200)
-    await page.getByRole('button', { name: '删除任务', exact: true }).click()
+    await chooseDetailAction(page, '删除')
     await expect.poll(() => dialog(page).evaluate(element => `${getComputedStyle(element).opacity}|${getComputedStyle(element).transform}`)).toBe('1|none')
     await page.screenshot({ path: testInfo.outputPath(`delete-confirm-${width}.png`), fullPage: true })
     await confirm(page)

@@ -287,6 +287,10 @@ async function login(page: Page) {
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await expect(page.getByRole('link', { name: '下载任务', exact: true })).toHaveAttribute('aria-current', 'page')
 }
+async function chooseDetailAction(page: Page, label: string) {
+  await page.locator('.detail-view').getByRole('button', { name: '任务操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+}
 
 async function settings(page: Page) {
   await page.getByRole('link', { name: '设置', exact: true }).click()
@@ -506,14 +510,15 @@ for (const width of [1440, 390]) {
     await expect(panel).toContainText('取消中')
     await expect(panel).toContainText('正在停止下载并等待安全确认')
     await expect(page.locator('.detail-heading')).toContainText('取消中')
-    await expect(page.getByRole('button', { name: '删除任务', exact: true })).toHaveCount(0)
+    await expect(page.locator('.detail-view').getByRole('button', { name: '任务操作', exact: true })).toHaveCount(0)
     await expect(bar).not.toHaveAttribute('aria-valuenow')
     await noOverflow(page)
     await page.screenshot({ path: `test-results/local-progress-${width}.png` })
     state = 'cancelled'
     await expect(page.locator('.detail-heading')).toContainText('已取消')
     await expect(panel).toHaveCount(0)
-    await expect(page.getByRole('button', { name: '删除任务', exact: true })).toBeVisible()
+    await page.locator('.detail-view').getByRole('button', { name: '任务操作', exact: true }).click()
+    await expect(page.getByRole('menuitem', { name: '删除', exact: true })).toBeVisible()
   })
 }
 
@@ -713,8 +718,8 @@ for (const viewport of [{ width: 1440, height: 600 }, { width: 390, height: 600 
 test('queued cancellation persists in database after reload', async ({ page }) => {
   await login(page)
   await page.locator('.task-row').filter({ hasText: 'E2E queued video' }).locator('.task-name').click()
-  await page.getByRole('button', { name: '取消并删除文件', exact: true }).click()
-  await page.getByRole('button', { name: '确认取消并删除', exact: true }).click()
+  await chooseDetailAction(page, '取消')
+  await page.getByRole('button', { name: '确认取消', exact: true }).click()
   await expect(page.locator('.detail-heading')).toContainText('已取消')
   await page.reload()
   const response = await page.request.get('/api/v1/tasks/e2e-queued')
@@ -726,8 +731,12 @@ test('queued cancellation persists in database after reload', async ({ page }) =
 test('retry queues only failed file and preserves saved sibling and history', async ({ page }) => {
   await login(page)
   await page.locator('.task-row').filter({ hasText: 'E2E mixed group' }).locator('.task-name').click()
-  await page.getByRole('button', { name: '重试失败文件' }).click()
-  await expect(page.getByRole('button', { name: '重试失败文件' })).toHaveCount(0)
+  await chooseDetailAction(page, '恢复')
+  const detailActions = page.locator('.detail-view').getByRole('button', { name: '任务操作', exact: true })
+  await expect(detailActions).toBeVisible()
+  await detailActions.click()
+  await expect(page.getByRole('menuitem', { name: '恢复', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('menuitem', { name: '取消', exact: true })).toBeVisible()
   const task = await (await page.request.get('/api/v1/tasks/e2e-mixed')).json()
   expect(task.items.map((item: { status: string }) => item.status)).toEqual(['succeeded', 'queued'])
   expect(task.items[1].attempts).toHaveLength(1)
@@ -1005,11 +1014,11 @@ test('task selection survives polling and single/batch deletion preserves files 
   await settle(page, '.task-panel')
   await page.screenshot({ path: testInfo.outputPath('task-selection-desktop.png') })
   await savedRow.locator('.task-name').click()
-  await page.getByRole('button', { name: '删除任务', exact: true }).click()
+  await chooseDetailAction(page, '删除')
   await expect(page.getByText('仅删除任务记录，保留已下载文件。', { exact: false })).toBeVisible()
   await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
   expect((await page.request.get('/api/v1/tasks/delete-done')).status()).toBe(200)
-  await page.getByRole('button', { name: '删除任务', exact: true }).click()
+  await chooseDetailAction(page, '删除')
   await page.getByRole('button', { name: '确认删除', exact: true }).click()
   await expect(page.locator('.el-drawer')).not.toBeVisible()
   await expect(page.locator('.task-row')).toHaveCount(2)
@@ -1017,8 +1026,8 @@ test('task selection survives polling and single/batch deletion preserves files 
 
   await page.setViewportSize({ width: 390, height: 600 })
   await queuedRow.locator('.task-name').click()
-  await page.getByRole('button', { name: '取消并删除文件', exact: true }).click()
-  await page.getByRole('button', { name: '确认取消并删除', exact: true }).click()
+  await chooseDetailAction(page, '取消')
+  await page.getByRole('button', { name: '确认取消', exact: true }).click()
   await expect(page.locator('.detail-heading')).toContainText('已取消')
   await page.keyboard.press('Escape')
   await expect(queuedRow.getByRole('checkbox')).toBeEnabled()
