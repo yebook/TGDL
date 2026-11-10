@@ -150,7 +150,7 @@ function handleActionCommand(kind: 'cancel' | 'retry' | 'delete') {
         <p class="muted">{{ bytes(item.size_bytes) }}<template v-if="item.duration_seconds != null"> · 时长 {{ duration(item.duration_seconds) }}</template><template v-if="item.status === 'succeeded'"> · 下载耗时 {{ duration(item.elapsed_seconds) }}</template></p>
         <MediaProgress v-if="['saving', 'fetching', 'cancelling'].includes(item.status)" :item="item" />
         <p v-if="item.relative_path" class="path-line mono">{{ item.relative_path }}</p>
-        <p v-if="localFileLabel(item.local_file_state)" class="local-file-status" :class="item.local_file_state === 'present' ? 'muted' : 'warning-text'">{{ localFileLabel(item.local_file_state) }}</p>
+        <p v-if="item.local_file_state !== 'present' && localFileLabel(item.local_file_state)" class="local-file-status warning-text">{{ localFileLabel(item.local_file_state) }}</p>
         <p v-if="item.linked_job_id" class="muted">关联已有文件任务：<span class="mono">{{ item.linked_job_id }}</span></p>
         <el-alert v-if="item.error_message || item.error_code" :title="item.error_message || attemptResult(item.error_code, null)" :type="taskIssueTone(item.error_code)" :closable="false" show-icon />
         <StorageFailureDetails v-if="item.storage_failure" :failure="item.storage_failure" />

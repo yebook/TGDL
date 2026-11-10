@@ -56,3 +56,5 @@ Thumbs.db
 # Documentation build cache
 docs/.vitepress/cache/
 docs/.vitepress/.temp/
+
+.claude/
