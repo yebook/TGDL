@@ -156,7 +156,8 @@ class TaskService:
 
     def space_warnings(self, session: Session, request: MediaRequest, items: list[MediaItem], settings: UserSettings) -> str:
         manager = self.saved_media.storage if self.saved_media else StorageManager(
-            self.settings.config.storage_roots, self.settings.config.data_dir, self.settings.config.minimum_free_bytes)
+            self.settings.config.storage_roots, self.settings.config.data_dir,
+            self.settings.config.minimum_free_bytes, self.settings.config.storage_root_identities)
         warnings = []
         for item in items:
             assessment = assess_space(session, manager, self.settings.config, request.root_id,

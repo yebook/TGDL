@@ -147,7 +147,7 @@ services:
 # 三个服务：WebUI/下载应用、本地 API 管理服务、一次性权限初始化。
   app:
   # 应用服务，承载 WebUI、Bot 消息处理和下载任务。
-    image: tgd-app-source:0.2.3
+    image: tgd-app-source:0.2.4
     # 本机源码构建标签，与旧运行标签区分；不从仓库拉取。
     pull_policy: build
     # 默认启动时构建源码；有效构建缓存仍可复用。
@@ -221,7 +221,7 @@ services:
       # 每个容器日志文件最多 10 MiB、最多 3 个；按需调整容量。
   bot-api:
   # 常驻本地 API 管理服务；初次使用云端也会启动，但无需填写本地凭据。
-    image: tgd-bot-api-source:0.2.3
+    image: tgd-bot-api-source:0.2.4
     # 配套 API 镜像引用，必须与初始化服务完全相同；不可换成普通第三方镜像。
     pull_policy: build
     # 与应用采用相同构建策略，不从 GHCR 拉取运行镜像。
@@ -275,7 +275,7 @@ services:
     # 复用 app 中定义的 Docker 日志轮转策略。
   init-volumes:
   # 只准备私有控制卷权限，成功退出是正常现象。
-    image: tgd-bot-api-source:0.2.3
+    image: tgd-bot-api-source:0.2.4
     # 与 bot-api 使用同一镜像引用；不独立选择版本。
     pull_policy: never
     # 使用 bot-api 在服务创建前构建好的镜像，不重复构建或远程拉取。
@@ -329,7 +329,7 @@ networks:
 docker compose up -d --no-build
 ```
 
-单纯 `restart` 不会更新环境变量和目录挂载。更换媒体宿主目录须先停服，迁移原媒体并确认权限和文件可访问，然后按[下载目录身份登记](operations.md#storage-identity)明确登记新目录；不要通过换空目录绕过存储保护。
+单纯 `restart` 不会更新环境变量和目录挂载。更换媒体宿主目录须先停服，确认新目录真实存在且 UID/GID 可读写，然后重新创建容器；应用会根据新的 `TGD_HOST_DOWNLOADS` 自动登记当前目录。若配置路径未变却发生挂载替换，应用仍会阻止写入，需先恢复正确挂载，不要通过换空目录绕过存储保护。详见[下载目录身份登记](operations.md#storage-identity)。
 
 只更新应用源码时可 [单独构建 app](development.md#源码构建与缓存)，无需重新编译未变的本地 API。日常更新不要加 `--no-cache`，也不要清空 Docker 缓存。
 

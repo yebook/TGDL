@@ -9,6 +9,7 @@ from pathlib import Path
 class Config:
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("TGD_DATA_DIR", "/data")))
     download_root: Path = field(default_factory=lambda: Path(os.getenv("TGD_DOWNLOAD_ROOT", "/downloads")))
+    download_root_identity: str = ""
     bot_api_root: Path = field(default_factory=lambda: Path(os.getenv("TGD_BOT_API_ROOT", "/var/lib/telegram-bot-api")))
     bot_api_base: str = field(default_factory=lambda: os.getenv("TGD_BOT_API_BASE", "http://bot-api:8081"))
     static_dir: Path = field(default_factory=lambda: Path(os.getenv("TGD_STATIC_DIR", "/app/frontend/dist")))
@@ -19,6 +20,10 @@ class Config:
     managed_local_api: bool = field(default_factory=lambda: os.getenv("TGD_MANAGED_LOCAL_API", "false").lower() == "true")
     local_api_control_dir: Path = field(default_factory=lambda: Path(os.getenv("TGD_LOCAL_API_CONTROL_DIR", "/run/tgd-api-control")))
 
+    def __post_init__(self) -> None:
+        if not self.download_root_identity:
+            self.download_root_identity = os.getenv("TGD_DOWNLOAD_ROOT_IDENTITY", str(self.download_root))
+
     @property
     def database_url(self) -> str:
         return "sqlite:///" + (self.data_dir / "tgd.sqlite3").resolve().as_posix()
@@ -27,3 +32,8 @@ class Config:
     def storage_roots(self) -> dict[str, Path]:
         raw = json.loads(os.getenv("TGD_STORAGE_ROOTS", "{}"))
         return {"default": self.download_root, **{str(key): Path(value) for key, value in raw.items()}}
+
+    @property
+    def storage_root_identities(self) -> dict[str, str]:
+        raw = json.loads(os.getenv("TGD_STORAGE_ROOTS", "{}"))
+        return {"default": self.download_root_identity, **{str(key): str(value) for key, value in raw.items()}}

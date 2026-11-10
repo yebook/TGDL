@@ -18,11 +18,53 @@ def test_identity_stays_in_data_and_survives_storage_recreation(tmp_path: Path) 
     storage = make_storage(tmp_path)
     assert storage.check()["available"]
     assert list(storage.root.iterdir()) == []
+
+
+def test_changed_configured_path_reenrolls_current_mount(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    storage.configured_path = "/old/downloads"
+    storage.check()
+    original = storage.identity_path.read_bytes()
+    storage.configured_path = "/new/downloads"
+    assert storage.check()["available"]
+    assert storage.identity_path.read_bytes() != original
+    record = json.loads(storage.identity_path.read_bytes())
+    assert record["configured_path"] == "/new/downloads"
+
+
+def test_changed_configured_path_reenrolls_new_mount(tmp_path: Path) -> None:
+    root, replacement, data = tmp_path / "downloads", tmp_path / "replacement", tmp_path / "data"
+    root.mkdir()
+    replacement.mkdir()
+    data.mkdir()
+    Storage(root, data, 0, configured_path="/old/downloads").check()
+    switched = Storage(replacement, data, 0, configured_path="/new/downloads")
+    assert switched.check()["available"]
+    record = json.loads(switched.identity_path.read_bytes())
+    assert record["configured_path"] == "/new/downloads"
+    assert record["inode"] == replacement.stat().st_ino
+
+
+def test_legacy_identity_is_upgraded_when_mount_is_unchanged(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    storage.identity_path.write_text(json.dumps(storage._root_identity()))
+    assert storage.check()["available"]
+    assert json.loads(storage.identity_path.read_bytes())["configured_path"] == str(storage.root)
     identity = storage.identity_path.read_bytes()
     second = Storage(storage.root, storage.data_dir, 0)
     assert second.check()["available"]
     assert storage.identity_path.read_bytes() == identity
     assert list(storage.root.iterdir()) == []
+
+
+def test_legacy_identity_migrates_when_mount_changes(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    identity = storage._root_identity()
+    storage.identity_path.write_text(json.dumps(identity))
+    identity["inode"] += 1
+    storage.identity_path.write_text(json.dumps(identity))
+    assert storage.check()["available"]
+    assert json.loads(storage.identity_path.read_bytes())["configured_path"] == str(storage.root)
 
 
 def test_root_missing_replaced_and_symlink_fail_closed(tmp_path: Path) -> None:

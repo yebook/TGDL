@@ -1,7 +1,7 @@
 name: tgd
 services:
   app:
-    image: tgd-app-source:0.2.3
+    image: tgd-app-source:0.2.4
     pull_policy: build
     build:
       context: .
@@ -13,6 +13,7 @@ services:
     environment:
       TGD_DATA_DIR: /data
       TGD_DOWNLOAD_ROOT: /downloads
+      TGD_DOWNLOAD_ROOT_IDENTITY: ${TGD_HOST_DOWNLOADS:-./downloads}
       TGD_BOT_API_BASE: http://bot-api:8081
       TGD_BOT_API_ROOT: /var/lib/telegram-bot-api
       TGD_MANAGED_LOCAL_API: "true"
@@ -38,7 +39,7 @@ services:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
   bot-api:
-    image: tgd-bot-api-source:0.2.3
+    image: tgd-bot-api-source:0.2.4
     pull_policy: build
     build:
       context: .
@@ -65,7 +66,7 @@ services:
     stop_grace_period: 90s
     logging: *logging
   init-volumes:
-    image: tgd-bot-api-source:0.2.3
+    image: tgd-bot-api-source:0.2.4
     # bot-api builds this image before Compose creates any service.
     # Do not build the same tag twice concurrently or pull a remote replacement.
     pull_policy: never
