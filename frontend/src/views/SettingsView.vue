@@ -27,6 +27,8 @@ const form = reactive<SettingsValues>({
   bot_api_mode: 'cloud',
   telegram_api_id: '', telegram_api_hash: '',
   confirmation_template: defaultConfirmationTemplate, filename_template: defaultFilenameTemplate,
+  message_title_length: 20,
+  message_title_first_line: true,
   bot_token: '', allowed_user_ids: [], auto_download: false, confirmation_timeout_seconds: 1800, download_concurrency: 3,
   max_auto_retries: 3, download_root_id: 'default', timezone: 'Asia/Shanghai',
   diagnostic_log_retention_days: 7,
@@ -75,7 +77,7 @@ watch(liveSystem, status => {
 const validationBlocked = computed(() => connectionBlocked.value || (liveSystem.value ? validationBlockReason(liveSystem.value.local_api, proxyStatus.value) : '正在获取服务状态，请稍候。'))
 const current = computed(() => JSON.stringify({ form, userIds: userIds.value, clearBotToken: clearBotToken.value, clearProxyPassword: clearProxyPassword.value, clearApiHash: clearApiHash.value }))
 const dirty = computed(() => !!snapshot.value && snapshot.value !== current.value)
-const examples = computed(() => templateExamples(form.confirmation_template, form.filename_template, form.confirmation_timeout_seconds))
+const examples = computed(() => templateExamples(form.confirmation_template, form.filename_template, form.confirmation_timeout_seconds, form.message_title_length))
 const confirmationMinutes = computed({
   get: () => form.confirmation_timeout_seconds / 60,
   set: (minutes: number | undefined) => { if (minutes !== undefined) form.confirmation_timeout_seconds = Math.round(minutes * 60) },
@@ -103,6 +105,10 @@ async function load() {
   finally { loading.value = false }
 }
 function payload(includeConnection = true) {
+  if (!Number.isInteger(form.message_title_length) || form.message_title_length < 1 || form.message_title_length > 80) {
+    section.value = 'templates'
+    throw new Error('消息标题最大长度须为 1–80 的整数。')
+  }
   if (examples.value.confirmationError || examples.value.fileError) section.value = 'templates'
   if (includeConnection && form.proxy.enabled && form.proxy.scheme === 'socks5') {
     const encoder = new TextEncoder()
@@ -307,6 +313,16 @@ onMounted(load)
         </section>
         <section v-show="section === 'templates'" class="panel settings-section">
           <div class="section-heading"><div><h2>提示与命名</h2><p class="muted">仅新生成的确认卡生效，已有卡片、任务和重试保留原计划。</p></div></div>
+          <el-form-item label="遇到换行截断标题" label-for="message-title-first-line">
+            <template #label><span class="setting-label">遇到换行截断标题<SettingsSource :source="settings.sources.message_title_first_line" :editable="editable('message_title_first_line')" /></span></template>
+            <el-switch id="message-title-first-line" aria-label="遇到换行截断标题" v-model="form.message_title_first_line" :disabled="!editable('message_title_first_line')" @keydown.space.prevent="form.message_title_first_line = !form.message_title_first_line" /><span class="switch-label">{{ form.message_title_first_line ? '已开启' : '已关闭' }}</span>
+            <p class="field-hint">默认开启，只取第一行并按下方长度限制截取；关闭后将各行合并为空格。原文件名缺失时使用的消息标题同步遵守此规则。</p>
+          </el-form-item>
+          <el-form-item label="消息标题最大长度" label-for="message-title-length">
+            <template #label><span class="setting-label">消息标题最大长度<SettingsSource :source="settings.sources.message_title_length" :editable="editable('message_title_length')" /></span></template>
+            <el-input-number id="message-title-length" aria-label="消息标题最大长度" v-model="form.message_title_length" :min="1" :max="80" :step="1" :precision="0" :disabled="!editable('message_title_length')" />
+            <p class="field-hint">默认 20，范围 1–80 个字符，超长时末尾省略号计入长度。原文件名缺失时也用此限制生成名称，扩展名另行保留；原文件名和手动指定名称沿用原规则。</p>
+          </el-form-item>
           <div class="template-block">
             <div class="template-layout">
               <div class="template-editor">

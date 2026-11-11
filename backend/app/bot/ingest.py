@@ -121,6 +121,7 @@ class IngestService:
                                       mime_type=media.get("mime_type"),
                                       original_name=media.get("file_name"), size_bytes=media.get("file_size"),
                                       caption_snippet=text_summary(message.get("caption") or message.get("text")) or None,
+                                      caption_first_line=text_summary(message.get("caption") or message.get("text"), first_line=True),
                                       duration_seconds=media.get("duration")))
             else:
                 text = str(message.get("text", ""))

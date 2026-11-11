@@ -4,6 +4,11 @@ import { defaultConfirmationTemplate, defaultFilenameTemplate, filenameVariables
 const confirmationHeader = '📋 等待确认\n任务编号：e5f6a7b80123456789abcdef01234567\n\n'
 
 describe('settings template examples', () => {
+  it.each([[1, '…'], [2, '海…'], [4, '海边日落'], [20, '海边日落']])('uses title limit %s without shortening the existing filename', (limit, title) => {
+    const example = templateExamples('{title}', '{name}', 1800, Number(limit))
+    expect(example.text).toBe(confirmationHeader + title)
+    expect(example.file).toBe('海边日落.mp4')
+  })
   it.each(['video', 'image', 'audio', 'voice', 'animation', 'video_note', 'document'])('documents and accepts the %s filename type value', type => {
     expect(filenameVariables.find(([name]) => name === 'type')?.[1].split(' / ')).toContain(type)
     expect(renderTemplateExample('{type}_{index}', { type, index: '1' }, true)).toBe(`${type}_1`)

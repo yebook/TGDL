@@ -142,6 +142,7 @@ class MediaItem(Base):
     planned_filename: Mapped[str | None]
     original_name: Mapped[str | None]
     caption_snippet: Mapped[str | None] = mapped_column(String(80))
+    caption_first_line: Mapped[str | None] = mapped_column(String(80))
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     duration_seconds: Mapped[int | None]
 

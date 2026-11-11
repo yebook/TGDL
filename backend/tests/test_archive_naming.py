@@ -14,9 +14,9 @@ from tests.test_pipeline import confirm_all, message, setup_pipeline
 
 
 @pytest.mark.parametrize("caption,original,expected", [
-    ("  春游\n\t海边\u202e\x00记录 ", "movie.mp4", "春游 海边 记录"),
+    ("  春游\n\t海边\u202e\x00记录 ", "movie.mp4", "春游"),
     (None, "movie.mp4", "movie.mp4"), (" \n", None, "视频"),
-    ("景" * 100, "movie.mp4", "景" * 79 + "…"),
+    ("景" * 100, "movie.mp4", "景" * 19 + "…"),
     ("保留原文 #abcdef01", "movie.mp4", "保留原文 #abcdef01"),
 ])
 def test_single_title_and_all_notifications_share_snapshot(client: TestClient, caption, original, expected) -> None:

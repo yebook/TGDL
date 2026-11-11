@@ -23,7 +23,7 @@ def test_initial_schema_matches_models_and_repeated_startup_is_idempotent(tmp_pa
             migration = migration_config()
             migration.attributes["connection"] = connection
             command.upgrade(migration, "head")
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "cancel_cleanup"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "caption_first_line"
             assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
             connection.exec_driver_sql("INSERT INTO settings VALUES (1, 8, 1, '{}')")
             command.upgrade(migration, "head")
@@ -33,7 +33,7 @@ def test_initial_schema_matches_models_and_repeated_startup_is_idempotent(tmp_pa
         engine.dispose()
 
 
-@pytest.mark.parametrize("released_revision", ["initial", "saved_media_deletion", "file_types", "retained_cache"])
+@pytest.mark.parametrize("released_revision", ["initial", "saved_media_deletion", "file_types", "retained_cache", "cancel_cleanup"])
 def test_current_initial_database_upgrades_without_changing_history_or_media(tmp_path: Path, released_revision: str) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'existing.db'}")
     media = tmp_path / "video.mp4"
@@ -74,7 +74,8 @@ def test_current_initial_database_upgrades_without_changing_history_or_media(tmp
             command.upgrade(migration, "head")
             assert {table: connection.exec_driver_sql(f"SELECT {columns[table]} FROM {table}").all() for table in tables} == before
             assert connection.exec_driver_sql("SELECT mime_type FROM media_items").scalar() is None
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "cancel_cleanup"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "caption_first_line"
+            assert connection.exec_driver_sql("SELECT caption_first_line FROM media_items").scalar() is None
             assert connection.exec_driver_sql("SELECT execution_mode FROM jobs").scalar() == "download"
             assert connection.exec_driver_sql("SELECT cache_id FROM jobs").scalar() is None
             command.upgrade(migration, "head")

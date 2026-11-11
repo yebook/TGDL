@@ -6,6 +6,8 @@ DEFAULT_CONFIRMATION_TEMPLATE = (
     "\n📁 保存到：{destination}\n⏳ 确认有效期：{expires_in_minutes} 分钟\n======\n{files}"
 )
 DEFAULT_FILENAME_TEMPLATE = "{name}"
+DEFAULT_MESSAGE_TITLE_LENGTH = 20
+MAX_MESSAGE_TITLE_LENGTH = 80
 CONFIRMATION_FIELDS = frozenset({"title", "file_count", "total_size", "files", "destination",
                                "expires_in_minutes"})
 FILENAME_FIELDS = frozenset({"name", "date", "time", "datetime", "type", "index", "id"})

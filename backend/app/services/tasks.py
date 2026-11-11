@@ -229,7 +229,8 @@ class TaskService:
                 request.config_revision = revision
                 request.root_id = settings.download_root_id
                 if not request.destination:
-                    summary = request_summary(request, items)
+                    summary = request_summary(request, items, settings.message_title_length,
+                                              first_line=settings.message_title_first_line)
                     request.title = summary
                     request.destination = self.destination(session, request, summary, settings.timezone)
                 # Conservative upper bound if send succeeds but its response is lost.
@@ -255,10 +256,12 @@ class TaskService:
                     if parent == request.destination:
                         used.add(name.casefold())
                 lines = []
-                caption = request_caption(items)
+                caption = request_caption(items, settings.message_title_length, first_line=settings.message_title_first_line)
                 for index, item in enumerate(items, start=1):
                     item.planned_filename = unique_name(planned_name(
-                        item, request, settings.filename_template, settings.timezone, index, caption=caption), used)
+                        item, request, settings.filename_template, settings.timezone, index,
+                        caption=caption, title_length=settings.message_title_length,
+                        first_line=settings.message_title_first_line), used)
                     lines.append(f"文件名：{item.planned_filename}\n文件大小：{format_bytes(item.size_bytes)}")
                 if automatic:
                     request.expires_at = None

@@ -21,6 +21,8 @@ def test_current_timeout_and_template_defaults() -> None:
     assert settings.confirmation_template == DEFAULT_CONFIRMATION_TEMPLATE
     assert settings.bot_api_mode == "cloud"
     assert settings.filename_template == "{name}"
+    assert settings.message_title_length == 20
+    assert settings.message_title_first_line is True
 
 
 @pytest.mark.parametrize("size,total", [(0, "0 B"), (1024, "2.0 KB"), (None, "未知")])
@@ -282,15 +284,15 @@ def test_group_first_caption_shared_in_order_and_frozen_before_consent(client: T
     state.tasks.freeze_due()
     with state.db.sessions() as session:
         request = session.get(MediaRequest, request_id)
-        assert request.title == "旅行 合辑"
+        assert request.title == "旅行"
         items = list(session.scalars(select(MediaItem).order_by(MediaItem.message_id)))
-        assert [item.planned_filename for item in items] == ["旅行 合辑.jpg", "旅行 合辑.mp4", "movie3.mp4"]
+        assert [item.planned_filename for item in items] == ["旅行.jpg", "旅行.mp4", "movie3.mp4"]
         card = session.scalar(select(Notification).where(Notification.event_key.like("confirm:%")))
         assert all(item.planned_filename in card.payload["text"] for item in items)
     assert state.tasks.confirm(request_id, nonce, 42, 42, "confirm") == "queued"
     with state.db.sessions() as session:
         assert sorted(job.relative_path.rsplit("/", 1)[1] for job in session.scalars(select(Job))) == [
-            "movie3.mp4", "旅行 合辑.jpg", "旅行 合辑.mp4"]
+            "movie3.mp4", "旅行.jpg", "旅行.mp4"]
 
 
 def test_default_names_only_number_actual_duplicates(client: TestClient) -> None:

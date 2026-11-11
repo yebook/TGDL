@@ -67,6 +67,19 @@ class ConfigBackupService:
             payload = BackupPayload.model_validate_json(plaintext)
             fields = set(UserSettings.model_fields)
             excluded = set(payload.excluded_fields)
+            coverage = set(payload.settings) | excluded
+            if (set(payload.settings).isdisjoint(excluded) and coverage in (
+                    fields - {"message_title_first_line"},
+                    fields - {"message_title_first_line", "message_title_length"},
+                    fields - {"message_title_first_line", "auto_download"},
+                    fields - {"message_title_first_line", "message_title_length", "auto_download"})):
+                payload.settings["message_title_first_line"] = True
+            # Accept the complete schema immediately before title-length settings,
+            # including backups already predating automatic downloads.
+            coverage = set(payload.settings) | excluded
+            if (set(payload.settings).isdisjoint(excluded)
+                    and coverage in (fields - {"message_title_length"}, fields - {"message_title_length", "auto_download"})):
+                payload.settings["message_title_length"] = UserSettings().message_title_length
             # Backups predating automatic downloads contain the previous complete
             # field set. Restore their manual-confirmation behavior explicitly.
             if (set(payload.settings).isdisjoint(excluded)

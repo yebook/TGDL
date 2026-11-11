@@ -72,7 +72,7 @@ class SettingsService:
             if env is not None:
                 values[key] = json.loads(env) if key in {
                     "confirmation_timeout_seconds", "download_concurrency", "max_auto_retries", "allowed_user_ids", "proxy",
-                    "diagnostic_log_retention_days"
+                    "diagnostic_log_retention_days", "message_title_length", "message_title_first_line"
                 } else env
                 sources[key] = "environment"
         validated = UserSettings.model_validate(values)

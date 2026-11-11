@@ -2,7 +2,13 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from app.core.templates import DEFAULT_CONFIRMATION_TEMPLATE, DEFAULT_FILENAME_TEMPLATE, validate_template
+from app.core.templates import (
+    DEFAULT_CONFIRMATION_TEMPLATE,
+    DEFAULT_FILENAME_TEMPLATE,
+    DEFAULT_MESSAGE_TITLE_LENGTH,
+    MAX_MESSAGE_TITLE_LENGTH,
+    validate_template,
+)
 
 
 class ProxySettings(BaseModel):
@@ -44,6 +50,8 @@ class UserSettings(BaseModel):
     bot_api_mode: Literal["cloud", "local"] = "cloud"
     confirmation_template: str = DEFAULT_CONFIRMATION_TEMPLATE
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
+    message_title_length: int = Field(default=DEFAULT_MESSAGE_TITLE_LENGTH, ge=1, le=MAX_MESSAGE_TITLE_LENGTH, strict=True)
+    message_title_first_line: bool = Field(default=True, strict=True)
     auto_download: bool = False
     confirmation_timeout_seconds: int = Field(default=1800, ge=30, le=86400)
     download_concurrency: int = Field(default=3, ge=1, le=16)
@@ -99,6 +107,8 @@ class SettingsPatch(BaseModel):
     revision: int | None = None
     confirmation_template: str | None = None
     filename_template: str | None = None
+    message_title_length: int | None = Field(default=None, ge=1, le=MAX_MESSAGE_TITLE_LENGTH, strict=True)
+    message_title_first_line: bool | None = Field(default=None, strict=True)
     auto_download: bool | None = None
     confirmation_timeout_seconds: int | None = None
     download_concurrency: int | None = None

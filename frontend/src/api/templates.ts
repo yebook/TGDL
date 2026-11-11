@@ -59,13 +59,14 @@ function fitExampleFilename(rendered: string): string {
   return `${result.replace(/[ .]+$/g, '') || 'file'}.mp4`
 }
 
-export function templateExamples(confirmation: string, filename: string, expiresIn: number) {
+export function templateExamples(confirmation: string, filename: string, expiresIn: number, titleLength = 20) {
   let file = '', fileError = '', text = '', confirmationError = ''
   try {
     file = fitExampleFilename(renderTemplateExample(filename, { name: '海边日落', date: '20261020', time: '183000', datetime: '20261020_183000', type: 'video', index: '1', id: 'a1b2c3d4' }, true))
   } catch (cause) { fileError = (cause as Error).message }
   try {
-    text = '📋 等待确认\n任务编号：e5f6a7b80123456789abcdef01234567\n\n' + renderTemplateExample(confirmation, { title: '海边日落', file_count: '1', total_size: bytes(13107200), files: `文件名：${file || '海边日落.mp4'}\n文件大小：${bytes(13107200)}`, destination: '2026-10-20', expires_in_minutes: String(Number((expiresIn / 60).toFixed(2))) })
+    const title = titleLength < 4 ? `${Array.from('海边日落').slice(0, Math.max(0, titleLength - 1)).join('')}…` : '海边日落'
+    text = '📋 等待确认\n任务编号：e5f6a7b80123456789abcdef01234567\n\n' + renderTemplateExample(confirmation, { title, file_count: '1', total_size: bytes(13107200), files: `文件名：${file || '海边日落.mp4'}\n文件大小：${bytes(13107200)}`, destination: '2026-10-20', expires_in_minutes: String(Number((expiresIn / 60).toFixed(2))) })
   } catch (cause) { confirmationError = (cause as Error).message }
   return { file, fileError, text, confirmationError }
 }

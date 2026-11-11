@@ -55,6 +55,34 @@ def test_encrypted_roundtrip_and_offline_redacted_preview(authenticated: TestCli
     assert client.get("/api/v1/auth/me").status_code == 200
 
 
+@pytest.mark.parametrize("missing", [set(), {"message_title_length"}, {"message_title_length", "auto_download"},
+                                    {"message_title_first_line"}, {"message_title_first_line", "message_title_length"},
+                                    {"message_title_first_line", "message_title_length", "auto_download"}])
+def test_title_length_backup_roundtrip_and_legacy_defaults(authenticated: TestClient, missing: set[str]) -> None:
+    import base64
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from app.services.config_backup import AAD
+
+    save(authenticated, message_title_length=37, message_title_first_line=False)
+    service = ConfigBackupService(authenticated.app.state.settings)
+    backup = export(authenticated)
+    payload = service.decrypt(BackupEnvelope.model_validate(backup), PASSWORD).model_dump()
+    for field in missing:
+        payload["settings"].pop(field)
+    key = service._key(PASSWORD, base64.b64decode(backup["salt"]))
+    backup["ciphertext"] = base64.b64encode(AESGCM(key).encrypt(
+        base64.b64decode(backup["nonce"]), json.dumps(payload).encode(), AAD)).decode()
+    save(authenticated, message_title_length=5)
+    revision = authenticated.app.state.settings.read()[0]
+    result = authenticated.post(PREFIX + "restore", json={"password": PASSWORD, "backup": backup, "revision": revision})
+    assert result.status_code == 200, result.text
+    restored = authenticated.app.state.settings.read()[1]
+    assert restored.message_title_length == (20 if "message_title_length" in missing else 37)
+    assert restored.message_title_first_line is ("message_title_first_line" in missing)
+
+
 def test_restoring_empty_secrets_clears_instead_of_preserving(authenticated: TestClient) -> None:
     backup = export(authenticated)
     save(authenticated, bot_token=TOKEN, allowed_user_ids=[42], telegram_api_hash=API_HASH,

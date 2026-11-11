@@ -5,28 +5,35 @@ from string import Formatter
 from zoneinfo import ZoneInfo
 
 from app.core.file_types import TYPE_LABELS, default_extension, original_extension
-from app.core.templates import render_template
+from app.core.templates import DEFAULT_MESSAGE_TITLE_LENGTH, MAX_MESSAGE_TITLE_LENGTH, render_template
 from app.db.models import MediaItem, MediaRequest
 from app.storage.files import safe_name
 
 
-def text_summary(value: str | None) -> str:
+def text_summary(value: str | None, limit: int = MAX_MESSAGE_TITLE_LENGTH, *, first_line: bool = False) -> str:
     """Retain a bounded, plain single-line message summary without hidden controls."""
+    if first_line:
+        value = next(iter((value or "").splitlines()), "")
     text = " ".join("".join(" " if unicodedata.category(char).startswith("C") else char
                             for char in (value or "")).split())
-    return text if len(text) <= 80 else text[:79].rstrip() + "…"
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def request_caption(items: list[MediaItem]) -> str:
-    return next((summary for item in items if (summary := text_summary(item.caption_snippet))), "")
+def request_caption(items: list[MediaItem], title_length: int = DEFAULT_MESSAGE_TITLE_LENGTH,
+                    *, first_line: bool = True) -> str:
+    return next((summary for item in items
+                 if (summary := text_summary(
+                     item.caption_first_line if first_line and item.caption_first_line is not None else item.caption_snippet,
+                     title_length, first_line=first_line))), "")
 
 
-def request_summary(request: MediaRequest, items: list[MediaItem]) -> str:
-    caption = request_caption(items)
+def request_summary(request: MediaRequest, items: list[MediaItem],
+                    title_length: int = DEFAULT_MESSAGE_TITLE_LENGTH, *, first_line: bool = True) -> str:
+    caption = request_caption(items, title_length, first_line=first_line)
     original = next((item.original_name for item in items if text_summary(item.original_name)), None)
     fallback = f"文件组（{len(items)} 个文件）" if request.kind == "group" else (
         TYPE_LABELS.get(items[0].media_type, "文件"))
-    return text_summary(request.name_override or caption or original) or fallback
+    return text_summary(request.name_override) or text_summary(caption or original, title_length, first_line=first_line) or fallback
 
 
 def fit_name(stem: str, extension: str, suffix: str = "") -> str:
@@ -37,11 +44,14 @@ def fit_name(stem: str, extension: str, suffix: str = "") -> str:
 
 
 def planned_name(item: MediaItem, request: MediaRequest, template: str, timezone: str, index: int,
-                 *, caption: str | None = None) -> str:
+                 *, caption: str | None = None, title_length: int = DEFAULT_MESSAGE_TITLE_LENGTH,
+                 first_line: bool = True) -> str:
     fallback = default_extension(item.media_type, item.mime_type)
     # Extract extension before sanitization/truncation so long Unicode stems cannot lose it.
     original = item.original_name if text_summary(item.original_name) else None
-    caption = text_summary(item.caption_snippet if caption is None else caption)
+    if caption is None:
+        caption = item.caption_first_line if first_line and item.caption_first_line is not None else item.caption_snippet
+    caption = text_summary(caption, title_length, first_line=first_line)
     override = text_summary(request.name_override)
     from_caption = bool(override) or (original is None and bool(caption))
     if original is None:
