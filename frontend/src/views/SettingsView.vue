@@ -313,10 +313,10 @@ onMounted(load)
         </section>
         <section v-show="section === 'templates'" class="panel settings-section">
           <div class="section-heading"><div><h2>提示与命名</h2><p class="muted">仅新生成的确认卡生效，已有卡片、任务和重试保留原计划。</p></div></div>
-          <el-form-item label="遇到换行截断标题" label-for="message-title-first-line">
-            <template #label><span class="setting-label">遇到换行截断标题<SettingsSource :source="settings.sources.message_title_first_line" :editable="editable('message_title_first_line')" /></span></template>
-            <el-switch id="message-title-first-line" aria-label="遇到换行截断标题" v-model="form.message_title_first_line" :disabled="!editable('message_title_first_line')" @keydown.space.prevent="form.message_title_first_line = !form.message_title_first_line" /><span class="switch-label">{{ form.message_title_first_line ? '已开启' : '已关闭' }}</span>
-            <p class="field-hint">默认开启，只取第一行并按下方长度限制截取；关闭后将各行合并为空格。原文件名缺失时使用的消息标题同步遵守此规则。</p>
+          <el-form-item label="标题换行截断" label-for="message-title-first-line">
+            <template #label><span class="setting-label">标题换行截断<SettingsSource :source="settings.sources.message_title_first_line" :editable="editable('message_title_first_line')" /></span></template>
+            <el-switch id="message-title-first-line" aria-label="标题换行截断" v-model="form.message_title_first_line" :disabled="!editable('message_title_first_line')" @keydown.space.prevent="form.message_title_first_line = !form.message_title_first_line" /><span class="switch-label">{{ form.message_title_first_line ? '已开启' : '已关闭' }}</span>
+            <p class="field-hint">默认开启，使用消息第一行作为标题；关闭后合并各行。超过最大长度时自动截取，原文件名缺失时也按此规则命名。</p>
           </el-form-item>
           <el-form-item label="消息标题最大长度" label-for="message-title-length">
             <template #label><span class="setting-label">消息标题最大长度<SettingsSource :source="settings.sources.message_title_length" :editable="editable('message_title_length')" /></span></template>

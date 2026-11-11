@@ -851,7 +851,7 @@ test('custom Bot and filename templates preview, reject mistakes and persist off
   const filename = '{date}_{type}_{index}_{name}_{id}'
   await page.getByRole('button', { name: '提示与命名', exact: true }).click()
   await expect(page.locator('#message-title-length')).toHaveValue(String(original.values.message_title_length))
-  const firstLine = page.getByRole('switch', { name: '遇到换行截断标题', exact: true })
+  const firstLine = page.getByRole('switch', { name: '标题换行截断', exact: true })
   await expect(firstLine).toBeChecked()
   await firstLine.focus()
   await page.keyboard.press('Space')
