@@ -215,26 +215,21 @@ class Smoke:
                     "assert all(p.read_bytes()==(b/'data'/p.name).read_bytes() for p in identities); "
                     "assert not (a/'downloads/.tgd-root').exists(); "
                     "assert not (b/'downloads/.tgd-root').exists()")
-        # A copied directory is deliberately a new storage identity. Verify the
-        # copied data first, then explicitly re-enroll only this disposable root.
-        self.helper("import sys; sys.path.insert(0, '/app/backend'); "
-                    "from pathlib import Path; from app.core.errors import AppError; "
-                    "from app.storage.files import Storage\n"
-                    "root=Path('/work/restored')\n"
-                    "try:\n"
-                    "    Storage(root/'downloads', root/'data', 0).check()\n"
-                    "except AppError as error:\n"
-                    "    assert error.code == 'STORAGE_CHANGED'\n"
-                    "else:\n"
-                    "    raise AssertionError('Copied root must require explicit re-enrollment')")
+        # A new process automatically enrolls its current directory, including
+        # a stopped backup copied to a new inode. No identity-file surgery.
         self.helper("import hashlib,json; from pathlib import Path; a=Path('/work/original'); b=Path('/work/restored'); "
                     "name='storage-identity-'+hashlib.sha256(b'default').hexdigest()[:16]+'.json'; "
                     "identity=json.loads((b/'data'/name).read_bytes()); "
                     "assert identity['inode']==(a/'downloads').stat().st_ino; "
-                    "assert identity['inode']!=(b/'downloads').stat().st_ino; "
-                    "(b/'data'/name).unlink()")
+                    "assert identity['inode']!=(b/'downloads').stat().st_ino")
         self.start("restored")
         self.verify_state()
+        self.helper("import hashlib,json; from pathlib import Path; a=Path('/work/original'); b=Path('/work/restored'); "
+                    "name='storage-identity-'+hashlib.sha256(b'default').hexdigest()[:16]+'.json'; "
+                    "identity=json.loads((b/'data'/name).read_bytes()); root=(b/'downloads').stat(); "
+                    "assert identity=={'device':root.st_dev,'inode':root.st_ino}; "
+                    "assert json.loads((a/'data'/name).read_bytes())['inode']==(a/'downloads').stat().st_ino; "
+                    "assert (b/'downloads/smoke-sentinel').read_bytes()==(a/'downloads/smoke-sentinel').read_bytes()")
         self.passed("stopped_backup_restore")
 
     def cleanup(self) -> None:

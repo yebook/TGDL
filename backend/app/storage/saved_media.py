@@ -12,11 +12,10 @@ from app.storage.files import Storage, contained, hash_stream
 
 
 def root_identity(storage: Storage) -> dict[str, int]:
-    # Read probes and deletion must never enroll a missing identity record.
-    expected = storage._read_identity()
-    if storage._root_identity() != expected:
-        raise AppError("STORAGE_CHANGED", "下载目录身份已改变", 409)
-    return expected
+    # A recreated process enrolls its current root; later probes reject a
+    # replaced mount through the process-scoped identity.
+    storage.check(check_space=False)
+    return storage._read_identity()
 
 
 def parts(relative: str) -> tuple[str, ...]:

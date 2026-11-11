@@ -100,8 +100,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             settings = SettingsService(db, cfg, crypto)
             backups = ConfigBackupService(settings)
             tasks = TaskService(db, settings)
-            storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes,
-                                     cfg.storage_root_identities)
+            storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes)
             runtime = Runtime(db, cfg, settings, tasks, storage)
             tasks.saved_media = SavedMediaService(db, storage)
             tasks.saved_media.runtime = runtime

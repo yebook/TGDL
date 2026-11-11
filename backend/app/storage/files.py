@@ -8,7 +8,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO
 
 from app.core.errors import AppError
 
@@ -52,18 +52,24 @@ def source_file(root: Path, value: str) -> Path:
 
 
 class Storage:
-    def __init__(self, root: Path, data_dir: Path, minimum_free: int, root_id: str = "default",
-                 configured_path: str | None = None) -> None:
+    def __init__(self, root: Path, data_dir: Path, minimum_free: int, root_id: str = "default") -> None:
         self.root, self.data_dir, self.minimum_free = root, data_dir, minimum_free
         self.root_id = root_id
-        self.configured_path = configured_path or str(root)
+        self._enrolled_identity: dict[str, int] | None = None
+        self._identity_persisted = False
         self.identity_path = data_dir / f"storage-identity-{hashlib.sha256(root_id.encode()).hexdigest()[:16]}.json"
 
     def initialize(self) -> None:
-        if self.identity_path.exists() or self.identity_path.is_symlink():
-            return
-        # Root must already exist. Keep identity outside the media output tree.
-        self._write_identity(self._root_identity())
+        # A recreated process uses the currently configured directory as its
+        # baseline. The identity file is intentionally replaced; it carries no
+        # history of previous deployment paths.
+        identity = self._root_identity()
+        if self._enrolled_identity is None:
+            self._enrolled_identity = identity
+        elif identity != self._enrolled_identity:
+            raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
+        self._write_identity(self._enrolled_identity)
+        self._identity_persisted = True
 
     def _root_identity(self) -> dict[str, int]:
         metadata = self.root.lstat()
@@ -72,7 +78,6 @@ class Storage:
         return {"device": metadata.st_dev, "inode": metadata.st_ino}
 
     def _write_identity(self, identity: dict[str, int]) -> None:
-        record = {**identity, "configured_path": self.configured_path}
         fd, temporary = tempfile.mkstemp(prefix=f".{self.identity_path.name}.", dir=self.data_dir)
         try:
             if hasattr(os, "fchmod"):
@@ -80,7 +85,7 @@ class Storage:
             else:
                 os.chmod(temporary, 0o600)
             with os.fdopen(fd, "wb") as stream:
-                stream.write(json.dumps(record, separators=(",", ":")).encode())
+                stream.write(json.dumps(identity, separators=(",", ":")).encode())
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.identity_path)
@@ -91,52 +96,21 @@ class Storage:
                 pass
             raise
 
-    def _read_identity_record(self) -> dict[str, int | str]:
-        # Fail closed for malformed/replaced metadata, including unpublished old
-        # marker-based records. Never silently enroll a different download root.
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        if self.identity_path.is_symlink():
-            raise AppError("UNSAFE_PATH", "存储身份文件不可为符号链接")
-        with os.fdopen(os.open(self.identity_path, flags), "rb") as stream:
-            metadata = os.fstat(stream.fileno())
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size > 512:
-                raise AppError("UNSAFE_PATH", "存储身份文件不是独立的普通文件")
-            try:
-                identity = json.loads(stream.read(513))
-            except (ValueError, UnicodeError):
-                identity = None
-        if (not isinstance(identity, dict) or set(identity) not in ({"device", "inode"}, {"device", "inode", "configured_path"})
-                or any(type(value) is not int or value < 0 for key, value in identity.items() if key in {"device", "inode"})
-                or identity["inode"] == 0):
-            raise AppError("STORAGE_CHANGED", "存储身份记录无效；请停服确认下载挂载后，按文档重新登记该目录")
-        if "configured_path" in identity and (not isinstance(identity["configured_path"], str)
-                                               or not identity["configured_path"]):
-            raise AppError("STORAGE_CHANGED", "存储身份记录无效；请停服确认下载挂载后，按文档重新登记该目录")
-        return identity
-
     def _read_identity(self) -> dict[str, int]:
-        identity = self._read_identity_record()
-        return {"device": cast(int, identity["device"]), "inode": cast(int, identity["inode"])}
+        if self._enrolled_identity is None:
+            self.check(check_space=False)
+        assert self._enrolled_identity is not None
+        return dict(self._enrolled_identity)
 
     def check(self, required: int = 0, *, check_space: bool = True) -> dict[str, Any]:
-        if not self.identity_path.exists():
-            self.initialize()
-        identity = self._read_identity_record()
         current = self._root_identity()
-        recorded_path = identity.get("configured_path")
-        stored_root = {key: cast(int, identity[key]) for key in ("device", "inode")}
-        if current != stored_root:
-            # A legacy record has no configured-path context, so a changed
-            # deployment cannot be distinguished from a replaced mount. Migrate
-            # it once so existing deployments can change TGD_HOST_DOWNLOADS;
-            # subsequent records carry the path and retain strict protection.
-            if recorded_path is None or recorded_path != self.configured_path:
-                self._write_identity(current)
-            else:
-                raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
-        elif recorded_path != self.configured_path:
-            # Upgrade legacy records once the current mount still matches.
+        if self._enrolled_identity is None:
+            self._enrolled_identity = current
+        elif current != self._enrolled_identity:
+            raise AppError("STORAGE_CHANGED", "存储身份已改变，请检查挂载")
+        if not self._identity_persisted:
             self._write_identity(current)
+            self._identity_persisted = True
         usage = shutil.disk_usage(self.root)
         if check_space and usage.free < self.minimum_free + required:
             raise AppError("NO_SPACE", "可用空间不足，请释放对应磁盘空间后手动重试")
@@ -212,11 +186,8 @@ def publish_no_replace(temporary: Path, final: Path) -> None:
 
 
 class StorageManager:
-    def __init__(self, roots: dict[str, Path], data_dir: Path, minimum_free: int,
-                 configured_paths: dict[str, str] | None = None) -> None:
-        configured_paths = configured_paths or {}
-        self.roots = {key: Storage(path, data_dir, minimum_free, key, configured_paths.get(key))
-                      for key, path in roots.items()}
+    def __init__(self, roots: dict[str, Path], data_dir: Path, minimum_free: int) -> None:
+        self.roots = {key: Storage(path, data_dir, minimum_free, key) for key, path in roots.items()}
 
     def get(self, root_id: str) -> Storage:
         if root_id not in self.roots:

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db.models import CacheCleanup, FileDeletionOperation, Job, MediaItem, MediaRequest, StoredFile
+from app.storage.files import Storage
 from app.storage.saved_media import observe, remove_verified
 
 POSIX = pytest.mark.skipif(os.name != "posix", reason="Real descriptor-relative unlink requires POSIX")
@@ -65,7 +66,10 @@ def test_availability_tracks_external_changes_without_changing_history(authentic
     storage.minimum_free = 2**60
     assert state() == "present"
     storage.identity_path.unlink()
-    assert state() == "unavailable"
+    # The running process keeps its verified baseline in memory; the identity
+    # file is refreshed on the next process start rather than being a runtime
+    # availability dependency.
+    assert state() == "present"
     assert not storage.identity_path.exists()
 
 
@@ -79,6 +83,34 @@ def test_root_missing_or_replaced_is_unavailable(authenticated: TestClient) -> N
     assert observe(storage, "day/video.mp4", 6) == "unavailable"
     assert path.exists() is False
     assert authenticated.get(f"/api/v1/tasks/{request}").json()["local_files"]["unavailable"] == 1
+
+
+@pytest.mark.parametrize("migrated", [False, True])
+def test_recreated_storage_checks_existing_tasks_in_current_root(
+    authenticated: TestClient, monkeypatch, migrated: bool,
+) -> None:
+    request, path = saved(authenticated)
+    manager = authenticated.app.state.storage
+    previous = manager.get("default")
+    replacement = previous.root.with_name("new-downloads")
+    replacement.mkdir()
+    if migrated:
+        target = replacement / "day/video.mp4"
+        target.parent.mkdir()
+        path.replace(target)
+    current = Storage(replacement, previous.data_dir, 0)
+    monkeypatch.setitem(manager.roots, "default", current)
+
+    state = "present" if migrated else "missing"
+    detail = authenticated.get(f"/api/v1/tasks/{request}").json()
+    assert detail["status"] == "succeeded" and detail["completed_count"] == 1
+    assert detail["items"][0]["relative_path"] == "day/video.mp4"
+    assert detail["items"][0]["local_file_state"] == state
+    assert detail["local_files"][state] == 1
+    rows = authenticated.get("/api/v1/tasks").json()["items"]
+    assert len(rows) == 1 and rows[0]["local_files"][state] == 1
+    # The path in the old root does not influence detection in the current root.
+    assert path.exists() is not migrated
 
 
 def test_strict_opt_in_and_record_only_stable_replay(authenticated: TestClient) -> None:

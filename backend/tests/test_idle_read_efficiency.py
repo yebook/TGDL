@@ -113,7 +113,7 @@ def test_task_list_batches_queries_and_matches_individual_projection(authenticat
     observations = {}
     for request_id, dto in expected.items():
         state.tasks._local_files(dto, jobs[request_id], observations)
-        assert dto["local_files"] == {"present": 0, "missing": 0, "changed": 0, "unavailable": 1, "not_saved": 1}
+        assert dto["local_files"] == {"present": 0, "missing": 1, "changed": 0, "unavailable": 0, "not_saved": 1}
         assert dto["can_retry"] is (retry_cache != "partial")
     queries: list[str] = []
 
@@ -130,7 +130,12 @@ def test_task_list_batches_queries_and_matches_individual_projection(authenticat
     assert len(queries) == (7 + (retry_cache != "none") if count else 4)
     data = response.json()
     assert data["total"] == count
-    assert {item["id"]: item for item in data["items"]} == expected
+    actual = {item["id"]: item for item in data["items"]}
+    expected_public = {
+        key: {field: value for field, value in dto.items() if field != "terminal"}
+        for key, dto in expected.items()
+    }
+    assert actual == expected_public
 
 
 def test_repeated_settings_read_validates_only_once(client: TestClient) -> None:

@@ -7,80 +7,149 @@ from app.core.errors import AppError
 from app.storage.files import Storage
 
 
-def make_storage(tmp_path: Path) -> Storage:
-    root, data = tmp_path / "downloads", tmp_path / "data"
+def make_storage(tmp_path: Path, *, root_name: str = "downloads") -> Storage:
+    root, data = tmp_path / root_name, tmp_path / "data"
     root.mkdir()
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     return Storage(root, data, 0)
+
+
+def read_identity(storage: Storage) -> dict[str, int]:
+    return json.loads(storage.identity_path.read_text())
 
 
 def test_identity_stays_in_data_and_survives_storage_recreation(tmp_path: Path) -> None:
     storage = make_storage(tmp_path)
     assert storage.check()["available"]
+    record = read_identity(storage)
+    assert set(record) == {"device", "inode"}
+    assert record == storage._root_identity()
+    recreated = Storage(storage.root, storage.data_dir, 0)
+    assert recreated.check()["available"]
+    assert read_identity(recreated) == record
     assert list(storage.root.iterdir()) == []
 
 
-def test_changed_configured_path_reenrolls_current_mount(tmp_path: Path) -> None:
-    storage = make_storage(tmp_path)
-    storage.configured_path = "/old/downloads"
-    storage.check()
-    original = storage.identity_path.read_bytes()
-    storage.configured_path = "/new/downloads"
-    assert storage.check()["available"]
-    assert storage.identity_path.read_bytes() != original
-    record = json.loads(storage.identity_path.read_bytes())
-    assert record["configured_path"] == "/new/downloads"
-
-
-def test_changed_configured_path_reenrolls_new_mount(tmp_path: Path) -> None:
-    root, replacement, data = tmp_path / "downloads", tmp_path / "replacement", tmp_path / "data"
-    root.mkdir()
+def test_new_storage_instance_enrolls_current_configured_root(tmp_path: Path) -> None:
+    original = make_storage(tmp_path)
+    original.check()
+    old_record = read_identity(original)
+    replacement = tmp_path / "replacement"
     replacement.mkdir()
-    data.mkdir()
-    Storage(root, data, 0, configured_path="/old/downloads").check()
-    switched = Storage(replacement, data, 0, configured_path="/new/downloads")
+
+    switched = Storage(replacement, original.data_dir, 0)
     assert switched.check()["available"]
-    record = json.loads(switched.identity_path.read_bytes())
-    assert record["configured_path"] == "/new/downloads"
-    assert record["inode"] == replacement.stat().st_ino
+    record = read_identity(switched)
+    assert record == switched._root_identity()
+    assert record != old_record
 
 
-def test_legacy_identity_is_upgraded_when_mount_is_unchanged(tmp_path: Path) -> None:
-    storage = make_storage(tmp_path)
-    storage.identity_path.write_text(json.dumps(storage._root_identity()))
-    assert storage.check()["available"]
-    assert json.loads(storage.identity_path.read_bytes())["configured_path"] == str(storage.root)
-    identity = storage.identity_path.read_bytes()
-    second = Storage(storage.root, storage.data_dir, 0)
-    assert second.check()["available"]
-    assert storage.identity_path.read_bytes() == identity
-    assert list(storage.root.iterdir()) == []
+def test_new_storage_instance_checks_migrated_file_by_relative_path(tmp_path: Path) -> None:
+    original = make_storage(tmp_path)
+    original.check()
+    relative = Path("day") / "video.mp4"
+    source = original.root / relative
+    source.parent.mkdir()
+    source.write_bytes(b"abcdef")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    target = replacement / relative
+    target.parent.mkdir()
+    source.replace(target)
+
+    switched = Storage(replacement, original.data_dir, 0)
+    assert switched.existing(relative.as_posix(), size=6)
 
 
-def test_legacy_identity_migrates_when_mount_changes(tmp_path: Path) -> None:
-    storage = make_storage(tmp_path)
-    identity = storage._root_identity()
-    storage.identity_path.write_text(json.dumps(identity))
-    identity["inode"] += 1
-    storage.identity_path.write_text(json.dumps(identity))
-    assert storage.check()["available"]
-    assert json.loads(storage.identity_path.read_bytes())["configured_path"] == str(storage.root)
-
-
-def test_root_missing_replaced_and_symlink_fail_closed(tmp_path: Path) -> None:
+def test_same_storage_instance_rejects_replaced_root(tmp_path: Path) -> None:
     storage = make_storage(tmp_path)
     storage.check()
-    identity = storage.identity_path.read_bytes()
     original = storage.root.with_name("original")
     storage.root.rename(original)
-    with pytest.raises(FileNotFoundError):
-        storage.check()
-    assert not storage.root.exists()
     storage.root.mkdir()
     with pytest.raises(AppError) as error:
         storage.check()
     assert error.value.code == "STORAGE_CHANGED"
+
+
+def test_initialize_cannot_replace_an_enrolled_baseline(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    storage.initialize()
+    identity = storage.identity_path.read_bytes()
+    storage.root.rename(storage.root.with_name("original"))
+    storage.root.mkdir()
+    with pytest.raises(AppError) as error:
+        storage.initialize()
+    assert error.value.code == "STORAGE_CHANGED"
     assert storage.identity_path.read_bytes() == identity
+    with pytest.raises(AppError) as error:
+        storage.check()
+    assert error.value.code == "STORAGE_CHANGED"
+
+
+@pytest.mark.parametrize("entrypoint", ["initialize", "check"])
+def test_failed_identity_write_is_retried(tmp_path: Path, monkeypatch, entrypoint: str) -> None:
+    storage = make_storage(tmp_path)
+    write = storage._write_identity
+    calls = 0
+
+    def flaky_write(identity: dict[str, int]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("identity write denied")
+        write(identity)
+
+    monkeypatch.setattr(storage, "_write_identity", flaky_write)
+    with pytest.raises(PermissionError):
+        getattr(storage, entrypoint)()
+    assert storage.check()["available"]
+    assert calls == 2
+    assert read_identity(storage) == storage._root_identity()
+
+
+@pytest.mark.parametrize("entrypoint", ["initialize", "check"])
+def test_failed_identity_write_still_pins_original_root(tmp_path: Path, monkeypatch, entrypoint: str) -> None:
+    storage = make_storage(tmp_path)
+
+    def denied_write(identity: dict[str, int]) -> None:
+        raise PermissionError("identity write denied")
+
+    monkeypatch.setattr(storage, "_write_identity", denied_write)
+    with pytest.raises(PermissionError):
+        getattr(storage, entrypoint)()
+    storage.root.rename(storage.root.with_name("original"))
+    storage.root.mkdir()
+    for operation in (storage.check, storage.initialize):
+        with pytest.raises(AppError) as error:
+            operation()
+        assert error.value.code == "STORAGE_CHANGED"
+
+
+def test_initialize_overwrites_legacy_or_corrupt_identity(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    storage.identity_path.write_text(json.dumps({"device": 1, "inode": 2, "configured_path": "/old"}))
+    storage.initialize()
+    assert read_identity(storage) == storage._root_identity()
+
+    storage.identity_path.write_bytes(b"not json")
+    storage.initialize()
+    assert read_identity(storage) == storage._root_identity()
+
+
+def test_root_missing_and_symlink_fail_closed(tmp_path: Path) -> None:
+    storage = make_storage(tmp_path)
+    storage.check()
+    original = storage.root.with_name("original")
+    storage.root.rename(original)
+    with pytest.raises(FileNotFoundError):
+        storage.check()
+
+    storage.root.mkdir()
+    with pytest.raises(AppError) as error:
+        storage.check()
+    assert error.value.code == "STORAGE_CHANGED"
+
     storage.root.rmdir()
     try:
         storage.root.symlink_to(original, target_is_directory=True)
@@ -91,27 +160,18 @@ def test_root_missing_replaced_and_symlink_fail_closed(tmp_path: Path) -> None:
     assert error.value.code == "STORAGE_UNAVAILABLE"
 
 
-@pytest.mark.parametrize("identity", [b"not json", b"[]", b'{"marker":"old","device":1}',
-                                     b'{"device":true,"inode":1}', b'{"device":1,"inode":0}', b"x" * 513])
-def test_invalid_identity_is_actionable_and_never_reenrolled(tmp_path: Path, identity: bytes) -> None:
+def test_identity_file_is_recreated_without_changing_enrolled_root(tmp_path: Path) -> None:
     storage = make_storage(tmp_path)
-    storage.identity_path.write_bytes(identity)
-    with pytest.raises(AppError) as error:
-        storage.check()
-    assert error.value.code in {"STORAGE_CHANGED", "UNSAFE_PATH"}
-    assert storage.identity_path.read_bytes() == identity
-    assert list(storage.root.iterdir()) == []
+    storage.check()
+    expected = storage._root_identity()
+    storage.identity_path.unlink()
+    storage.initialize()
+    assert read_identity(storage) == expected
 
 
-def test_changed_device_fails_closed_and_unrelated_old_marker_is_untouched(tmp_path: Path) -> None:
+def test_unrelated_old_marker_is_untouched(tmp_path: Path) -> None:
     storage = make_storage(tmp_path)
     marker = storage.root / ".tgd-root"
     marker.write_bytes(b"unrecognized user file")
     storage.check()
-    identity = json.loads(storage.identity_path.read_bytes())
-    identity["device"] += 1
-    storage.identity_path.write_text(json.dumps(identity))
-    with pytest.raises(AppError) as error:
-        storage.check()
-    assert error.value.code == "STORAGE_CHANGED"
     assert marker.read_bytes() == b"unrecognized user file"
