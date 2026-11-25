@@ -26,6 +26,7 @@ const { data, error, loading, refresh } = usePolling(signal => {
   if (search.value) params.set('q', search.value)
   return request<TaskPage>(`/tasks?${params}`, { signal })
 })
+const selectedSummary = computed(() => data.value?.items.find(task => task.id === selected.value))
 const filters = ['', 'collecting', 'awaiting_confirmation', 'queued', 'fetching', 'saving', 'retry_wait', 'cancelling', 'recovery_blocked', 'succeeded', 'already_exists', 'partial_success', 'failed', 'cancelled', 'expired']
 const selectableIds = computed(() => data.value?.items.filter(task => task.can_delete).map(task => task.id) ?? [])
 const allSelected = computed(() => selectableIds.value.length > 0 && selectableIds.value.every(id => selectedIds.value.includes(id)))
@@ -74,7 +75,7 @@ async function removed(ids: string[]) {
       </div>
       <div v-if="data" class="list-footer"><span class="muted task-total">共 {{ data.total }} 条</span><el-pagination v-model:current-page="page" :disabled="deleting" :total="data.total" :page-size="20" :pager-count="5" layout="prev, pager, next" /><span class="warning-text task-refresh-status" :title="error || undefined" role="status">{{ error ? '更新失败，保留上次结果' : '' }}</span></div>
     </div>
-    <el-drawer class="task-detail-drawer" :model-value="!!selected" :with-header="false" size="min(680px, 100vw)" destroy-on-close @close="selected = ''"><TaskDetail v-if="selected" :id="selected" :deleting="deleting" @changed="refresh" @close="selected = ''" @remove="remove([$event])" /></el-drawer>
+    <el-drawer class="task-detail-drawer" :model-value="!!selected" :with-header="false" size="min(680px, 100vw)" destroy-on-close @close="selected = ''"><TaskDetail v-if="selected" :id="selected" :summary="selectedSummary" :deleting="deleting" @changed="refresh" @close="selected = ''" @remove="remove([$event])" /></el-drawer>
     <TaskDeleteDialog v-if="deleteIds.length" :ids="deleteIds" :open="showDeleteDialog" @close="deleteIds = []" @defer="showDeleteDialog = false" @removed="removed" />
   </section>
 </template>

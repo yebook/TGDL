@@ -1,18 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { networkAdvice, networkProbeLabel, networkResultHistorical, telegramAppliedRouteLabel, telegramProtocolLabel, telegramTargetLabel, useNetworkTest } from '../api/networkTest'
+import { computed, onUnmounted, watch } from 'vue'
 import { localApiPhaseLabel, localApiStates } from '../api/localApi'
+import {
+  networkAdvice, networkProbeLabel, networkResultHistorical, networkResultLifetimeMs,
+  telegramAppliedRouteLabel, telegramProtocolLabel, telegramTargetLabel, useNetworkTest,
+} from '../api/networkTest'
 import { proxyLabels } from '../api/proxy'
+import { useDeadlineClock } from '../composables/useDeadlineClock'
 
 const props = defineProps<{ revision: number; active: boolean; draft: boolean; disabled?: boolean; outcomeUnknown?: boolean }>()
 const { result, busy, error, nextAllowedAt, run, cancel } = useNetworkTest()
-const now = ref(Date.now())
-let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { timer = setInterval(() => { now.value = Date.now() }, 1000) })
-onUnmounted(() => { clearInterval(timer); cancel() })
-watch(() => props.active, active => { if (!active) cancel() })
-const historical = computed(() => result.value && (props.outcomeUnknown || networkResultHistorical(result.value, props.revision, now.value)))
-const waitSeconds = computed(() => Math.max(0, Math.ceil((nextAllowedAt.value - now.value) / 1000)))
+const active = () => props.active
+const retryClock = useDeadlineClock(() => nextAllowedAt.value, { stepMs: 1000, active })
+const expiryClock = useDeadlineClock(() => {
+  if (!result.value || props.outcomeUnknown || result.value.settings_revision !== props.revision) return 0
+  return Date.parse(result.value.checked_at) + networkResultLifetimeMs
+}, { active })
+onUnmounted(cancel)
+watch(active, visible => { if (!visible) cancel() })
+const historical = computed(() => result.value && (props.outcomeUnknown || networkResultHistorical(result.value, props.revision, expiryClock.value)))
+const waitSeconds = computed(() => Math.max(0, Math.ceil((nextAllowedAt.value - retryClock.value) / 1000)))
 const probes = computed(() => result.value ? [
   { name: 'Telegram HTTPS', result: result.value.telegram },
   { name: 'Google HTTPS', result: result.value.google },

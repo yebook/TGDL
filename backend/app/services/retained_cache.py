@@ -538,15 +538,19 @@ class RetainedCacheService:
     async def recover(self) -> None:
         """Read only; never replay a possibly committed deletion."""
         self.reconcile_queued()
+        with self.db.sessions() as session:
+            action = session.scalar(select(CacheAction).where(CacheAction.kind == "clean",
+                CacheAction.state.in_(["running", "uncertain"])).order_by(CacheAction.created_at).limit(1))
+            if not action or not action.cache_id or action.id in self.cleaning:
+                return
+            row = session.get(RetainedCache, action.cache_id)
+        if not row:
+            return
         identity = self.identity()
         if not identity:
             return
         client, generation, credential = identity
-        with self.db.sessions() as session:
-            action = session.scalar(select(CacheAction).where(CacheAction.kind == "clean",
-                CacheAction.state.in_(["running", "uncertain"])).order_by(CacheAction.created_at).limit(1))
-            row = session.get(RetainedCache, action.cache_id) if action and action.cache_id else None
-        if not action or not row or action.id in self.cleaning or action.credential != credential:
+        if action.credential != credential:
             return
         try:
             async with asyncio.timeout(3):
@@ -608,10 +612,13 @@ class RetainedCacheService:
         """A queued manual action has no writer; unavailable prerequisites must end it."""
         from app.services.tasks import enqueue, project
 
-        identity = self.identity()
-        save_identity = self.identity(allow_saving=True)
         with self.db.sessions() as session:
             candidates = list(session.scalars(select(CacheAction).where(CacheAction.state == "queued")))
+        if not candidates:
+            return
+        identity = self.identity()
+        save_identity = self.identity(allow_saving=True)
+
         def unavailable(action: CacheAction) -> bool:
             current = save_identity if action.kind == "save" else identity
             return bool(current and (current[1] != action.generation or current[2] != action.credential)

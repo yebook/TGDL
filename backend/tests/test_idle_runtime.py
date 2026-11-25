@@ -66,8 +66,10 @@ async def test_idle_tick_skips_dispatch_checks_then_downloads_new_confirmation(c
     runtime.bot_id = 7
     runtime.client_signature = state.settings.client_signature(state.settings.read()[1])
     runtime.bot_status["state"] = "online"
+    read = Mock(wraps=state.settings.read)
     proxy = Mock(wraps=state.settings.proxy_status)
     claim = Mock(wraps=runtime.worker.claim)
+    monkeypatch.setattr(state.settings, "read", read)
     monkeypatch.setattr(state.settings, "proxy_status", proxy)
     monkeypatch.setattr(runtime.worker, "claim", claim)
     run = AsyncMock()
@@ -82,6 +84,7 @@ async def test_idle_tick_skips_dispatch_checks_then_downloads_new_confirmation(c
     event.listen(state.db.engine, "before_cursor_execute",
                  lambda _c, _u, sql, _p, _x, _m: statements.append(sql))
     await runtime.tick_loop()
+    read.assert_not_called()
     proxy.assert_not_called()
     claim.assert_not_called()
     assert all(not sql.startswith("BEGIN") for sql in statements)
@@ -89,8 +92,10 @@ async def test_idle_tick_skips_dispatch_checks_then_downloads_new_confirmation(c
     runtime.ingest.message(7, message(), "new-media")
     request_id = confirm_all(state)
     runtime.stopping = False
+    read.reset_mock()
     await runtime.tick_loop()
     await asyncio.gather(*runtime.running.values())
+    assert read.called
     assert claim.call_count >= 1
     run.assert_awaited_once()
     assert state.tasks.detail(request_id)["status"] == "fetching"

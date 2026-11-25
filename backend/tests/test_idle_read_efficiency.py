@@ -131,11 +131,7 @@ def test_task_list_batches_queries_and_matches_individual_projection(authenticat
     data = response.json()
     assert data["total"] == count
     actual = {item["id"]: item for item in data["items"]}
-    expected_public = {
-        key: {field: value for field, value in dto.items() if field != "terminal"}
-        for key, dto in expected.items()
-    }
-    assert actual == expected_public
+    assert actual == expected
 
 
 def test_repeated_settings_read_validates_only_once(client: TestClient) -> None:

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { systemStatusRoute } from './routes'
 
 for (const width of [1440, 390]) {
   test(`proxy acknowledgement and API mode stay distinct without resetting edits at ${width}px`, async ({ page }) => {
@@ -9,7 +10,7 @@ for (const width of [1440, 390]) {
       const value = await response.json()
       await route.fulfill({ json: { ...value, values: { ...value.values, bot_api_mode: 'local' } } })
     })
-    await page.route('**/api/v1/system/status', async route => {
+    await page.route(systemStatusRoute, async route => {
       const response = await route.fetch()
       const value = await response.json()
       await route.fulfill({ json: { ...value,

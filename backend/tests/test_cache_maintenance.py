@@ -168,6 +168,45 @@ async def test_clean_refuses_every_local_owner_or_pending_job(client, monkeypatc
     assert not service.read()
 
 
+async def test_system_status_and_clean_admission_keep_owner_priority(authenticated, monkeypatch):
+    state, ingest, service, telegram, _ = ready(authenticated, monkeypatch)
+    for index in range(1, 5):
+        ingest.message(7, message(index), f"in-{index}")
+        confirm_all(state)
+    with state.db.transaction() as session:
+        jobs = list(session.scalars(select(Job).order_by(Job.id)))
+        for job, (job_state, mode) in zip(jobs, [
+            ("recovery_blocked", "local"), ("saving", "local"),
+            ("waiting_existing", "cloud"), ("failed", "local"),
+        ], strict=True):
+            job.state, job.acquisition_mode = job_state, mode
+        ids = [job.id for job in jobs]
+
+    def status():
+        response = authenticated.get("/api/v1/system/status?sample_storage=true")
+        assert response.status_code == 200
+        return response.json()["storage"]["cache"]["maintenance"]
+
+    for id_, reason in zip(ids[:3], ("recovery_required", "active_downloads", "queued_downloads"), strict=True):
+        result = status()
+        assert result["blocked_reason"] == reason and not result["can_clean"]
+        with pytest.raises(AppError) as error:
+            await service.start(clean=True)
+        assert error.value.code == "CACHE_CLEANUP_BLOCKED"
+        telegram.clear_cache_storage.assert_not_awaited()
+        with state.db.transaction() as session:
+            job = session.get(Job, id_)
+            if reason == "queued_downloads":
+                job.state = "succeeded"
+            else:
+                job.acquisition_mode = "cloud"
+
+    # Cloud recovery/saving are not local owners; terminal history is ignored.
+    result = status()
+    assert result["blocked_reason"] is None and result["can_clean"]
+    assert not service.read()
+
+
 async def test_missing_final_pending_cleanup_preserves_only_cache_copy(client, monkeypatch):
     state, _, _, job_id, source = await published(client)
     runtime = state.runtime

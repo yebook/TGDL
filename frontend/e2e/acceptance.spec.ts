@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import type { DownloadProgress, NetworkTestResult, SystemStatus, TaskDetail } from '../src/api/types'
+import { systemStatusRoute } from './routes'
 
 for (const width of [1440, 390]) {
   test(`automatic download defaults off and persists at ${width}px`, async ({ page }, testInfo) => {
@@ -126,7 +127,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     const panel = page.getByTestId('network-test')
     const token = page.getByLabel('Bot Token', { exact: true })
     await token.fill('unsaved-network-draft')
-    await page.route('**/api/v1/system/status', route => route.abort(), { times: 1 })
+    await page.route(systemStatusRoute, route => route.abort(), { times: 1 })
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
     await expect(panel.getByRole('button', { name: '检测网络连通性', exact: true })).toBeEnabled()
     await panel.getByRole('button', { name: '检测网络连通性', exact: true }).focus()
@@ -280,6 +281,21 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
   })
 }
 
+test('automatic status shares capacity samples but manual refresh forces a live read', async ({ page }) => {
+  const automatic = page.waitForResponse(response => response.ok() && systemStatusRoute.test(response.url())
+    && new URL(response.url()).searchParams.get('sample_storage') === 'true')
+  await login(page)
+  await automatic
+
+  const fresh = page.waitForResponse(response => response.ok() && systemStatusRoute.test(response.url())
+    && !new URL(response.url()).searchParams.has('sample_storage'))
+  const refresh = page.getByRole('button', { name: '刷新状态', exact: true })
+  await refresh.click()
+  await fresh
+  await expect(refresh).toBeEnabled()
+  await expect(page.getByTestId('top-status')).not.toContainText('状态更新失败')
+})
+
 async function login(page: Page) {
   await page.goto('/')
   await page.getByLabel('管理员账号', { exact: true }).fill('e2e-admin')
@@ -312,13 +328,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     observed.local_api = { ...observed.local_api, managed: true, applied_mode: 'cloud', desired_mode: 'local', phase: 'draining', state: 'stopped', message: '正在准备切换连接', drain_reason: 'connection' }
     observed.proxy.state = 'disabled'
     observed.storage.cache.free_bytes = 1000
-    await page.route('**/api/v1/system/status', route => route.fulfill({ json: observed }))
+    await page.route(systemStatusRoute, route => route.fulfill({ json: observed }))
     await settings(page)
     const panel = page.getByTestId('local-api-status')
     const api = page.getByTestId('top-api-status')
     const bot = page.getByTestId('top-bot-status')
     const refresh = async () => {
-      const received = page.waitForResponse(response => response.url().endsWith('/system/status'))
+      const received = page.waitForResponse(response => systemStatusRoute.test(response.url()))
       await page.getByRole('button', { name: '刷新状态', exact: true }).click()
       await received
     }
@@ -378,7 +394,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     await expect(page.locator('.settings-source').first()).toBeVisible()
     await expect(page.getByLabel('允许使用的 Telegram 用户 ID', { exact: true })).toHaveValue('42\n43')
     let polls = 0
-    page.on('request', request => { if (request.url().endsWith('/system/status')) polls++ })
+    page.on('request', request => { if (systemStatusRoute.test(request.url())) polls++ })
     await page.waitForTimeout(3400)
     expect(polls).toBeGreaterThanOrEqual(1)
     expect(polls).toBeLessThanOrEqual(2)
@@ -386,11 +402,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     const refreshButton = page.getByRole('button', { name: '刷新状态', exact: true })
     const refreshIcon = refreshButton.locator('svg')
     const refreshBounds = await refreshButton.boundingBox()
-    await page.route('**/api/v1/system/status', async route => {
+    await page.route(systemStatusRoute, async route => {
       await new Promise(resolve => setTimeout(resolve, 600))
       await route.continue().catch(() => {}) // A manual refresh may abort this delayed background request.
     })
-    await page.waitForRequest(request => request.url().endsWith('/system/status'))
+    await page.waitForRequest(request => systemStatusRoute.test(request.url()))
     await expect(refreshButton).toHaveAttribute('aria-busy', 'false')
     await expect(refreshIcon).not.toHaveClass(/is-refreshing/)
     await refreshButton.click()
@@ -400,9 +416,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     await expect(refreshButton).toHaveAttribute('aria-busy', 'false')
     await expect(refreshIcon).not.toHaveClass(/is-refreshing/)
     expect(await refreshButton.boundingBox()).toEqual(refreshBounds)
-    await page.unroute('**/api/v1/system/status')
+    await page.unroute(systemStatusRoute)
     await page.screenshot({ path: `../.runtime/ux/debug-${viewport.width}-${viewport.height}.png`, fullPage: true })
-    await page.route('**/api/v1/system/status', route => route.abort())
+    await page.route(systemStatusRoute, route => route.abort())
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
     await expect(page.getByTestId('top-status')).toContainText('状态更新失败')
     await expect(page.getByTestId('top-api-status')).toContainText('上次 API')
@@ -410,7 +426,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 600 
     await expect(page.getByTestId('top-proxy-status')).toContainText('上次状态：')
     await expect(page.getByRole('button', { name: '校验配置', exact: true })).toBeDisabled()
     await expect(page.getByLabel('允许使用的 Telegram 用户 ID', { exact: true })).toHaveValue('42\n43')
-    await page.unroute('**/api/v1/system/status')
+    await page.unroute(systemStatusRoute)
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
     await expect(page.getByTestId('top-status')).not.toContainText('状态更新失败')
     await page.getByRole('button', { name: '维护与备份', exact: true }).click()

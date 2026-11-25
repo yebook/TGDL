@@ -272,7 +272,7 @@ onMounted(load)
         </div>
           <NetworkTestPanel :revision="Math.max(settings.revision, liveSystem?.proxy.desired_revision ?? 0)" :active="section === 'connection'" :draft="dirty" :disabled="busy || syncing || backupBusy" :outcome-unknown="writeOutcomeUnknown" />
           <BotSafetyPanel :status="liveSystem?.bot.request_safety" :local-api="liveSystem?.local_api" :disabled="busy || backupBusy || dirty || conflict" :stale="!!statusError" @changed="botSafetyChanged" />
-          <LocalApiPanel :detailed="debug" :status="liveSystem?.local_api" :bot="liveSystem?.bot" :draft="dirty" :disabled="busy || syncing || backupBusy || writeOutcomeUnknown" :stale="!!statusError" @changed="localApiChanged" @sync="refreshStatus" />
+          <LocalApiPanel :active="section === 'connection'" :detailed="debug" :status="liveSystem?.local_api" :bot="liveSystem?.bot" :draft="dirty" :disabled="busy || syncing || backupBusy || writeOutcomeUnknown" :stale="!!statusError" @changed="localApiChanged" @sync="refreshStatus" />
           <p v-if="dirty" class="field-hint">服务重试使用已保存配置；当前未保存的输入会保留。</p>
           <details class="settings-details"><summary>连接与切换须知</summary><div class="details-content"><p>保存与连接校验分开；已保存选择与实际使用可能暂时不同，请查看服务状态。切换期间 Bot 会暂停接收，已排队任务会保留。</p><p v-if="liveSystem?.local_api?.managed">填写本地 API 凭据、按需设置下方代理并保存，后台等待网络就绪和下载安全结束后切换。云端退出后回切需等待至少 10 分钟，WebUI 持续可用。</p><p v-else>当前为外部管理模式，请按部署指南配置本地服务。</p><p>其他程序须停止使用同一个 Bot。更换 Bot 身份前，请结束原 Bot 的活动和待确认请求。</p></div></details>
         </section>

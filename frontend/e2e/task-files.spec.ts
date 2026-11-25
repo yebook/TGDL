@@ -27,11 +27,11 @@ async function filePresence(page: Page, id: string) {
 }
 async function confirm(page: Page, deleteFiles = false) {
   const panel = dialog(page)
-  await expect(panel.getByRole('checkbox', { name: '同时删除已下载文件' })).not.toBeChecked()
+  await expect(panel.getByRole('checkbox', { name: '同时删除任务拥有的文件和缓存', exact: true })).not.toBeChecked()
   if (deleteFiles) {
     await panel.getByRole('checkbox').focus()
     await page.keyboard.press('Space')
-    await expect(panel).toContainText('文件删除后无法恢复')
+    await expect(panel).toContainText('删除后无法恢复')
   }
   await panel.getByRole('button', { name: '确认删除', exact: true }).click()
 }
@@ -45,16 +45,22 @@ for (const width of [1440, 390]) {
     await page.locator('.task-name').click()
     await expect(page.locator('.detail-heading')).toContainText('已完成')
     await expect(page.locator('.media-card')).not.toContainText('本地文件存在')
+    const refresh = page.waitForResponse(response => response.url().endsWith(`/api/v1/tasks/${id}`))
+    await page.getByRole('button', { name: '刷新任务详情', exact: true }).click()
+    const refreshed = await refresh
+    expect(refreshed.ok()).toBe(true)
+    expect((await refreshed.json()).terminal).toBe(true)
     expect((await page.request.post(`/__e2e__/task-files/${id}/remove`)).ok()).toBe(true)
     await expect(page.locator('.task-row')).toContainText('本地文件不存在')
     await expect(page.locator('.media-card')).toContainText('本地文件不存在')
     await expect(page.locator('.detail-heading')).toContainText('已完成')
     expect((await page.request.post(`/__e2e__/task-files/${id}/restore`)).ok()).toBe(true)
+    await expect(page.locator('.media-card')).not.toContainText('本地文件不存在')
     await expect(page.locator('.media-card')).not.toContainText('本地文件存在')
     await expect(page.locator('.task-row')).not.toContainText('本地文件不存在')
     await chooseDetailAction(page, '删除')
     await expect(dialog(page).getByRole('checkbox')).not.toBeChecked()
-    await dialog(page).getByRole('button', { name: '保留任务', exact: true }).click()
+    await dialog(page).getByRole('button', { name: '取消', exact: true }).click()
     expect((await page.request.get(`/api/v1/tasks/${id}`)).status()).toBe(200)
     await chooseDetailAction(page, '删除')
     await expect.poll(() => dialog(page).evaluate(element => `${getComputedStyle(element).opacity}|${getComputedStyle(element).transform}`)).toBe('1|none')

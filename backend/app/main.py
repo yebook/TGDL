@@ -61,6 +61,7 @@ from app.services.saved_media import SavedMediaService
 from app.services.settings import SettingsService
 from app.services.tasks import ACTIVE, TaskService
 from app.storage.files import StorageManager
+from app.storage.status import StorageDisplayStatus
 from app.version import VERSION
 from app.workers.runtime import Runtime
 
@@ -78,6 +79,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     settings: SettingsService
     tasks: TaskService
     storage: StorageManager
+    storage_display: StorageDisplayStatus
     runtime: Runtime
     crypto: Secrets
     backups: ConfigBackupService
@@ -86,7 +88,8 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        nonlocal db, settings, tasks, storage, runtime, crypto, backups, network_diagnostics
+        nonlocal db, settings, tasks, storage, storage_display, runtime, crypto, backups, network_diagnostics
+        protocol_monitor: asyncio.Task[None] | None = None
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         lock = FileLock(cfg.data_dir / "instance.lock")
         try:
@@ -101,6 +104,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             backups = ConfigBackupService(settings)
             tasks = TaskService(db, settings)
             storage = StorageManager(cfg.storage_roots, cfg.data_dir, cfg.minimum_free_bytes)
+            storage_display = StorageDisplayStatus(storage, cfg.bot_api_root)
             runtime = Runtime(db, cfg, settings, tasks, storage)
             tasks.saved_media = SavedMediaService(db, storage)
             tasks.saved_media.runtime = runtime
@@ -120,9 +124,14 @@ def create_app(config: Config | None = None) -> FastAPI:
             runtime.diagnostics.emit("service_started", level="info")
             if cfg.run_background:
                 await runtime.start()
+                if cfg.managed_local_api:
+                    protocol_monitor = asyncio.create_task(network_diagnostics.monitor_protocol())
             yield
         finally:
             application.state.ready = False
+            if protocol_monitor is not None:
+                protocol_monitor.cancel()
+                await asyncio.gather(protocol_monitor, return_exceptions=True)
             if "runtime" in application.state._state:
                 await runtime.cache_maintenance.close()
             if "runtime" in application.state._state and cfg.run_background:
@@ -403,35 +412,33 @@ def create_app(config: Config | None = None) -> FastAPI:
     def export_logs() -> dict[str, Any]:
         return runtime.diagnostics.export()
 
-    @application.post("/api/v1/system/network-test", dependencies=[Depends(auth)], response_model=NetworkTestResponse)
-    async def test_network(request: Request) -> NetworkTestResponse:
+    async def require_empty_network_request(request: Request) -> None:
         # No caller-supplied target, configuration, token or alternate route.
         if request.query_params:
             raise AppError("VALIDATION_ERROR", "网络检测不接受参数", 422)
         async for chunk in request.stream():
             if chunk:
                 raise AppError("VALIDATION_ERROR", "网络检测不接受参数", 422)
+
+    @application.post("/api/v1/system/network-test", dependencies=[Depends(auth)], response_model=NetworkTestResponse)
+    async def test_network(request: Request) -> NetworkTestResponse:
+        await require_empty_network_request(request)
         return await network_diagnostics.run()
+
+    @application.post("/api/v1/system/protocol-refresh", dependencies=[Depends(auth)], status_code=204)
+    async def refresh_protocol(request: Request) -> Response:
+        await require_empty_network_request(request)
+        await network_diagnostics.refresh_protocol(manual=True)
+        return Response(status_code=204)
 
     @application.delete("/api/v1/system/logs", dependencies=[Depends(auth)], response_model=DiagnosticLogStatus)
     def clear_logs() -> dict[str, Any]:
         return runtime.diagnostics.clear()
 
-    def read_system_status() -> dict[str, Any]:
+    def read_system_status(*, sample_storage: bool) -> dict[str, Any]:
         values, bot, api, proxy = runtime.connection_snapshot()
-        roots = []
-        for root_id, root in storage.roots.items():
-            try:
-                roots.append(root.check())
-            except (OSError, AppError, ValueError):
-                roots.append({"id": root_id, "label": root_id, "available": False, "free_bytes": None,
-                              "total_bytes": None, "message": "下载目录不可用，请检查挂载、权限和空间"})
-        cache: dict[str, Any] = {"free_bytes": None, "total_bytes": None}
-        try:
-            usage = shutil.disk_usage(cfg.bot_api_root)
-            cache = {"free_bytes": usage.free, "total_bytes": usage.total}
-        except OSError:
-            pass
+        api["telegram_protocol"] = network_diagnostics.protocol_status(api, proxy)
+        roots, cache = storage_display.read(allow_sample=sample_storage)
         cache.update(runtime.cache_maintenance.status())
         active, blocked, pending = runtime.counts()
         recovery_message = ""
@@ -448,9 +455,9 @@ def create_app(config: Config | None = None) -> FastAPI:
                 "recovery": {"blocked_jobs": blocked, "message": recovery_message}}
 
     @application.get("/api/v1/system/status", dependencies=[Depends(auth)], response_model=SystemStatus)
-    def system_status() -> dict[str, Any]:
+    def system_status(sample_storage: bool = False) -> dict[str, Any]:
         try:
-            result = read_system_status()
+            result = read_system_status(sample_storage=sample_storage)
         except Exception as exc:
             runtime.record_runtime_sync("status", "status_snapshot", error=exc, scope="system-status")
             raise

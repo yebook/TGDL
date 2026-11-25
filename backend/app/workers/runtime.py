@@ -673,27 +673,30 @@ class Runtime:
                 if client is None or bot_id is None:
                     await asyncio.sleep(0.5)
                     continue
-                revision, settings, _ = await asyncio.to_thread(self.settings.read)
                 active, blocked, pending = await asyncio.to_thread(self.counts)
-                dispatch_ready = (pending > 0 and active < settings.download_concurrency and bool(settings.bot_token)
-                                  and self.client_signature == self.settings.client_signature(settings) and not blocked)
-                can_dispatch = dispatch_ready and self.bot_status["state"] == "online"
-                if can_dispatch:
-                    proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
-                    safety = await asyncio.to_thread(self.safety.status, settings.bot_token)
-                    can_dispatch = (safety["state"] == "ready"
-                                    and proxy["state"] == ("active" if settings.proxy.enabled else "disabled"))
-                # A complete cache is local input: Telegram cooldown/authentication
-                # failures cannot strand an explicit save behind a network gate.
-                can_save = (dispatch_ready and settings.bot_api_mode == "local" and not can_dispatch
-                            and await asyncio.to_thread(self.retained_cache.identity, allow_saving=True) is not None)
-                if (can_dispatch or can_save) and self.config.managed_local_api and settings.bot_api_mode == "local":
-                    applied = await asyncio.to_thread(self.local_api.applied)
-                    child_ready = applied.get("state") == "running" and applied.get("generation") == self.client_generation
-                    can_dispatch, can_save = can_dispatch and child_ready, can_save and child_ready
-                if await self.cleanup_cache():
-                    can_dispatch, can_save = False, False
-                if can_dispatch or can_save:
+                can_dispatch = can_save = False
+                settings = None
+                if pending and not blocked:
+                    revision, settings, _ = await asyncio.to_thread(self.settings.read)
+                    dispatch_ready = (active < settings.download_concurrency and bool(settings.bot_token)
+                                      and self.client_signature == self.settings.client_signature(settings))
+                    can_dispatch = dispatch_ready and self.bot_status["state"] == "online"
+                    if can_dispatch:
+                        proxy = await asyncio.to_thread(self.settings.proxy_status, revision, settings)
+                        safety = await asyncio.to_thread(self.safety.status, settings.bot_token)
+                        can_dispatch = (safety["state"] == "ready"
+                                        and proxy["state"] == ("active" if settings.proxy.enabled else "disabled"))
+                    # A complete cache is local input: Telegram cooldown/authentication
+                    # failures cannot strand an explicit save behind a network gate.
+                    can_save = (dispatch_ready and settings.bot_api_mode == "local" and not can_dispatch
+                                and await asyncio.to_thread(self.retained_cache.identity, allow_saving=True) is not None)
+                    if (can_dispatch or can_save) and self.config.managed_local_api and settings.bot_api_mode == "local":
+                        applied = await asyncio.to_thread(self.local_api.applied)
+                        child_ready = (applied.get("state") == "running"
+                                       and applied.get("generation") == self.client_generation)
+                        can_dispatch, can_save = can_dispatch and child_ready, can_save and child_ready
+                cleanup_busy = await self.cleanup_cache()  # Also runs without queued downloads.
+                if not cleanup_busy and settings is not None and (can_dispatch or can_save):
                     stage = "dispatch_run"
                     for _ in range(max(0, settings.download_concurrency - active)):
                         job_id = (await asyncio.to_thread(self.worker.claim, bot_id, settings.bot_api_mode)

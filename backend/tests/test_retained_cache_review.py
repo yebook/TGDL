@@ -259,13 +259,20 @@ async def test_unknown_cache_visible_without_erasing_known_locator(client, confi
     assert cache["recovery_guidance"]
 
 
-async def test_idle_cache_recovery_never_reserves_write(client):
-    state = client.app.state
+async def test_idle_cache_recovery_only_checks_due_actions(client, config, monkeypatch):
+    state, _, _, _, _, _ = seed(client, config)
+    service = state.runtime.retained_cache
+
+    def unexpected_identity(**_):
+        pytest.fail("empty queues must not read connection identity")
+
+    monkeypatch.setattr(service, "identity", unexpected_identity)
     statements = []
     event.listen(state.db.engine, "before_cursor_execute", lambda _c, _u, sql, _p, _x, _m: statements.append(sql))
     for _ in range(3):
-        await state.runtime.retained_cache.recover()
-    assert not any(sql.startswith("BEGIN") for sql in statements)
+        await service.recover()
+    assert len(statements) == 6
+    assert all(sql.startswith("SELECT") and "FROM cache_actions" in sql for sql in statements)
 
 
 @pytest.mark.parametrize("linked", [False, True])

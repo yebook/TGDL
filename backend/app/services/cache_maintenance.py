@@ -55,16 +55,20 @@ def require_no_maintenance(session: Session, *, bot_id: int | None = None) -> No
 
 
 def owners_reason(session: Session) -> str | None:
+    pending = ("queued", "retry_wait", "waiting_existing")
+    active = ("fetching", "saving", "cancelling")
+    recovery = "recovery_blocked"
+    # Use the state index to exclude terminal history and return at most one
+    # row per relevant state. Pending cloud jobs also fence cache maintenance.
     states = set(session.scalars(select(Job.state).where(
-        Job.acquisition_mode.in_(["local"]) | Job.acquisition_mode.is_(None)
-        | Job.state.in_(["queued", "retry_wait", "waiting_existing"]))))
-    if "recovery_blocked" in states:
+        Job.state.in_((recovery, *active, *pending)),
+        (Job.acquisition_mode == "local") | Job.acquisition_mode.is_(None) | Job.state.in_(pending),
+    ).distinct()))
+    if recovery in states:
         return "recovery_required"
-    if states & {"fetching", "saving", "cancelling"}:
+    if not states.isdisjoint(active):
         return "active_downloads"
-    if states & {"queued", "retry_wait", "waiting_existing"}:
-        return "queued_downloads"
-    return None
+    return "queued_downloads" if states else None
 
 
 class CacheMaintenanceService:

@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -71,6 +72,44 @@ def test_availability_tracks_external_changes_without_changing_history(authentic
     # availability dependency.
     assert state() == "present"
     assert not storage.identity_path.exists()
+
+
+def test_read_only_task_files_do_not_probe_capacity(authenticated: TestClient, monkeypatch) -> None:
+    request, path = saved(authenticated)
+    runtime = authenticated.app.state.runtime
+    relative = "day/video.mp4"
+    path.unlink()
+    assert runtime.cancel_cleanup.saved_missing("default", relative, 6)
+    probes = []
+
+    def unavailable(root):
+        probes.append(root)
+        raise OSError("Capacity probe failed")
+
+    monkeypatch.setattr(shutil, "disk_usage", unavailable)
+    # A capacity failure still cannot be used to prove absence for cleanup.
+    assert not runtime.cancel_cleanup.saved_missing("default", relative, 6)
+    storage = authenticated.app.state.storage.get("default")
+    assert probes and all(root == storage.root for root in probes)
+    probes.clear()
+
+    def assert_file_state(expected):
+        page = authenticated.get("/api/v1/tasks")
+        detail = authenticated.get(f"/api/v1/tasks/{request}")
+        assert page.status_code == detail.status_code == 200
+        assert page.json()["items"][0]["local_files"][expected] == 1
+        assert detail.json()["items"][0]["local_file_state"] == expected
+        assert not probes
+
+    assert_file_state("missing")
+    path.write_bytes(b"short")
+    assert_file_state("changed")
+    path.write_bytes(b"abcdef")
+    assert_file_state("present")
+    storage.root.rename(storage.root.with_name("unmounted"))
+    assert_file_state("unavailable")
+    storage.root.mkdir()
+    assert_file_state("unavailable")
 
 
 def test_root_missing_or_replaced_is_unavailable(authenticated: TestClient) -> None:

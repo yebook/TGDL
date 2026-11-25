@@ -112,6 +112,33 @@ describe('persistent user status', () => {
   it('does not alarm about an unused cloud-mode local service or invent a storage threshold', () => {
     expect(systemIssues(status())).toEqual([])
   })
+  it('shows upstream timeout even when the local API keeps polling successfully, then recovers', () => {
+    const data = status()
+    Object.assign(data.local_api, { desired_mode: 'local', applied_mode: 'local', state: 'running', telegram_protocol: 'reachable' })
+    data.storage.cache.free_bytes = 100
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '可响应', botState: '已就绪' })
+    data.local_api.telegram_protocol = 'timeout'
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '协议超时', apiTone: 'danger', identity: '@fixture_bot', botState: '上游异常', botTone: 'danger' })
+    expect(systemIssues(data)).toContain('本地 API 到 Telegram 的协议检测全部超时，请检查网络或代理。')
+    data.local_api.telegram_protocol = 'reachable'
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '可响应', botState: '已就绪' })
+    expect(systemIssues(data)).toEqual([])
+  })
+  it('distinguishes incomplete protocol evidence from confirmed failure and preserves other errors', () => {
+    const data = status()
+    Object.assign(data.local_api, { desired_mode: 'local', applied_mode: 'local', state: 'running', telegram_protocol: 'partial' })
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '协议部分可达', apiTone: 'warning', botState: '收发待确认' })
+    data.local_api.telegram_protocol = 'unavailable'
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '协议待确认', botState: '收发待确认' })
+    data.bot.state = 'error'
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '请求异常', botState: '连接异常' })
+    data.local_api.telegram_protocol = 'failed'
+    data.bot.request_safety!.state = 'auth_paused'
+    expect(telegramSummary(data, false)).toMatchObject({ botState: '认证暂停' })
+    data.local_api.phase = 'failed'
+    expect(telegramSummary(data, false)).toMatchObject({ apiState: '操作失败' })
+    expect(telegramSummary(data, true)).toMatchObject({ apiState: '待更新', botState: '待更新' })
+  })
   it('does not treat an externally managed local API as a failed managed process', () => {
     const data = status()
     data.local_api.managed = false

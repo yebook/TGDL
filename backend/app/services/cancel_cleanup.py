@@ -62,7 +62,7 @@ class CancelCleanupService:
 
     def saved_missing(self, root_id: str, path: str, size: int) -> bool:
         try:
-            return observe(self.runtime.storage.get(root_id), path, size) == "missing"
+            return observe(self.runtime.storage.get(root_id), path, size, check_capacity=True) == "missing"
         except AppError:
             return False  # A removed/unavailable root never proves child absence.
 

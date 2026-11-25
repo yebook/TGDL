@@ -13,7 +13,7 @@ def seed_task_files(app: FastAPI) -> None:
     storage = app.state.storage.get("default")
     storage.initialize()
     paths: dict[str, list[tuple[Path, bytes]]] = {}
-    counter = 10000
+    counter = 20000  # Keep message IDs disjoint from the base multi-type fixtures.
     with app.state.db.transaction() as session:
         # Historical base fixtures must not own a live download in this scenario.
         for job in session.scalars(select(Job).where(Job.state == "queued")):

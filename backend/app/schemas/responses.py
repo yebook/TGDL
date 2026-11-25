@@ -64,6 +64,7 @@ class TaskSummary(BaseModel):
     title: str
     kind: Literal["single", "group"]
     status: TaskStatus
+    terminal: bool
     created_at: str
     updated_at: str
     item_count: int
@@ -256,6 +257,9 @@ class RecoveryStatus(BaseModel):
     message: str
 
 
+TelegramProtocolHealth = Literal["reachable", "partial", "failed", "timeout", "unavailable"]
+
+
 class LocalApiStatus(BaseModel):
     managed: bool
     state: Literal["unavailable", "waiting_credentials", "stopped", "starting", "running", "stopping", "failed"]
@@ -270,6 +274,7 @@ class LocalApiStatus(BaseModel):
     cloud_available_at: str | None
     can_restart: bool
     can_retry: bool
+    telegram_protocol: TelegramProtocolHealth | None = None
 
 
 class NetworkProbeResult(BaseModel):

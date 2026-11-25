@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { expect, test } from '@playwright/test'
+import { systemStatusRoute } from './routes'
 
 for (const width of [1440, 390]) {
   test(`diagnostic log export is explicit and readable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 })
-    await page.route('**/api/v1/system/status', async route => {
+    await page.route(systemStatusRoute, async route => {
       const response = await route.fetch()
       const status = await response.json()
       await route.fulfill({ json: { ...status, diagnostic_log: { state: width === 390 ? 'error' : 'ready', message: width === 390 ? '日志写入异常，可尝试导出已有记录。' : '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 7, cleanup_time: '08:00', timezone: 'Asia/Shanghai', total_bytes: 1572864, file_count: 2, last_cleanup_at: null, next_cleanup_at: '2030-01-02T00:00:00Z' } } })
@@ -27,7 +28,7 @@ for (const width of [1440, 390]) {
     await expect(panel).not.toContainText('单文件上限')
     await expect(panel).toContainText('1.5 MB · 2 个文件')
     await expect(panel).toContainText('每天 08:00（Asia/Shanghai）')
-    await page.waitForResponse(response => response.url().endsWith('/system/status'))
+    await page.waitForResponse(response => systemStatusRoute.test(response.url()))
     expect(exports).toBe(0)
     await panel.scrollIntoViewIfNeeded()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -54,7 +55,7 @@ for (const width of [1440, 390]) {
     let clears = 0
     let exports = 0
     const status = () => ({ state: 'ready', message: '诊断日志已启用。', max_file_bytes: 10485760, backup_count: 3, retention_days: 0, cleanup_time: '08:00', timezone: 'Asia/Shanghai', total_bytes: cleared ? 120 : 1572864, file_count: cleared ? 1 : 2, last_cleanup_at: cleared ? '2030-01-01T10:00:00Z' : null, next_cleanup_at: null })
-    await page.route('**/api/v1/system/status', async route => {
+    await page.route(systemStatusRoute, async route => {
       const response = await route.fetch()
       await route.fulfill({ json: { ...await response.json(), diagnostic_log: status() } })
     })

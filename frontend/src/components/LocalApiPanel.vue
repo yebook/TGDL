@@ -1,24 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiError, errorMessage } from '../api/client'
 import { boundedRequest } from '../api/boundedRequest'
 import { cooldownText, localApiPhaseLabel, localApiStates, localBotConnectionHint, modeLabel } from '../api/localApi'
 import { connectionSummary } from '../api/systemSummary'
 import type { BotRequestSafety, LocalApiStatus } from '../api/types'
+import { useDeadlineClock } from '../composables/useDeadlineClock'
 
-const props = defineProps<{ status?: LocalApiStatus; bot?: { state: string; username?: string | null; message: string; request_safety?: BotRequestSafety }; detailed?: boolean; draft?: boolean; disabled?: boolean; stale?: boolean }>()
+const props = defineProps<{ active: boolean; status?: LocalApiStatus; bot?: { state: string; username?: string | null; message: string; request_safety?: BotRequestSafety }; detailed?: boolean; draft?: boolean; disabled?: boolean; stale?: boolean }>()
 const emit = defineEmits<{ changed: [status: LocalApiStatus]; sync: [] }>()
 const busy = ref(false)
 const outcomeUnknown = ref(false)
 watch(() => props.status, () => { outcomeUnknown.value = false })
 let confirming = false
 const controller = new AbortController()
-const now = ref(Date.now())
-let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { timer = setInterval(() => { now.value = Date.now() }, 1000) })
+const now = useDeadlineClock(() => Date.parse(props.status?.cloud_available_at ?? ''), {
+  stepMs: 60_000, active: () => props.active,
+})
 onUnmounted(() => {
-  clearInterval(timer)
   controller.abort()
   if (confirming) ElMessageBox.close()
 })

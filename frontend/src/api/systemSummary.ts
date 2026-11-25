@@ -2,6 +2,19 @@ import type { SystemStatus } from './types'
 import { localApiPhaseLabel } from './localApi'
 
 type StatusTone = 'neutral' | 'success' | 'warning' | 'danger'
+const protocolWarnings = {
+  timeout: { label: '协议超时', tone: 'danger', message: '本地 API 到 Telegram 的协议检测全部超时，请检查网络或代理。' },
+  failed: { label: '协议异常', tone: 'danger', message: '本地 API 未能通过 Telegram 协议检测，请检查网络或代理。' },
+  partial: { label: '协议部分可达', tone: 'warning', message: '本地 API 仅能访问部分 Telegram 协议检测目标，请检查网络或代理分流。' },
+  unavailable: { label: '协议待确认', tone: 'warning', message: null },
+} as const
+
+function protocolWarning(api: SystemStatus['local_api']) {
+  const state = api.telegram_protocol
+  if (!api.managed || api.phase !== 'idle' || api.state !== 'running' || api.applied_mode !== 'local' || api.desired_mode !== 'local') return
+  return state && state !== 'reachable' ? protocolWarnings[state] : undefined
+}
+
 export function telegramSummary(data: SystemStatus, stale: boolean) {
   return connectionSummary(data.local_api, data.bot, stale)
 }
@@ -17,6 +30,8 @@ export function connectionSummary(api: SystemStatus['local_api'], bot: SystemSta
   let botState = '待确认'
   let botTone: StatusTone = 'neutral'
   const safety = bot.request_safety
+  const protocol = protocolWarning(api)
+  const online = ['online', 'connected'].includes(bot.state)
   if (stale) return { apiType, apiState: '待更新', apiTone: 'warning' as StatusTone, identity, botState: '待更新', botTone: 'warning' as StatusTone, historical: true }
 
   if (changing) {
@@ -29,7 +44,9 @@ export function connectionSummary(api: SystemStatus['local_api'], bot: SystemSta
   } else if (api.applied_mode === 'local' && api.managed && api.state !== 'running') {
     apiState = ({ unavailable: '服务状态待确认', waiting_credentials: '等待凭据', stopped: '已停止', starting: '启动中', stopping: '停止中', failed: '进程异常' } as Record<string, string>)[api.state] || '待确认'
     apiTone = api.state === 'failed' ? 'danger' : 'warning'
-  } else if (['online', 'connected'].includes(bot.state)) {
+  } else if (protocol && (protocol.tone === 'danger' || online)) {
+    apiState = protocol.label; apiTone = protocol.tone
+  } else if (online) {
     apiState = '可响应'; apiTone = 'success'
   } else if (bot.state === 'error' || bot.state === 'disconnected') {
     apiState = '请求异常'; apiTone = 'danger'
@@ -48,8 +65,9 @@ export function connectionSummary(api: SystemStatus['local_api'], bot: SystemSta
     botState = '接收暂停'; botTone = 'warning'
   } else if (api.applied_mode === 'local' && api.managed && api.state !== 'running') {
     botState = '未就绪'; botTone = 'warning'
-  } else if (['online', 'connected'].includes(bot.state) && bot.username && api.applied_mode !== null) {
-    botState = '已就绪'; botTone = 'success'
+  } else if (online && bot.username) {
+    botState = protocol?.tone === 'danger' ? '上游异常' : protocol ? '收发待确认' : '已就绪'
+    botTone = protocol?.tone ?? 'success'
   } else if (bot.state === 'error' || bot.state === 'disconnected') {
     botState = '连接异常'; botTone = 'danger'
   } else if (bot.state === 'connecting') {
@@ -67,6 +85,8 @@ export function systemIssues(data: SystemStatus): string[] {
   if (safety && safety.state !== 'ready') issues.push(safety.message || 'Bot 请求已暂停，请查看连接设置。')
   const api = data.local_api
   if (api.phase === 'idle' && (!safety || safety.state === 'ready') && ['error', 'disconnected'].includes(data.bot.state)) issues.push(data.bot.message || 'Bot 未连接，请检查连接设置。')
+  const protocol = protocolWarning(api)
+  if (protocol?.message) issues.push(protocol.message)
   const used = api.desired_mode === 'local' || api.applied_mode === 'local'
   if (['failed', 'blocked', 'logout_uncertain'].includes(api.phase)) issues.push(api.message || localApiPhaseLabel(api))
   else if (api.phase === 'idle' && used && api.managed && ['unavailable', 'failed', 'waiting_credentials'].includes(api.state)) issues.push(api.message || '本地 API 尚未就绪。')

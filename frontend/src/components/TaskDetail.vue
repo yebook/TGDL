@@ -3,22 +3,27 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { errorMessage } from '../api/client'
 import { boundedRequest } from '../api/boundedRequest'
-import type { ItemCache, TaskDetail } from '../api/types'
+import type { ItemCache, Task, TaskDetail } from '../api/types'
 import { attemptResult, bytes, dateTime, duration, mediaTypeLabel, taskIssueTone } from '../api/format'
 import { mediaState } from '../api/mediaProgress'
 import { localFileLabel } from '../api/localFiles'
+import { detailNeedsFastPolling, detailSummaryKey } from '../api/taskDetailPolling'
 import { usePolling } from '../composables/usePolling'
+import AppIcon from './AppIcon.vue'
 import StatusBadge from './StatusBadge.vue'
 import MediaProgress from './MediaProgress.vue'
 import StorageFailureDetails from './StorageFailureDetails.vue'
 
-const props = defineProps<{ id: string; deleting?: boolean }>()
+const props = defineProps<{ id: string; deleting?: boolean; summary?: Task }>()
 const emit = defineEmits<{ changed: []; remove: [id: string]; close: [] }>()
 const busy = ref(false)
 let controller = new AbortController()
 let confirming = false
 let generation = 0
-const { data, error, loading, refresh } = usePolling(signal => boundedRequest<TaskDetail>(`/tasks/${encodeURIComponent(props.id)}`, { signal }))
+const { data, error, loading, refresh } = usePolling(
+  signal => boundedRequest<TaskDetail>(`/tasks/${encodeURIComponent(props.id)}`, { signal }),
+  detail => detailNeedsFastPolling(detail) ? undefined : 15000,
+)
 const terminal = computed(() => !!data.value?.terminal)
 const hasTaskActions = computed(() => !!(data.value?.can_cancel || data.value?.can_retry || data.value?.can_delete))
 const caches = computed(() => {
@@ -42,6 +47,9 @@ const cleanupSummary = computed(() => {
 function dispose() { generation++; controller.abort(); if (confirming) ElMessageBox.close(); confirming = false }
 onUnmounted(dispose)
 watch(() => props.id, () => { dispose(); controller = new AbortController(); busy.value = false; data.value = undefined; void refresh() })
+watch(() => props.summary && detailSummaryKey(props.summary), key => {
+  if (key && data.value && !detailNeedsFastPolling(data.value) && !loading.value && key !== detailSummaryKey(data.value)) void refresh()
+})
 async function action(kind: 'cancel' | 'retry') {
   if (busy.value || props.deleting || !data.value) return
   const current = generation
@@ -98,6 +106,9 @@ function handleActionCommand(kind: 'cancel' | 'retry' | 'delete') {
           </div>
         </div>
         <div class="detail-heading-tools">
+          <button v-if="terminal" class="detail-action-menu-trigger detail-refresh" type="button" aria-label="刷新任务详情" title="刷新任务详情" :disabled="loading || busy || deleting" @click="refresh">
+            <AppIcon name="refresh" />
+          </button>
           <el-dropdown v-if="hasTaskActions" trigger="click" placement="bottom-end" popper-class="task-detail-actions-menu" @command="handleActionCommand">
             <button class="detail-action-menu-trigger" type="button" aria-label="任务操作" aria-haspopup="menu" title="任务操作" :disabled="deleting || busy" :aria-busy="busy">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>
@@ -174,6 +185,7 @@ function handleActionCommand(kind: 'cancel' | 'retry' | 'delete') {
 .detail-action-menu-trigger:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
 .detail-action-menu-trigger:disabled { cursor: not-allowed; opacity: .55; }
 .detail-action-menu-trigger svg { width: 20px; height: 20px; fill: currentColor; }
+.detail-refresh svg { fill: none; }
 :deep(.task-detail-actions-menu .el-dropdown-menu__item) { min-height: 44px; padding: 11px 16px; font-size: 13px; }
 :deep(.task-detail-actions-menu .el-dropdown-menu__item.task-menu-retry:not(.is-disabled)) { color: var(--el-color-primary); }
 :deep(.task-detail-actions-menu .el-dropdown-menu__item.task-menu-danger:not(.is-disabled)) { color: var(--el-color-danger); }

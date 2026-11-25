@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { systemStatusRoute } from './routes'
 
 const scenario = process.env.E2E_MANAGED_API
 async function login(page: Page) {
@@ -26,7 +27,7 @@ test('managed credentials save offline without echo and polling preserves edits'
   await expect(page.getByTestId('local-api-status')).toContainText('等待应用凭据')
   await page.getByLabel('API ID', { exact: true }).fill('123456')
   await page.getByLabel('API Hash', { exact: true }).fill('0123456789abcdef0123456789abcdef')
-  const statusPoll = page.waitForResponse(response => response.url().endsWith('/system/status'))
+  const statusPoll = page.waitForResponse(response => systemStatusRoute.test(response.url()))
   await statusPoll
   await expect(page.getByLabel('API ID', { exact: true })).toHaveValue('123456')
   await expect(page.getByLabel('API Hash', { exact: true })).toHaveValue('0123456789abcdef0123456789abcdef')
@@ -50,12 +51,12 @@ test('connection switch handshake stays locked when a manual refresh supersedes 
   await page.getByLabel('API ID', { exact: true }).fill('123456')
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  await page.route('**/api/v1/system/status', async route => {
+  await page.route(systemStatusRoute, async route => {
     await gate
     await route.continue().catch(() => {})
   })
   const saved = page.waitForResponse(response => response.url().endsWith('/settings') && response.request().method() === 'PATCH')
-  const refreshing = page.waitForRequest(request => request.url().endsWith('/system/status'))
+  const refreshing = page.waitForRequest(request => systemStatusRoute.test(request.url()))
   await page.getByRole('button', { name: '保存设置', exact: true }).click()
   expect((await saved).ok()).toBe(true)
   await refreshing
@@ -69,7 +70,7 @@ test('connection switch handshake stays locked when a manual refresh supersedes 
   release()
   await expect(page.locator('.connection-application-notice')).toContainText('正在应用连接配置')
   await expect(page.getByRole('combobox', { name: 'Bot API 服务', exact: true })).toBeDisabled()
-  await page.unroute('**/api/v1/system/status')
+  await page.unroute(systemStatusRoute)
 })
 
 test('ordinary saves preserve connection candidates and clear flags during an existing transition', async ({ page }) => {
@@ -166,7 +167,7 @@ test('connection recovery bounds a hung status request and preserves edits throu
   await login(page)
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  await page.route('**/api/v1/system/status', async route => { await gate; await route.continue().catch(() => {}) })
+  await page.route(systemStatusRoute, async route => { await gate; await route.continue().catch(() => {}) })
   await page.getByLabel('API ID', { exact: true }).fill('777003')
   await page.getByRole('button', { name: '保存设置', exact: true }).click()
   await expect(page.locator('.connection-application-notice')).toContainText('状态更新失败', { timeout: 15000 })
@@ -174,12 +175,12 @@ test('connection recovery bounds a hung status request and preserves edits throu
   await page.getByLabel('允许使用的 Telegram 用户 ID', { exact: true }).fill('42\n43')
   await expect(page.getByLabel('API ID', { exact: true })).toBeDisabled()
   release()
-  await page.unroute('**/api/v1/system/status')
-  await page.route('**/api/v1/system/status', route => route.abort())
+  await page.unroute(systemStatusRoute)
+  await page.route(systemStatusRoute, route => route.abort())
   await page.getByRole('button', { name: '重新同步状态', exact: true }).click()
   await expect(page.locator('.connection-application-notice')).toContainText('状态更新失败')
   await expect(page.getByLabel('允许使用的 Telegram 用户 ID', { exact: true })).toHaveValue('42\n43')
-  await page.unroute('**/api/v1/system/status')
+  await page.unroute(systemStatusRoute)
   await page.getByRole('button', { name: '重新同步状态', exact: true }).click()
   await expect(page.getByLabel('API ID', { exact: true })).toBeEnabled()
   await expect(page.getByLabel('允许使用的 Telegram 用户 ID', { exact: true })).toHaveValue('42\n43')
@@ -188,7 +189,7 @@ test('connection recovery bounds a hung status request and preserves edits throu
   await page.getByRole('link', { name: '设置', exact: true }).click()
   await expect(page.getByLabel('API ID', { exact: true })).toBeEnabled()
   // Leaving during an explicit re-sync cancels its read and does not carry a busy state into a new view.
-  await page.route('**/api/v1/system/status', route => route.abort())
+  await page.route(systemStatusRoute, route => route.abort())
   await page.getByRole('button', { name: '刷新状态', exact: true }).click()
   await expect(page.locator('.connection-application-notice')).toContainText('状态更新失败')
   let releaseRead!: () => void
@@ -203,7 +204,7 @@ test('connection recovery bounds a hung status request and preserves edits throu
   await page.getByRole('link', { name: '下载任务', exact: true }).click()
   releaseRead()
   await page.unroute('**/api/v1/settings')
-  await page.unroute('**/api/v1/system/status')
+  await page.unroute(systemStatusRoute)
   await page.getByRole('link', { name: '设置', exact: true }).click()
   await expect(page.getByLabel('API ID', { exact: true })).toBeEnabled()
 })

@@ -2,7 +2,7 @@
 import errno
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import Any
@@ -11,11 +11,12 @@ from app.core.errors import AppError
 from app.storage.files import Storage, contained, hash_stream
 
 
-def root_identity(storage: Storage) -> dict[str, int]:
+def _root_identity_with_capacity(storage: Storage) -> tuple[int, int]:
     # A recreated process enrolls its current root; later probes reject a
     # replaced mount through the process-scoped identity.
     storage.check(check_space=False)
-    return storage._read_identity()
+    identity = storage._read_identity()
+    return identity["device"], identity["inode"]
 
 
 def parts(relative: str) -> tuple[str, ...]:
@@ -27,16 +28,18 @@ def parts(relative: str) -> tuple[str, ...]:
 
 
 @contextmanager
-def _parent_chain(storage: Storage, relative: str) -> Iterator[tuple[list[int], tuple[str, ...]]]:
+def _parent_chain(
+    storage: Storage, relative: str, *, validate_root: Callable[[], tuple[int, int]] | None = None,
+) -> Iterator[tuple[list[int], tuple[str, ...]]]:
     path = parts(relative)
-    expected = root_identity(storage)
+    expected = _root_identity_with_capacity(storage) if validate_root is None else validate_root()
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or os.unlink not in os.supports_dir_fd:
         raise AppError("FILE_DELETE_UNSUPPORTED", "当前文件系统不支持安全删除", 409)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptors = [os.open(storage.root, flags)]
     try:
         opened = os.fstat(descriptors[0])
-        if {"device": opened.st_dev, "inode": opened.st_ino} != expected:
+        if _directory_identity(opened) != expected:
             raise ValueError("Changed root")
         for part in path[:-1]:
             descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
@@ -44,12 +47,6 @@ def _parent_chain(storage: Storage, relative: str) -> Iterator[tuple[list[int], 
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
-
-
-@contextmanager
-def parent_fd(storage: Storage, relative: str) -> Iterator[tuple[int, str]]:
-    with _parent_chain(storage, relative) as (descriptors, path):
-        yield descriptors[-1], path[-1]
 
 
 def _directory_identity(metadata: os.stat_result) -> tuple[int, int]:
@@ -62,9 +59,9 @@ def _prune_empty_task_directory(storage: Storage, descriptors: list[int], path: 
             or os.rmdir not in os.supports_dir_fd):
         return
     try:
-        expected = root_identity(storage)
+        expected = _root_identity_with_capacity(storage)
         root = os.fstat(descriptors[0])
-        if {"device": root.st_dev, "inode": root.st_ino} != expected:
+        if _directory_identity(root) != expected:
             return
         # Each edge must still address the pinned original directory. Directory
         # timestamps change on unlink, so compare device/inode, not size/time.
@@ -82,23 +79,29 @@ def _prune_empty_task_directory(storage: Storage, descriptors: list[int], path: 
         return
 
 
-def observe(storage: Storage, relative: str, size: int) -> str:
+def observe(storage: Storage, relative: str, size: int, *, check_capacity: bool = False) -> str:
+    """Observe saved-file metadata; cleanup can require the full storage probe."""
+    def validate_root() -> tuple[int, int]:
+        if check_capacity:
+            return _root_identity_with_capacity(storage)
+        return storage.validate_identity()
+
     try:
-        root_identity(storage)
-        parts(relative)
+        validate_root()
         if os.name == "posix":
-            with parent_fd(storage, relative) as (parent, name):
-                metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            with _parent_chain(storage, relative, validate_root=validate_root) as (descriptors, path):
+                metadata = os.stat(path[-1], dir_fd=descriptors[-1], follow_symlinks=False)
         else:
+            parts(relative)
             metadata = contained(storage.root, relative).lstat()
-        root_identity(storage)
+        validate_root()
         if not stat.S_ISREG(metadata.st_mode):
             return "unavailable"
         return "present" if metadata.st_size == size else "changed"
     except FileNotFoundError:
         # A disappearing mount/identity is not a disappearing saved child.
         try:
-            root_identity(storage)
+            validate_root()
         except (OSError, AppError, ValueError):
             return "unavailable"
         return "missing"
@@ -127,7 +130,7 @@ def remove_verified(storage: Storage, entry: dict[str, Any]) -> str:
                     return "retained_unverified"
                 if fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
                     return "retained_unverified"
-            root_identity(storage)
+            _root_identity_with_capacity(storage)
             # Rewalk parents to reject rename/replacement during the long hash.
             with _parent_chain(storage, entry["relative_path"]) as (descriptors, current_path):
                 current, current_name = descriptors[-1], current_path[-1]
@@ -148,7 +151,7 @@ def remove_verified(storage: Storage, entry: dict[str, Any]) -> str:
             return "deleted"
     except FileNotFoundError:
         try:
-            root_identity(storage)
+            _root_identity_with_capacity(storage)
         except (OSError, AppError, ValueError):
             return "retained_unverified"
         return "missing"

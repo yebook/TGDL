@@ -19,6 +19,7 @@ from app.schemas.responses import (
     NetworkProbeResult,
     NetworkTestResponse,
     ProxyStatus,
+    TelegramProtocolHealth,
     TelegramProtocolResult,
 )
 from app.services.local_api import LocalApiService
@@ -31,6 +32,10 @@ GOOGLE_URL = "https://www.google.com/generate_204"
 TARGET_TIMEOUT = 5.0
 ROUND_TIMEOUT = 8.0
 START_INTERVAL = 10.0
+PROTOCOL_INTERVAL = 60.0
+PROTOCOL_MAX_AGE = 90.0
+
+ProtocolKey = tuple[int, str | None, str | None, bool]
 
 
 def iso(timestamp: float) -> str:
@@ -47,6 +52,14 @@ class ProbeSnapshot:
     applied: dict[str, Any] = field(default_factory=dict)
     runtime_state: dict[str, Any] = field(default_factory=dict)
 
+    def protocol_key(self) -> ProtocolKey:
+        return self.revision, self.applied.get("generation"), self.applied.get("command_id"), self.monitors_protocol()
+
+    def monitors_protocol(self) -> bool:
+        api = self.local_api
+        return (api is not None and api.managed and api.phase == "idle" and api.applied_mode == "local"
+                and api.state == "running" and self.proxy_status.applied_revision == self.revision)
+
 
 class NetworkDiagnosticsService:
     def __init__(self, settings: SettingsService, local_api: LocalApiService) -> None:
@@ -55,6 +68,59 @@ class NetworkDiagnosticsService:
         self._running = False
         self._last_start: float | None = None
         self._next_allowed_at = 0.0
+        self._protocol_task: asyncio.Task[TelegramProtocolResult] | None = None
+        self._protocol_key: ProtocolKey | None = None
+        self._protocol_waiters = 0
+        self._last_manual_protocol: tuple[ProtocolKey, float] | None = None
+        self._protocol_observation: tuple[int, str, float, TelegramProtocolHealth] | None = None
+
+    def protocol_status(self, api: Mapping[str, Any], proxy: Mapping[str, Any]) -> TelegramProtocolHealth | None:
+        """Used by the status reader thread: the observation is an immutable, atomically replaced tuple."""
+        if (not api["managed"] or api["phase"] != "idle" or api["state"] != "running"
+                or api["applied_mode"] != "local" or api["desired_mode"] != "local"
+                or proxy["applied_revision"] != proxy["desired_revision"]):
+            return None
+        observation = self._protocol_observation
+        if observation is not None:
+            revision, generation, expires, health = observation
+            if revision == proxy["desired_revision"] and generation == api["generation"] and time.monotonic() < expires:
+                return health
+        return "unavailable"
+
+    async def refresh_protocol(self, *, manual: bool = False) -> None:
+        if not self.settings.config.managed_local_api:
+            return
+        snapshot = await self._read_snapshot()
+        if not snapshot.monitors_protocol():
+            return
+        if manual:
+            now = time.monotonic()
+            key = snapshot.protocol_key()
+            previous = self._last_manual_protocol
+            if previous is not None and previous[0] == key and now - previous[1] < START_INTERVAL:
+                if self._protocol_task is None or self._protocol_key != key:
+                    return
+            else:
+                self._last_manual_protocol = (key, now)
+        await self._probe_protocol(snapshot)
+
+    async def monitor_protocol(self) -> None:
+        while True:
+            try:
+                await self.refresh_protocol()
+            except Exception:
+                # Snapshot I/O failure is not upstream evidence; do not retain a green result.
+                self._protocol_observation = None
+            await asyncio.sleep(PROTOCOL_INTERVAL)
+
+    async def _read_snapshot(self) -> ProbeSnapshot:
+        # A request cancellation must not pretend a DB thread has completed.
+        task = asyncio.create_task(asyncio.to_thread(self._snapshot))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
 
     def _snapshot(self) -> ProbeSnapshot:
         revision, values, _ = self.settings.read()
@@ -88,13 +154,7 @@ class NetworkDiagnosticsService:
         self._next_allowed_at = time.time() + START_INTERVAL
         checked_at = iso(time.time())
         try:
-            # A request cancellation must not pretend a DB thread has completed.
-            snapshot_task = asyncio.create_task(asyncio.to_thread(self._snapshot))
-            try:
-                snapshot = await asyncio.shield(snapshot_task)
-            except asyncio.CancelledError:
-                await snapshot_task
-                raise
+            snapshot = await self._read_snapshot()
             operations = {
                 "telegram": self._probe_https(snapshot.proxy, TELEGRAM_URL),
                 "google": self._probe_https(snapshot.proxy, GOOGLE_URL),
@@ -116,7 +176,42 @@ class NetworkDiagnosticsService:
             self._running = False
 
     async def _probe_protocol(self, snapshot: ProbeSnapshot) -> TelegramProtocolResult:
-        return await protocol_round(self.settings, self.local_api, snapshot)
+        if snapshot.mode != "local" or not self.settings.config.managed_local_api:
+            return await protocol_round(self.settings, self.local_api, snapshot)
+        key = snapshot.protocol_key()
+        # A single owner writes the helper's shared request/result files. A
+        # different snapshot must never consume an in-flight observation.
+        if self._protocol_task is not None and (self._protocol_key != key or not self._protocol_waiters):
+            return TelegramProtocolResult(state="unavailable", settings_revision=snapshot.revision,
+                                          route="proxy" if snapshot.proxy.enabled else "direct",
+                                          reason="stale_observation")
+        if self._protocol_task is None:
+            self._protocol_task = asyncio.create_task(self._observe_protocol(snapshot))
+            self._protocol_key = key
+        task = self._protocol_task
+        self._protocol_waiters += 1
+        try:
+            return await asyncio.shield(task)
+        finally:
+            self._protocol_waiters -= 1
+            if not self._protocol_waiters:
+                if not task.done():
+                    task.cancel()
+                    # Keep the slot until the helper's request has been cleaned up.
+                    await asyncio.gather(task, return_exceptions=True)
+                self._protocol_task = None
+                self._protocol_key = None
+
+    async def _observe_protocol(self, snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+        result = await protocol_round(self.settings, self.local_api, snapshot)
+        if snapshot.monitors_protocol():
+            revision, generation = snapshot.revision, snapshot.applied.get("generation")
+            if generation:
+                health: TelegramProtocolHealth = "unavailable"
+                if result.applied_route == "matched" and result.state in ("reachable", "partial", "timeout", "failed"):
+                    health = result.state
+                self._protocol_observation = (revision, generation, time.monotonic() + PROTOCOL_MAX_AGE, health)
+        return result
 
     async def _round(self, operations: Mapping[str, Coroutine[Any, Any, NetworkProbeResult]]) -> dict[str, NetworkProbeResult]:
         started = time.monotonic()

@@ -97,6 +97,7 @@ export interface LocalApiStatus {
   drain_reason: 'connection' | 'downloads' | null
   message: string; generation: string | null; last_heartbeat_at: string | null
   cloud_available_at: string | null; can_restart: boolean; can_retry: boolean
+  telegram_protocol?: 'reachable' | 'partial' | 'failed' | 'timeout' | 'unavailable' | null
 }
 export interface BotRequestSafety {
   state: 'ready' | 'throttled' | 'backoff' | 'auth_paused'

@@ -102,7 +102,7 @@ class Storage:
         assert self._enrolled_identity is not None
         return dict(self._enrolled_identity)
 
-    def check(self, required: int = 0, *, check_space: bool = True) -> dict[str, Any]:
+    def validate_identity(self) -> tuple[int, int]:
         current = self._root_identity()
         if self._enrolled_identity is None:
             self._enrolled_identity = current
@@ -111,11 +111,20 @@ class Storage:
         if not self._identity_persisted:
             self._write_identity(current)
             self._identity_persisted = True
+        return current["device"], current["inode"]
+
+    def check(self, required: int = 0, *, check_space: bool = True) -> dict[str, Any]:
+        self.validate_identity()
         usage = shutil.disk_usage(self.root)
-        if check_space and usage.free < self.minimum_free + required:
+        return self.capacity_status(usage.free, usage.total, required, check_space=check_space)
+
+    def capacity_status(self, free_bytes: int, total_bytes: int, required: int = 0,
+                        *, check_space: bool = True) -> dict[str, Any]:
+        """Describe a measurement; callers guarding writes must use check()."""
+        if check_space and free_bytes < self.minimum_free + required:
             raise AppError("NO_SPACE", "可用空间不足，请释放对应磁盘空间后手动重试")
         return {"id": self.root_id, "label": self.root_id, "available": True,
-                "free_bytes": usage.free, "total_bytes": usage.total, "message": ""}
+                "free_bytes": free_bytes, "total_bytes": total_bytes, "message": ""}
 
     def existing(self, relative: str, size: int | None = None) -> bool:
         try:
