@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.schemas.contracts import SettingsPatch
-from app.schemas.responses import ProxyStatus
+from app.schemas.responses import NetworkProbeResult, ProxyStatus, TelegramProtocolResult
 from app.services import network_diagnostics as diagnostics
 from app.services import protocol_diagnostics as ipc
 from app.services import protocol_probe as wire
@@ -73,7 +73,7 @@ async def test_independent_protocol_outcomes_coverage_cleanup_and_no_mutation(
     task = asyncio.create_task(service._probe_protocol(snapshot))
     request = await reply(service, states=states)
     assert all(secret not in json.dumps(request) for secret in ("bot_token", "telegram_api_id", "telegram_api_hash"))
-    result = await task
+    result = (await task).result
     assert result.state == expected and result.applied_route == "matched"
     assert result.observed_generation == "generation-1" and len(result.targets) == 4
     assert not (tmp_path / "control" / wire.REQUEST_FILE).exists()
@@ -89,7 +89,7 @@ async def test_invalid_stale_cross_request_result_never_passes(
     monkeypatch.setattr(ipc, "REQUEST_LIFETIME", 0.12)
     task = asyncio.create_task(service._probe_protocol(snapshot))
     await reply(service, tamper=tamper)
-    result = await task
+    result = (await task).result
     assert result.state == "unavailable" and result.applied_route == "unavailable"
 
 
@@ -105,7 +105,7 @@ async def test_post_io_fresh_observation_and_saved_revision_races(
     else:
         value = {} if change == "heartbeat" else snapshot.applied | {change: "changed"}
         monkeypatch.setattr(service.local_api, "applied", lambda: value)
-    result = await task
+    result = (await task).result
     assert result.state == "unavailable" and result.applied_route == "unavailable"
     assert result.reason == ("configuration_changed" if change == "settings" else "stale_observation")
 
@@ -118,7 +118,7 @@ async def test_applied_proxy_route_separate_from_saved_route_probe(
     snapshot = replace(snapshot, applied=applied)
     task = asyncio.create_task(service._probe_protocol(snapshot))
     await reply(service)
-    result = await task
+    result = (await task).result
     assert result.state == "reachable" and result.applied_route == "different" and result.route == "direct"
 
 
@@ -127,7 +127,7 @@ async def test_missing_helper_bounded_and_cancel_removes_handoff(
     service, snapshot = prepare(client, tmp_path, monkeypatch)
     monkeypatch.setattr(ipc, "REQUEST_LIFETIME", 0.1)
     started = time.monotonic()
-    result = await service._probe_protocol(snapshot)
+    result = (await service._probe_protocol(snapshot)).result
     assert time.monotonic() - started < 1 and result.state == "unavailable"
     task = asyncio.create_task(service._probe_protocol(snapshot))
     while not (tmp_path / "control" / wire.REQUEST_FILE).exists():
@@ -145,7 +145,7 @@ async def test_dead_supervisor_does_not_prove_applied_child_connectivity(
     snapshot = replace(snapshot, applied={})
     task = asyncio.create_task(service._probe_protocol(snapshot))
     await reply(service)
-    result = await task
+    result = (await task).result
     assert result.state == "reachable" and result.applied_route == "unavailable"
     assert result.observed_generation is None
 
@@ -160,7 +160,7 @@ async def test_fresh_observation_io_failure_cannot_become_helper_success(
     monkeypatch.setattr(ipc, "joined_snapshot", broken)
     task = asyncio.create_task(service._probe_protocol(snapshot))
     await reply(service)
-    result = await task
+    result = (await task).result
     assert result.state == "unavailable" and result.reason == "stale_observation"
     assert result.applied_route == "unavailable" and len(result.targets) == 4
     assert "fixture-private-error" not in result.model_dump_json()
@@ -173,8 +173,9 @@ async def test_protocol_monitor_replaces_healthy_result_when_upstream_times_out(
     snapshot = service._snapshot()
     assert snapshot.monitors_protocol() and snapshot.local_api is not None
     api, proxy = snapshot.local_api.model_dump(), snapshot.proxy_status.model_dump()
+    command_id = snapshot.applied["command_id"]
     def read() -> str | None:
-        return service.protocol_status(api, proxy)
+        return service.protocol_status(api, proxy, command_id)
 
     async def wait_for_status(expected: str) -> None:
         while read() != expected:
@@ -188,15 +189,14 @@ async def test_protocol_monitor_replaces_healthy_result_when_upstream_times_out(
             await wait_for_status("reachable")
             await reply(service, states=("timeout",) * 4)
             await wait_for_status("timeout")
-            assert service.protocol_status(api | {"generation": "new"}, proxy) == "unavailable"
-            assert service.protocol_status(api, proxy | {"applied_revision": 99, "desired_revision": 99}) == "unavailable"
-            assert service.protocol_status(api | {"state": "stopped"}, proxy) is None
+            assert service.protocol_status(api | {"generation": "new"}, proxy, command_id) == "unavailable"
+            assert service.protocol_status(api, proxy | {"applied_revision": 99, "desired_revision": 99}, command_id) == "unavailable"
+            assert service.protocol_status(api | {"state": "stopped"}, proxy, command_id) is None
             await reply(service)
             await wait_for_status("reachable")
         observation = service._protocol_observation
         assert observation is not None
-        revision, generation, _, health = observation
-        service._protocol_observation = (revision, generation, time.monotonic(), health)
+        service._protocol_observation = replace(observation, expires=time.monotonic())
         assert read() == "unavailable"
     finally:
         monitor.cancel()
@@ -211,21 +211,23 @@ async def test_concurrent_protocol_consumers_share_handoff_and_cancel_independen
     snapshot = service._snapshot()
     owner = asyncio.create_task(service._probe_protocol(snapshot))
     other = asyncio.create_task(service._probe_protocol(snapshot))
+    third = asyncio.create_task(service._probe_protocol(snapshot))
     try:
         async with asyncio.timeout(3):
             await asyncio.sleep(0)
             changed = await service._probe_protocol(replace(snapshot, revision=snapshot.revision + 1))
-            assert changed.state == "unavailable"
+            assert changed.result.state == "unavailable"
             owner.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await owner
             await reply(service, states=("timeout",) * 4)
             result = await other
-            assert result.state == "timeout"
+            assert result.result.state == "timeout" and result.observation is not None
+            assert await third is result
     finally:
-        for task in (owner, other):
+        for task in (owner, other, third):
             task.cancel()
-        await asyncio.gather(owner, other, return_exceptions=True)
+        await asyncio.gather(owner, other, third, return_exceptions=True)
     assert not (tmp_path / "control" / wire.REQUEST_FILE).exists()
     assert not (tmp_path / "control" / wire.RESULT_FILE).exists()
 
@@ -248,10 +250,109 @@ async def test_manual_protocol_refresh_publishes_result_and_status_get_does_not_
     request = asyncio.create_task(asyncio.to_thread(authenticated.post, path))
     async with asyncio.timeout(3):
         await reply(service, states=("timeout",) * 4)
-        assert (await request).status_code == 204
+        response = await request
+        assert response.status_code == 200 and response.json() == {"outcome": "updated", "reason": None}
     second = authenticated.get("/api/v1/system/status").json()["local_api"]
     assert second == (first | {"telegram_protocol": "timeout"})
-    assert authenticated.post(path).status_code == 204  # Coalesced by the manual refresh interval.
+    assert authenticated.post(path).json() == {"outcome": "reused", "reason": None}
     assert not (directory / wire.REQUEST_FILE).exists()
     authenticated.cookies.clear()
     assert authenticated.post(path).status_code == 401
+
+
+async def test_full_test_publishes_recovery_and_same_generation_command_invalidates_it(
+        authenticated: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _ = prepare(authenticated, tmp_path, monkeypatch)
+
+    async def reachable(*args: Any) -> NetworkProbeResult:
+        return NetworkProbeResult(state="reachable")
+
+    monkeypatch.setattr(service, "_probe_https", reachable)
+    monkeypatch.setattr(service, "_probe_tcp", reachable)
+    status = "/api/v1/system/status"
+    async with asyncio.timeout(3):
+        request = asyncio.create_task(asyncio.to_thread(authenticated.post, "/api/v1/system/protocol-refresh"))
+        await reply(service, states=("reachable", "timeout", "failed", "reachable"))
+        assert (await request).is_success
+        assert authenticated.get(status).json()["local_api"]["telegram_protocol"] == "partial"
+        request = asyncio.create_task(asyncio.to_thread(authenticated.post, "/api/v1/system/network-test"))
+        await reply(service)
+        result = (await request).json()
+        assert result["telegram_protocol"]["state"] == "reachable"
+        assert result["status_protocol_updated"] is True
+    assert authenticated.get(status).json()["local_api"]["telegram_protocol"] == "reachable"
+    applied, state = service.local_api.applied(), service.local_api.read()
+    monkeypatch.setattr(service.local_api, "applied", lambda: applied | {"command_id": "command-2"})
+    monkeypatch.setattr(service.local_api, "read", lambda: state | {"command_id": "command-2"})
+    assert authenticated.get(status).json()["local_api"]["telegram_protocol"] == "unavailable"
+
+
+async def test_rejected_manual_refresh_does_not_cool_down_new_command(
+        client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _ = prepare(client, tmp_path, monkeypatch)
+    applied, state = service.local_api.applied(), service.local_api.read()
+    calls = []
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def protocol(_settings, _local_api, snapshot):
+        command = snapshot.applied["command_id"]
+        calls.append(command)
+        started.set()
+        await release.wait()
+        return TelegramProtocolResult(state="reachable", route="direct", settings_revision=snapshot.revision,
+                                      applied_route="matched", observed_generation=snapshot.applied["generation"],
+                                      observed_command_id=command), command == "command-2"
+
+    monkeypatch.setattr(diagnostics, "protocol_round", protocol)
+    old = asyncio.create_task(service.refresh_protocol())
+    try:
+        async with asyncio.timeout(3):
+            await started.wait()
+            monkeypatch.setattr(service.local_api, "applied", lambda: applied | {"command_id": "command-2"})
+            monkeypatch.setattr(service.local_api, "read", lambda: state | {"command_id": "command-2"})
+            blocked = await service.refresh_protocol(manual=True)
+            assert (blocked.outcome, blocked.reason) == ("not_updated", "another_round")
+            release.set()
+            assert (await old).outcome == "not_updated"
+            assert (await service.refresh_protocol(manual=True)).outcome == "updated"
+            observation = service._protocol_observation
+            assert observation is not None
+            assert (await service.refresh_protocol(manual=True)).outcome == "reused"
+            assert service._protocol_observation is observation  # No expiry extension.
+            service._protocol_observation = replace(observation, expires=time.monotonic())
+            assert (await service.refresh_protocol(manual=True)).outcome == "not_updated"
+            assert calls == ["command-1", "command-2"]
+    finally:
+        old.cancel()
+        await asyncio.gather(old, return_exceptions=True)
+
+
+@pytest.mark.parametrize("changed", ["phase", "route"])
+async def test_full_diagnostic_keeps_reachable_targets_without_publishing_ineligible_evidence(
+        client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str) -> None:
+    service, _ = prepare(client, tmp_path, monkeypatch)
+    applied, state = service.local_api.applied(), service.local_api.read()
+
+    async def reachable(*args: Any) -> NetworkProbeResult:
+        return NetworkProbeResult(state="reachable")
+
+    monkeypatch.setattr(service, "_probe_https", reachable)
+    monkeypatch.setattr(service, "_probe_tcp", reachable)
+    if changed == "route":
+        monkeypatch.setattr(service.local_api, "applied", lambda: applied | {"proxy_signature": "different-route"})
+    task = asyncio.create_task(service.run())
+    try:
+        async with asyncio.timeout(3):
+            if changed == "phase":
+                while not (tmp_path / "control" / wire.REQUEST_FILE).exists():
+                    await asyncio.sleep(0.001)
+                monkeypatch.setattr(service.local_api, "read", lambda: state | {"phase": "starting"})
+            await reply(service)
+            result = await task
+        assert result.telegram_protocol.state == "reachable"
+        assert result.telegram_protocol.applied_route == ("matched" if changed == "phase" else "different")
+        assert result.status_protocol_updated is False
+        assert service._protocol_observation is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

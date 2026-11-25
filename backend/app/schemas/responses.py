@@ -198,6 +198,7 @@ class RequestSafetyStatus(BaseModel):
 
 
 class BotStatus(BaseModel):
+    received_recently: bool = False
     state: Literal["unconfigured", "connecting", "online", "error"]
     username: str
     message: str
@@ -307,7 +308,13 @@ class TelegramProtocolResult(BaseModel):
     reason: Literal["helper_unavailable", "stale_observation", "configuration_changed", "round_timeout"] | None = None
 
 
+class ProtocolRefreshResponse(BaseModel):
+    outcome: Literal["updated", "reused", "not_updated"]
+    reason: Literal["not_applicable", "another_round", "no_current_observation"] | None = None
+
+
 class NetworkTestResponse(BaseModel):
+    status_protocol_updated: bool = False
     checked_at: str
     settings_revision: int
     origin: Literal["app"] = "app"

@@ -53,10 +53,10 @@ def seed_request_safety(app: FastAPI, scenario: str) -> None:
     patch_method.object(TelegramClient, "identity", identity).start()
 
 
-def seed_network_diagnostics(app: FastAPI) -> None:
+def seed_network_diagnostics(app: FastAPI, *, recovery: bool = False) -> None:
     """Replace only network primitives; the real diagnostic API/limits still run."""
-    from app.schemas.contracts import ProxySettings
     from app.schemas.responses import NetworkProbeResult, TelegramProtocolResult, TelegramProtocolTarget
+    from app.services import network_diagnostics
     from app.services.network_diagnostics import TELEGRAM_URL, ProbeSnapshot
     from app.services.protocol_probe import TARGETS
 
@@ -69,23 +69,31 @@ def seed_network_diagnostics(app: FastAPI) -> None:
     async def tcp() -> NetworkProbeResult:
         return NetworkProbeResult(state="reachable", latency_ms=2)
 
-    async def protocol(snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+    rounds = 0
+
+    async def protocol(_settings, _local_api, snapshot: ProbeSnapshot) -> tuple[TelegramProtocolResult, bool]:
+        nonlocal rounds
+        rounds += 1
+        partial = recovery and rounds > 1
         # Fake only the remote diagnostic boundary. The real service still
         # constructs the response, preserves API failure and enforces limits.
         await asyncio.sleep(0.15)
         return TelegramProtocolResult(
-            state="timeout", route="proxy" if snapshot.proxy.enabled else "direct",
+            state="partial" if partial else "timeout",
+            route="proxy" if snapshot.proxy.enabled else "direct",
             settings_revision=snapshot.revision, applied_route="matched",
             observed_generation="e2e-process-instance", observed_command_id="e2e-control",
-            targets=[TelegramProtocolTarget(dc=dc, host=host, port=port, state="timeout",
-                                             latency_ms=5000, failure_kind="timeout")
-                     for dc, host, port in TARGETS],
-        )
+            targets=[TelegramProtocolTarget(dc=dc, host=host, port=port,
+                                             state="reachable" if partial and index == 0 else "timeout",
+                                             latency_ms=5000,
+                                             failure_kind=None if partial and index == 0 else "timeout")
+                     for index, (dc, host, port) in enumerate(TARGETS)],
+        ), recovery
 
     service = app.state.network_diagnostics
     patch_method.object(service, "_probe_https", https).start()
     patch_method.object(service, "_probe_tcp", tcp).start()
-    patch_method.object(service, "_probe_protocol", protocol).start()
+    patch_method.object(network_diagnostics, "protocol_round", protocol).start()
 
 
 def seed(app: FastAPI) -> None:
@@ -400,7 +408,7 @@ def main() -> None:
                         cookie_secure=False, minimum_free_bytes=1024)
         # A fixed test scenario is allowed; no caller-provided paths, secrets or real upstream.
         scenario = os.getenv("E2E_MANAGED_API", "")
-        if scenario in {"credentials", "restart", "uncertain", "cooldown", "connection"} or os.getenv("E2E_CACHE_STORAGE") == "1":
+        if scenario in {"credentials", "restart", "uncertain", "cooldown", "connection", "protocol"} or os.getenv("E2E_CACHE_STORAGE") == "1":
             config.managed_local_api = True
             config.local_api_control_dir = root / "api-control"
         if not (config.static_dir / "index.html").is_file():
@@ -417,7 +425,7 @@ def main() -> None:
                     from tools.task_files_fixture import seed_task_files
 
                     seed_task_files(application)
-                seed_network_diagnostics(application)
+                seed_network_diagnostics(application, recovery=scenario == "protocol")
                 seed_request_safety(application, os.getenv("E2E_REQUEST_SAFETY", ""))
                 if not scenario:
                     application.state.runtime.local_api.update(
@@ -426,7 +434,7 @@ def main() -> None:
                 if config.managed_local_api:
                     service = application.state.runtime.local_api
                     service.update(applied_mode="local", phase="idle", operation_id=None)
-                    if scenario == "connection":
+                    if scenario in {"connection", "protocol"}:
                         settings = application.state.settings
                         patch = SettingsPatch(revision=settings.read()[0],
                                               telegram_api_hash="0123456789abcdef0123456789abcdef",
@@ -434,6 +442,8 @@ def main() -> None:
                                               proxy=ProxySettings(enabled=False, password="offline-fixture-password"))
                         settings.save(patch, settings.candidate(patch))
                     service.update(applied_mode="local", phase="idle", operation_id=None)
+                    if scenario == "protocol":
+                        service.update(applied_command_id="e2e-control", applied_credential_revision=0)
                     if scenario == "uncertain":
                         service.update(phase="logout_uncertain", logout_uncertain=True,
                                        applied_mode="cloud", operation_id="e2e-uncertain",
@@ -450,6 +460,8 @@ def main() -> None:
                                 "version": 1, "command_id": "e2e-control", "state": "waiting_credentials" if scenario == "credentials" else "running",
                                 "generation": "e2e-process-instance", "heartbeat_at": time.time(),
                                 "credential_revision": 0, "error_code": "",
+                                **({"proxy_signature": application.state.settings.proxy_signature(
+                                    application.state.settings.read()[1])} if scenario == "protocol" else {}),
                             }).encode())
                             temporary_status.replace(config.local_api_control_dir / "applied.json")
                             await asyncio.sleep(1)
@@ -467,6 +479,14 @@ def main() -> None:
                         settings.save(patch, settings.candidate(patch))
                         application.state.runtime.local_api.update(phase="failed", error_code="LOCAL_API_PREFLIGHT_FAILED")
                 try:
+                    if scenario == "protocol":
+                        from app.bot.client import TelegramClient
+
+                        async def identity(_client: TelegramClient) -> dict:
+                            return {"id": 98765, "username": "e2e_offline_bot"}
+
+                        with patch_method.object(TelegramClient, "identity", identity):
+                            assert await application.state.runtime.ensure_client()
                     if os.getenv("E2E_RETAINED_CACHE") == "1":
                         from tools.retained_cache_fixture import retained_cache
 

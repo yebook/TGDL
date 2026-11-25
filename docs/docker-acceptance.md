@@ -15,7 +15,7 @@ search: false
 先启动 Docker Engine，并构建当前源码的应用镜像：
 
 ```text
-docker build -t tgd-app-source:0.2.7 .
+docker build -t tgd-app-source:0.2.8 .
 python scripts/docker_acceptance.py --run
 ```
 

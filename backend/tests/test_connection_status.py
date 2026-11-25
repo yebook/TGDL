@@ -114,7 +114,7 @@ async def test_transient_poll_error_preserves_identity_but_needs_success_to_reco
     runtime.poll_result(verified, error="暂时连接失败")
     assert runtime.connection_snapshot()[1] == {
         "state": "error", "username": "current_bot", "message": "暂时连接失败",
-        "request_safety": runtime.safety.status(state.settings.read()[1].bot_token),
+        "request_safety": runtime.safety.status(state.settings.read()[1].bot_token), "received_recently": False,
     }
     assert await runtime.ensure_client()
     assert runtime.bot_status["state"] == "error"  # Reuse itself is not recovery.
@@ -134,13 +134,19 @@ async def test_token_change_hides_previous_identity_and_ignores_late_result(clie
     monkeypatch.setattr(TelegramClient, "identity", identity)
     await runtime.ensure_client()
     old = runtime.client
+    expiry = time.monotonic() + 120
+    runtime.poll_result(old, message_expiry=expiry)
+    assert runtime.connection_snapshot()[1]["received_recently"] is True
     configure(state, "987654321:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
     assert runtime.connection_snapshot()[1]["username"] == ""
-    runtime.poll_result(old)
+    assert runtime.connection_snapshot()[1]["received_recently"] is False
+    runtime.poll_result(old, message_expiry=expiry)
     assert runtime.connection_snapshot()[1]["state"] == "connecting"
     identity.return_value = {"id": 8, "username": "new_bot"}
     await runtime.ensure_client()
     runtime.poll_result(old, error="旧连接失败")
+    runtime.poll_result(old, message_expiry=expiry)
+    assert runtime.connection_snapshot()[1]["received_recently"] is False
     assert runtime.connection_snapshot()[1]["username"] == "new_bot"
     assert runtime.connection_snapshot()[1]["state"] == "online"
     await runtime.client.close()
@@ -224,13 +230,19 @@ async def test_managed_identity_requires_current_generation_command_and_proxy(ma
     monkeypatch.setattr(TelegramClient, "identity", AsyncMock(return_value={"id": 7, "username": "local_bot"}))
     assert await runtime.ensure_client()
     assert runtime.connection_snapshot()[1]["username"] == "local_bot"
+    runtime.poll_result(runtime.client, message_expiry=time.monotonic() - 1)
+    assert runtime.connection_snapshot()[1]["received_recently"] is False
+    runtime.poll_result(runtime.client, message_expiry=time.monotonic() + 120)
+    assert runtime.connection_snapshot()[1]["received_recently"] is True
     heartbeat(runtime.local_api, **(ack | {"command_id": "obsolete-command"}))
     assert runtime.connection_snapshot()[1]["username"] == ""
     heartbeat(runtime.local_api, **(ack | {"generation": "generation-two"}))
     assert runtime.connection_snapshot()[1]["state"] == "connecting"
+    assert runtime.connection_snapshot()[1]["received_recently"] is False
     heartbeat(runtime.local_api, **ack)
     runtime.safety.observe(values.bot_token, None, unauthorized=True)
     bot = runtime.connection_snapshot()[1]
     assert bot["username"] == "local_bot" and bot["state"] == "error"
+    assert bot["received_recently"] is False
     assert bot["request_safety"]["state"] == "auth_paused"
     await runtime.client.close()

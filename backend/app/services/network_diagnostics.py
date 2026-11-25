@@ -18,6 +18,7 @@ from app.schemas.responses import (
     LocalApiStatus,
     NetworkProbeResult,
     NetworkTestResponse,
+    ProtocolRefreshResponse,
     ProxyStatus,
     TelegramProtocolHealth,
     TelegramProtocolResult,
@@ -57,8 +58,24 @@ class ProbeSnapshot:
 
     def monitors_protocol(self) -> bool:
         api = self.local_api
-        return (api is not None and api.managed and api.phase == "idle" and api.applied_mode == "local"
-                and api.state == "running" and self.proxy_status.applied_revision == self.revision)
+        return (self.mode == "local" and api is not None and api.managed and api.phase == "idle" and api.applied_mode == "local"
+                and api.desired_mode == "local" and api.state == "running"
+                and self.proxy_status.applied_revision == self.revision
+                and bool(self.applied.get("generation")) and bool(self.applied.get("command_id")))
+
+
+@dataclass(frozen=True)
+class ProtocolObservation:
+    key: ProtocolKey
+    expires: float
+    health: TelegramProtocolHealth
+
+
+@dataclass(frozen=True)
+class ProtocolRound:
+    result: TelegramProtocolResult
+    observation: ProtocolObservation | None = None
+    busy: bool = False
 
 
 class NetworkDiagnosticsService:
@@ -68,41 +85,47 @@ class NetworkDiagnosticsService:
         self._running = False
         self._last_start: float | None = None
         self._next_allowed_at = 0.0
-        self._protocol_task: asyncio.Task[TelegramProtocolResult] | None = None
+        self._protocol_task: asyncio.Task[ProtocolRound] | None = None
         self._protocol_key: ProtocolKey | None = None
         self._protocol_waiters = 0
         self._last_manual_protocol: tuple[ProtocolKey, float] | None = None
-        self._protocol_observation: tuple[int, str, float, TelegramProtocolHealth] | None = None
+        self._protocol_observation: ProtocolObservation | None = None
 
-    def protocol_status(self, api: Mapping[str, Any], proxy: Mapping[str, Any]) -> TelegramProtocolHealth | None:
-        """Used by the status reader thread: the observation is an immutable, atomically replaced tuple."""
+    def _current_observation(self, key: ProtocolKey) -> ProtocolObservation | None:
+        observation = self._protocol_observation
+        if observation is not None and observation.key == key and time.monotonic() < observation.expires:
+            return observation
+        return None
+
+    def protocol_status(self, api: Mapping[str, Any], proxy: Mapping[str, Any],
+                        command_id: str | None) -> TelegramProtocolHealth | None:
+        """Read the immutable observation using the same connection snapshot as the status response."""
         if (not api["managed"] or api["phase"] != "idle" or api["state"] != "running"
                 or api["applied_mode"] != "local" or api["desired_mode"] != "local"
                 or proxy["applied_revision"] != proxy["desired_revision"]):
             return None
-        observation = self._protocol_observation
-        if observation is not None:
-            revision, generation, expires, health = observation
-            if revision == proxy["desired_revision"] and generation == api["generation"] and time.monotonic() < expires:
-                return health
-        return "unavailable"
+        key = (proxy["desired_revision"], api["generation"], command_id, True)
+        observation = self._current_observation(key)
+        return observation.health if observation else "unavailable"
 
-    async def refresh_protocol(self, *, manual: bool = False) -> None:
+    async def refresh_protocol(self, *, manual: bool = False) -> ProtocolRefreshResponse:
         if not self.settings.config.managed_local_api:
-            return
+            return ProtocolRefreshResponse(outcome="not_updated", reason="not_applicable")
         snapshot = await self._read_snapshot()
         if not snapshot.monitors_protocol():
-            return
-        if manual:
-            now = time.monotonic()
-            key = snapshot.protocol_key()
-            previous = self._last_manual_protocol
-            if previous is not None and previous[0] == key and now - previous[1] < START_INTERVAL:
-                if self._protocol_task is None or self._protocol_key != key:
-                    return
-            else:
-                self._last_manual_protocol = (key, now)
-        await self._probe_protocol(snapshot)
+            return ProtocolRefreshResponse(outcome="not_updated", reason="not_applicable")
+        key = snapshot.protocol_key()
+        previous = self._last_manual_protocol
+        if (manual and self._protocol_task is None and previous is not None and previous[0] == key
+                and time.monotonic() - previous[1] < START_INTERVAL):
+            if self._current_observation(key) is not None:
+                return ProtocolRefreshResponse(outcome="reused")
+            return ProtocolRefreshResponse(outcome="not_updated", reason="no_current_observation")
+        round_ = await self._probe_protocol(snapshot, manual=manual)
+        if round_.observation is not None and self._current_observation(key) is round_.observation:
+            return ProtocolRefreshResponse(outcome="updated")
+        return ProtocolRefreshResponse(outcome="not_updated", reason=(
+            "another_round" if round_.busy else "no_current_observation"))
 
     async def monitor_protocol(self) -> None:
         while True:
@@ -169,26 +192,34 @@ class NetworkDiagnosticsService:
                 bot_api_mode=snapshot.mode, telegram=results["telegram"], google=results["google"],
                 local_api_tcp=results.get("local_api_tcp", NetworkProbeResult(state="not_applicable")),
                 local_api=snapshot.local_api, proxy_status=snapshot.proxy_status,
-                telegram_protocol=protocol,
+                telegram_protocol=protocol.result,
+                status_protocol_updated=(protocol.observation is not None
+                    and self._current_observation(snapshot.protocol_key()) is protocol.observation),
                 next_allowed_at=iso(self._next_allowed_at),
             )
         finally:
             self._running = False
 
-    async def _probe_protocol(self, snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+    async def _probe_protocol(self, snapshot: ProbeSnapshot, *, manual: bool = False) -> ProtocolRound:
         if snapshot.mode != "local" or not self.settings.config.managed_local_api:
-            return await protocol_round(self.settings, self.local_api, snapshot)
+            result, _ = await protocol_round(self.settings, self.local_api, snapshot)
+            return ProtocolRound(result)
         key = snapshot.protocol_key()
         # A single owner writes the helper's shared request/result files. A
         # different snapshot must never consume an in-flight observation.
         if self._protocol_task is not None and (self._protocol_key != key or not self._protocol_waiters):
-            return TelegramProtocolResult(state="unavailable", settings_revision=snapshot.revision,
-                                          route="proxy" if snapshot.proxy.enabled else "direct",
-                                          reason="stale_observation")
+            return ProtocolRound(TelegramProtocolResult(state="unavailable", settings_revision=snapshot.revision,
+                                 route="proxy" if snapshot.proxy.enabled else "direct", reason="stale_observation"),
+                                 busy=True)
         if self._protocol_task is None:
             self._protocol_task = asyncio.create_task(self._observe_protocol(snapshot))
             self._protocol_key = key
         task = self._protocol_task
+        if manual:
+            previous = self._last_manual_protocol
+            now = time.monotonic()
+            if previous is None or previous[0] != key or now - previous[1] >= START_INTERVAL:
+                self._last_manual_protocol = (key, now)
         self._protocol_waiters += 1
         try:
             return await asyncio.shield(task)
@@ -202,16 +233,22 @@ class NetworkDiagnosticsService:
                 self._protocol_task = None
                 self._protocol_key = None
 
-    async def _observe_protocol(self, snapshot: ProbeSnapshot) -> TelegramProtocolResult:
-        result = await protocol_round(self.settings, self.local_api, snapshot)
-        if snapshot.monitors_protocol():
-            revision, generation = snapshot.revision, snapshot.applied.get("generation")
-            if generation:
-                health: TelegramProtocolHealth = "unavailable"
-                if result.applied_route == "matched" and result.state in ("reachable", "partial", "timeout", "failed"):
-                    health = result.state
-                self._protocol_observation = (revision, generation, time.monotonic() + PROTOCOL_MAX_AGE, health)
-        return result
+    async def _observe_protocol(self, snapshot: ProbeSnapshot) -> ProtocolRound:
+        result, status_eligible = await protocol_round(self.settings, self.local_api, snapshot)
+        key = snapshot.protocol_key()
+        revision, generation, command_id, eligible = key
+        if (eligible and status_eligible and result.applied_route == "matched"
+                and result.settings_revision == revision and result.observed_generation == generation
+                and result.observed_command_id == command_id
+                and result.state in ("reachable", "partial", "timeout", "failed")):
+            observation = ProtocolObservation(key, time.monotonic() + PROTOCOL_MAX_AGE, result.state)
+            self._protocol_observation = observation
+            return ProtocolRound(result, observation)
+        if eligible and self._current_observation(key) is not None:
+            # A missed or uncorrelated sample is not fresh evidence. Do not
+            # invalidate observations belonging to a different running context.
+            self._protocol_observation = None
+        return ProtocolRound(result)
 
     async def _round(self, operations: Mapping[str, Coroutine[Any, Any, NetworkProbeResult]]) -> dict[str, NetworkProbeResult]:
         started = time.monotonic()

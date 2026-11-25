@@ -1,4 +1,5 @@
 import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from app.bot.client import TelegramClient
 from app.db.models import IngestUpdate, MediaItem, MediaRequest
 from app.schemas.contracts import SettingsPatch, UserSettings
+from app.workers.runtime import recent_message_expiry
 
 TOKEN = "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 USER = {"id": 42, "is_bot": False, "first_name": "fixture"}
@@ -51,6 +53,7 @@ async def test_updates_serialize_real_sdk_link_previews(config, monkeypatch, pre
         dumped = payload["message"]
         assert dumped["from_user"]["id"] == 42
         assert dumped["text"] == message["text"]
+        assert dumped["date"] == message["date"]
         if preview is None:
             assert "link_preview_options" not in dumped
         else:
@@ -74,10 +77,11 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
     assert await runtime.ensure_client()
     telegram = runtime.client
     runtime.poll_result(telegram, error="previous poll failed")
+    recent_date = int(time.time())
     batch = [
         Update.model_validate({"update_id": 100, "message": link_message({"url": "https://example.org"})}),
         Update.model_validate({"update_id": 101, "message": {
-            "message_id": 2, "date": 1793611951, "from": USER,
+            "message_id": 2, "date": recent_date, "from": USER,
             "chat": {"id": 42, "type": "private"},
             "document": {"file_id": "fixture-file", "file_unique_id": "fixture-unique",
                          "file_name": "fixture.pdf", "file_size": 6},
@@ -85,7 +89,7 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
     ]
     clock = [1793611952.0]
     runtime.safety.clock = lambda: clock[0]
-    offsets = []
+    offsets, expiry_after_persist = [], []
 
     async def response(bot, method, timeout=None):
         if method.__api_method__ in {"setMyCommands", "setChatMenuButton"}:
@@ -96,7 +100,9 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
         clock[0] += 10  # Advance the test clock, retaining the real admission gate.
         if len(offsets) == 1:
             return batch
-        assert runtime.connection_snapshot()[1]["state"] == "online"
+        bot = runtime.connection_snapshot()[1]
+        assert bot["state"] == "online" and bot["received_recently"] is True
+        expiry_after_persist.append(runtime._received_message_until)
         if len(offsets) == 2:
             return batch  # Replayed delivery must remain idempotent.
         runtime.stopping = True
@@ -110,6 +116,11 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
     try:
         await runtime.poll_loop()
         assert offsets == [0, 102, 102]
+        assert expiry_after_persist == [runtime._received_message_until] * 2
+        runtime.poll_result(telegram, error="getUpdates failed")
+        assert runtime.connection_snapshot()[1]["received_recently"] is False
+        runtime.poll_result(telegram)  # Empty successful poll restores readiness, not receipt.
+        assert runtime.connection_snapshot()[1]["received_recently"] is False
         assert runtime.ingest.offset(7) == 102
         assert runtime.ingest.pending(7) == []
         with state.db.sessions() as session:
@@ -124,3 +135,21 @@ async def test_url_backlog_recovers_polling_persists_cursor_and_accepts_media(cl
     finally:
         runtime.stopping = True
         await telegram.close()
+
+
+@pytest.mark.parametrize("batch", [[],
+    [{"update_id": 100, "callback_query": {"message": {"date": 990}}}],
+    [{"update_id": 99, "message": {"date": 990}}],
+    [{"update_id": 100, "message": {"date": 880}}],
+    [{"update_id": 100, "message": {"date": 1001}}],
+    [{"update_id": 100, "message": {"date": "990"}}],
+    [{"update_id": 100, "message": {}}],
+])
+def test_empty_stale_or_non_message_batch_has_no_receipt_evidence(batch):
+    assert recent_message_expiry(batch, 100, received_at=1000.0, monotonic_at=10.0) is None
+
+
+def test_receipt_expires_relative_to_latest_message_date_not_batch_arrival():
+    batch = [{"update_id": 100, "message": {"date": 995}}, {"update_id": 101, "message": {"date": 881}}]
+    assert recent_message_expiry(batch, 100, received_at=1000.5, monotonic_at=10.0) == 124.5
+    assert recent_message_expiry(batch, 101, received_at=1000.5, monotonic_at=10.0) == 10.5

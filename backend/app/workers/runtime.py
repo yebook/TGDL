@@ -37,6 +37,21 @@ from app.storage.files import StorageManager
 from app.workers.download import DownloadWorker, owned_thread
 
 MENU_TIMEOUT = 25.0
+RECENT_MESSAGE_WINDOW = 120.0
+
+
+def recent_message_expiry(updates: list[dict[str, Any]], offset: int, *,
+                          received_at: float, monotonic_at: float) -> float | None:
+    latest = received_at - RECENT_MESSAGE_WINDOW
+    for update in updates:
+        message, update_id = update.get("message"), update.get("update_id")
+        if not isinstance(message, dict) or type(update_id) is not int or update_id < offset:
+            continue
+        date = message.get("date")
+        if type(date) is int and latest < date <= received_at:
+            latest = date
+    remaining = RECENT_MESSAGE_WINDOW - (received_at - latest)
+    return monotonic_at + remaining if remaining > 0 else None
 
 
 class Runtime:
@@ -59,6 +74,7 @@ class Runtime:
         self.client_generation = ""
         self.verified_client: TelegramClient | None = None
         self.verified_username = ""
+        self._received_message_until = 0.0
         self.menu_client: TelegramClient | None = None
         self.menu_registered = False
         self.menu_retry_at = 0.0
@@ -326,13 +342,14 @@ class Runtime:
             self.client_signature = signature
             self.client_generation = generation
             self.verified_client, self.verified_username = client, identity["username"]
+            self._received_message_until = 0.0
             self.bot_status_signature = signature
             self.bot_status_generation = generation
             self.settings.cloud_applied_signature = signature if settings.bot_api_mode == "cloud" else ""
             self.bot_status = {"state": "online", "username": identity["username"], "message": ""}
             return True
 
-    def connection_snapshot(self) -> tuple[UserSettings, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    def connection_snapshot(self) -> tuple[UserSettings, dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
         """One saved connection observation; never probe or hold locks over I/O waits."""
         with self.settings.connection_publication_lock:
             revision, values, _ = self.settings.read()
@@ -365,15 +382,22 @@ class Runtime:
             bot["request_safety"] = safety
             if safety["state"] != "ready":
                 bot.update(state="error", message=safety["message"])
-            return values, bot, api, proxy
+            bot["received_recently"] = (current and bot["state"] == "online" and api["phase"] == "idle"
+                                        and time.monotonic() < self._received_message_until)
+            return values, bot, api, proxy, applied.get("command_id")
 
-    def poll_result(self, client: TelegramClient | None, *, error: str = "") -> None:
+    def poll_result(self, client: TelegramClient | None, *, error: str = "",
+                    message_expiry: float | None = None) -> None:
         """A late old-client result cannot replace a newly published connection."""
         with self.settings.connection_publication_lock:
             if client is not self.client or client is None:
                 return
             if self.client_signature != self.settings.client_signature(self.settings.read()[1]):
                 return
+            if error:
+                self._received_message_until = 0.0
+            elif client is self.verified_client and message_expiry is not None:
+                self._received_message_until = max(self._received_message_until, message_expiry)
             self.bot_status = {"state": "error" if error else "online",
                                "username": self.verified_username if client is self.verified_client else "",
                                "message": error}
@@ -484,11 +508,14 @@ class Runtime:
                     stage = "updates_receive"
                     updates = await self.client.updates(offset)
                     completed.add(stage)
+                    message_expiry = recent_message_expiry(
+                        updates, offset, received_at=time.time(), monotonic_at=time.monotonic(),
+                    ) if updates else None
                     stage = "updates_persist"
                     await asyncio.to_thread(self.ingest.persist_batch, self.bot_id, updates)
                     completed.add(stage)
                     stage = "poll_status"
-                    await asyncio.to_thread(self.poll_result, polling_client)
+                    await asyncio.to_thread(self.poll_result, polling_client, message_expiry=message_expiry)
                     completed.add(stage)
                     await self.record_runtime("polling", stage, client=polling_client, scope=scope,
                                               completed_stages=tuple(completed))

@@ -7,9 +7,11 @@ import {
 } from '../api/networkTest'
 import { proxyLabels } from '../api/proxy'
 import { useDeadlineClock } from '../composables/useDeadlineClock'
+import { useSystemStatus } from '../composables/useSystemStatus'
 
 const props = defineProps<{ revision: number; active: boolean; draft: boolean; disabled?: boolean; outcomeUnknown?: boolean }>()
 const { result, busy, error, nextAllowedAt, run, cancel } = useNetworkTest()
+const { refresh } = useSystemStatus()
 const active = () => props.active
 const retryClock = useDeadlineClock(() => nextAllowedAt.value, { stepMs: 1000, active })
 const expiryClock = useDeadlineClock(() => {
@@ -19,6 +21,9 @@ const expiryClock = useDeadlineClock(() => {
 onUnmounted(cancel)
 watch(active, visible => { if (!visible) cancel() })
 const historical = computed(() => result.value && (props.outcomeUnknown || networkResultHistorical(result.value, props.revision, expiryClock.value)))
+watch(result, latest => {
+  if (props.active && latest?.status_protocol_updated && !historical.value) void refresh()
+})
 const waitSeconds = computed(() => Math.max(0, Math.ceil((nextAllowedAt.value - retryClock.value) / 1000)))
 const probes = computed(() => result.value ? [
   { name: 'Telegram HTTPS', result: result.value.telegram },
@@ -28,6 +33,10 @@ const probes = computed(() => result.value ? [
 const checkedTime = computed(() => result.value ? new Date(result.value.checked_at).toLocaleString('zh-CN', { hour12: false }) : '')
 const advice = computed(() => result.value ? networkAdvice(result.value) : [])
 const protocol = computed(() => result.value?.telegram_protocol)
+const protocolCoverage = computed(() => {
+  const targets = protocol.value?.targets
+  return targets?.length ? `${targets.filter(target => target.state === 'reachable').length}/${targets.length}` : ''
+})
 function testNetwork() { if (props.active && !props.disabled && !props.outcomeUnknown) void run() }
 </script>
 <template>
@@ -43,9 +52,10 @@ function testNetwork() { if (props.active && !props.disabled && !props.outcomeUn
       <p class="field-hint">{{ checkedTime }} · 保存版本 {{ result.settings_revision }} · {{ result.route === 'direct' ? '直连' : result.proxy_scheme === 'http' ? 'HTTP CONNECT 代理' : 'SOCKS5 代理' }}</p>
       <section v-if="protocol && result.bot_api_mode === 'local'" class="protocol-results" aria-label="Telegram 协议检测" data-testid="telegram-protocol">
         <h4>本地 API → Telegram 协议</h4>
-        <p><strong :class="protocol.state === 'reachable' ? '' : 'warning-text'">{{ telegramProtocolLabel(protocol) }}</strong></p>
+        <p><strong :class="protocol.state === 'reachable' ? '' : 'warning-text'">{{ telegramProtocolLabel(protocol) }}</strong><span v-if="protocolCoverage"> · {{ protocolCoverage }} 握手通过</span></p>
         <p class="field-hint">{{ protocol.targets.length ? '检测来源：本地 API 容器' : '本地 API 容器未返回有效协议结果' }} · {{ protocol.route === 'direct' ? '直连' : '代理' }} · 保存版本 {{ protocol.settings_revision }}。</p>
         <p :class="protocol.applied_route === 'matched' ? 'field-hint' : 'warning-text'">{{ telegramAppliedRouteLabel(protocol) }}。</p>
+        <p v-if="!historical && result.local_api?.managed && !result.status_protocol_updated" class="field-hint">本次检测仅供诊断，未更新顶部的实时协议状态。</p>
         <dl v-if="protocol.targets.length" class="network-probes protocol-targets" aria-label="数据中心与端口检测结果">
           <div v-for="target in protocol.targets" :key="`${target.dc}-${target.host}-${target.port}`"><dt>DC {{ target.dc }} · {{ target.host }}:{{ target.port }}</dt><dd><strong :class="target.state === 'reachable' ? 'network-reachable' : 'warning-text'">{{ telegramTargetLabel(target) }}</strong><span v-if="target.latency_ms !== null"> · {{ target.latency_ms }} ms</span></dd></div>
         </dl>

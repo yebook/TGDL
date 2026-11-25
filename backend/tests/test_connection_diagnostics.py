@@ -41,6 +41,7 @@ async def ready(client, monkeypatch):
 async def test_poll_failure_stage_retry_recovery_and_durable_replay(client, monkeypatch, stage, target, error, code):
     runtime = await ready(client, monkeypatch)
     telegram = runtime.client
+    monkeypatch.setattr(runtime, "schedule_menu", Mock())
     runtime.ingest.persist_batch(7, [{"update_id": 100, "message": message()}])
     owner = runtime if target == "poll_result" else runtime.ingest
     original = getattr(owner, target)
@@ -92,6 +93,7 @@ async def test_poll_failure_stage_retry_recovery_and_durable_replay(client, monk
 async def test_actual_sdk_serialization_failure_is_logged_after_transport_success(client, monkeypatch):
     runtime = await ready(client, monkeypatch)
     telegram = runtime.client
+    monkeypatch.setattr(runtime, "schedule_menu", Mock())
     bad = Update.model_validate({"update_id": 100, "message": link_message({"is_disabled": Default(SECRET)})})
     good = Update.model_validate({"update_id": 100, "message": link_message({"url": "https://example.org"})})
     calls, waits = [], []

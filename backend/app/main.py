@@ -45,6 +45,7 @@ from app.schemas.responses import (
     ErrorResponse,
     LocalApiStatus,
     NetworkTestResponse,
+    ProtocolRefreshResponse,
     RequestSafetyStatus,
     SettingsResponse,
     SetupStatus,
@@ -425,19 +426,18 @@ def create_app(config: Config | None = None) -> FastAPI:
         await require_empty_network_request(request)
         return await network_diagnostics.run()
 
-    @application.post("/api/v1/system/protocol-refresh", dependencies=[Depends(auth)], status_code=204)
-    async def refresh_protocol(request: Request) -> Response:
+    @application.post("/api/v1/system/protocol-refresh", dependencies=[Depends(auth)])
+    async def refresh_protocol(request: Request) -> ProtocolRefreshResponse:
         await require_empty_network_request(request)
-        await network_diagnostics.refresh_protocol(manual=True)
-        return Response(status_code=204)
+        return await network_diagnostics.refresh_protocol(manual=True)
 
     @application.delete("/api/v1/system/logs", dependencies=[Depends(auth)], response_model=DiagnosticLogStatus)
     def clear_logs() -> dict[str, Any]:
         return runtime.diagnostics.clear()
 
     def read_system_status(*, sample_storage: bool) -> dict[str, Any]:
-        values, bot, api, proxy = runtime.connection_snapshot()
-        api["telegram_protocol"] = network_diagnostics.protocol_status(api, proxy)
+        values, bot, api, proxy, command_id = runtime.connection_snapshot()
+        api["telegram_protocol"] = network_diagnostics.protocol_status(api, proxy, command_id)
         roots, cache = storage_display.read(allow_sample=sample_storage)
         cache.update(runtime.cache_maintenance.status())
         active, blocked, pending = runtime.counts()

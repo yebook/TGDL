@@ -119,7 +119,7 @@ export interface CacheStatus {
 export interface SystemStatus {
   diagnostic_log?: DiagnosticLogStatus
   local_api: LocalApiStatus
-  bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety }
+  bot: { state: string; username: string | null; message: string; request_safety?: BotRequestSafety; received_recently?: boolean }
   storage: { selected_root_id: string; roots: StorageRoot[]; cache: CacheStatus }
   proxy: Settings['proxy_status']; queue: { active: number; pending: number; concurrency: number }
   version: string; recovery: { blocked_jobs: number; message: string }
@@ -138,7 +138,12 @@ export interface NetworkProbeResult {
   failure_kind: 'dns' | 'proxy_connection' | 'proxy_auth' | 'tcp' | 'tls' | 'timeout' | 'network_unknown' | null
   failure_stage: 'dns' | 'proxy' | 'connect' | 'tls' | 'response' | 'unknown' | null
 }
+export type ProtocolRefreshResult =
+  | { outcome: 'updated' | 'reused'; reason: null }
+  | { outcome: 'not_updated'; reason: 'not_applicable' | 'another_round' | 'no_current_observation' }
+
 export interface NetworkTestResult {
+  status_protocol_updated?: boolean
   checked_at: string; settings_revision: number; origin: 'app'; route: 'direct' | 'proxy'
   proxy_scheme: 'http' | 'socks5' | null; bot_api_mode: 'cloud' | 'local'
   telegram: NetworkProbeResult; google: NetworkProbeResult; local_api_tcp: NetworkProbeResult

@@ -50,15 +50,15 @@ def observed_route(applied: dict[str, Any], state: dict[str, Any], signature: st
 
 
 async def protocol_round(settings: SettingsService, local_api: LocalApiService,
-                         snapshot: ProbeSnapshot) -> TelegramProtocolResult:
+                         snapshot: ProbeSnapshot) -> tuple[TelegramProtocolResult, bool]:
     result = TelegramProtocolResult(state="unavailable", route="proxy" if snapshot.proxy.enabled else "direct",
         settings_revision=snapshot.revision)
     if snapshot.mode != "local":
         result.state = "not_applicable"
-        return result
+        return result, False
     if not settings.config.managed_local_api:
         result.state = "unsupported"
-        return result
+        return result, False
     directory = settings.config.local_api_control_dir
     request: dict[str, Any] | None = None
     result.reason = "helper_unavailable"
@@ -94,26 +94,28 @@ async def protocol_round(settings: SettingsService, local_api: LocalApiService,
             await asyncio.sleep(0.05)
         else:
             result.reason = "round_timeout"
-            return result
+            return result, False
         result.reason = "stale_observation"
         revision, mode, signature, applied, state = await joined_snapshot(local_api, settings)
         result.observed_generation = applied.get("generation")
         result.observed_command_id = applied.get("command_id")
         if revision != snapshot.revision or mode != snapshot.mode or signature != request["proxy_signature"]:
             result.reason = "configuration_changed"
-            return result
+            return result, False
         observation_fields = ("generation", "command_id", "credential_revision", "proxy_signature", "state")
         if any(applied.get(key) != snapshot.applied.get(key) for key in observation_fields):
             result.reason = "stale_observation"
-            return result
+            return result, False
         result.applied_route = observed_route(applied, state, signature)
         count = sum(row.state == "reachable" for row in result.targets)
         result.state = ("reachable" if count == len(TARGETS) else "partial" if count else
                         "timeout" if all(row.state == "timeout" for row in result.targets) else "failed")
         result.reason = None
-        return result
+        status_eligible = (result.applied_route == "matched" and state.get("phase", "idle") == "idle"
+                           and state.get("applied_mode") == "local")
+        return result, status_eligible
     except (OSError, ValueError, TypeError, KeyError, InvalidToken):
-        return result
+        return result, False
     finally:
         if request is not None:
             for name in (REQUEST_FILE, RESULT_FILE):

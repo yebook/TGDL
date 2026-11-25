@@ -5,10 +5,10 @@ import { ApiError, errorMessage } from '../api/client'
 import { boundedRequest } from '../api/boundedRequest'
 import { cooldownText, localApiPhaseLabel, localApiStates, localBotConnectionHint, modeLabel } from '../api/localApi'
 import { connectionSummary } from '../api/systemSummary'
-import type { BotRequestSafety, LocalApiStatus } from '../api/types'
+import type { LocalApiStatus, SystemStatus } from '../api/types'
 import { useDeadlineClock } from '../composables/useDeadlineClock'
 
-const props = defineProps<{ active: boolean; status?: LocalApiStatus; bot?: { state: string; username?: string | null; message: string; request_safety?: BotRequestSafety }; detailed?: boolean; draft?: boolean; disabled?: boolean; stale?: boolean }>()
+const props = defineProps<{ active: boolean; status?: LocalApiStatus; bot?: SystemStatus['bot']; detailed?: boolean; draft?: boolean; disabled?: boolean; stale?: boolean }>()
 const emit = defineEmits<{ changed: [status: LocalApiStatus]; sync: [] }>()
 const busy = ref(false)
 const outcomeUnknown = ref(false)
@@ -70,7 +70,7 @@ async function act(action: 'restart' | 'retry', acknowledge = false) {
     <template v-if="status">
       <p v-if="stale" class="warning-text" role="status">状态更新失败，当前显示上次结果；恢复连接后可操作。</p>
       <div v-if="outcomeUnknown" class="warning-text" role="status"><p>上次操作的结果尚未确认，请重新同步状态后再操作。</p><button type="button" class="connection-resync" @click="$emit('sync')">重新同步状态</button></div>
-      <dl class="local-api-modes"><div><dt>已保存选择</dt><dd>{{ modeLabel(status.desired_mode) }}</dd></div><div><dt>实际使用</dt><dd>{{ modeLabel(status.applied_mode) }}</dd></div><div v-if="bot"><dt>Bot 连接</dt><dd>{{ connection?.botState }}</dd></div></dl>
+      <dl class="local-api-modes"><div><dt>已保存选择</dt><dd>{{ modeLabel(status.desired_mode) }}</dd></div><div><dt>实际使用</dt><dd>{{ modeLabel(status.applied_mode) }}</dd></div><div v-if="bot"><dt>Bot 连接</dt><dd :title="connection?.botHint">{{ connection?.botState }}</dd></div></dl>
       <p v-if="status.applied_mode === 'local' && connection?.botTone === 'success'" class="field-hint">{{ localBotConnectionHint }}</p>
       <p v-if="status.phase !== 'idle'" class="local-api-phase" aria-live="polite">{{ localApiPhaseLabel(status) }}</p>
       <p class="field-hint local-api-message" aria-live="polite">{{ status.message || (status.managed || status.desired_mode === 'cloud' ? '保存配置后由后台协调应用。' : '当前服务由部署环境管理；升级管理组件后可在此控制 API 进程。') }}</p>

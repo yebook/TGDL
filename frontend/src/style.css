@@ -169,6 +169,7 @@ p { font-size: 14px; line-height: 1.7; }
 .status-tone--warning { color: #95610e; }
 .status-tone--danger { color: #b63e43; }
 .status-link { border: 0; background: transparent; color: var(--blue); padding: 10px 0; min-height: 44px; text-align: left; font-size: 12px; }
+.status-refresh-feedback { color: var(--muted); margin: 0 0 8px; font-size: 12px; }
 .status-warning { color: #9a363b; margin: 0 0 8px; font-size: 12px; }
 .status-issues { color: #85510a; font-size: 12px; overflow-wrap: anywhere; padding: 0 0 6px; max-height: 150px; overflow-y: auto; }
 .status-issues summary { min-height: 32px; line-height: 1.7; }
